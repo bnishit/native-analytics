@@ -30,3 +30,9 @@ test('maps legacy AI events to stable native names and queryable properties',asy
  await client.track('$ai_generation','slack:user',{'$ai_input_tokens':123,'$ai_input':'private text'});
  assert.equal(captured.name,'ai.generation');assert.equal(captured.properties.ai_input_tokens,123);assert.equal(captured.properties.ai_input,'[redacted]');
 });
+test('erase requires a confirming server receipt',async()=>{
+ let reply={ok:true,stale_identity_blocked:true};
+ const client=createAnalytics({url:'https://analytics.example',writeKey:'key',fetch:async()=>Response.json(reply)});
+ await client.erase('user-1');reply={ok:true,stale_identity_blocked:false};
+ await assert.rejects(client.erase('user-1'),/unconfirmed/);
+});

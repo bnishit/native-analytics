@@ -66,6 +66,13 @@ export function createAnalytics(config: AnalyticsConfig = {}) {
     queue.push({ id: crypto.randomUUID(), name: normalized, distinct_id: identity, timestamp: new Date().toISOString(), properties: clean, attributes: traits });
     return flush();
   }
-  return { track, flush, identify: (id: string, attributes: Properties) => track('user.identified', id, {}, attributes),
+  async function erase(id: string): Promise<void> {
+    if (!enabled) return;
+    const response = await (config.fetch ?? fetch)(config.url!.replace(/\/$/, '') + '/v1/erase', {method:'POST', redirect:'error', headers:{'Content-Type':'application/json',Authorization:'Bearer '+config.writeKey},body:JSON.stringify({distinct_id:id}),signal:AbortSignal.timeout(2500)});
+    if (!response.ok) throw new Error('analytics_erasure_failed');
+    const receipt = await response.json() as {ok?:boolean;stale_identity_blocked?:boolean};
+    if (receipt.ok !== true || receipt.stale_identity_blocked !== true) throw new Error('analytics_erasure_unconfirmed');
+  }
+  return { track, flush, erase, identify: (id: string, attributes: Properties) => track('user.identified', id, {}, attributes),
     status: () => ({ enabled, queued: queue.length }) };
 }

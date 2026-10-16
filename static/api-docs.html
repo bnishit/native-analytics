@@ -1,0 +1,12 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Native Analytics API</title><link rel="stylesheet" href="/style.css"></head><body><main style="margin:0 auto;max-width:960px"><p class="eyebrow">NATIVE ANALYTICS</p><h1>API and agent guide</h1><p>Self-hosted analytics. One owner credential; separate write-only keys for each project.</p><section class="panel"><h2>Start here</h2><p><a href="/openapi.json">OpenAPI contract</a> · <a href="/llms.txt">Complete agent operating guide</a> · <a href="/">Dashboard</a> · <a href="https://github.com/bnishit/native-analytics">Source, SDKs and setup</a></p><p>Agents should read the contract, use the JSON CLI, send a stable event ID, and verify the stored receipt. Never put credentials in a browser bundle or URL.</p></section><section class="panel"><h2>Producer API</h2><p>Bearer project write key. No dashboard reads.</p><pre>POST /v1/events    {"events":[{"id":"stable-id","name":"save.completed","distinct_id":"opaque-user","properties":{"kind":"article"}}]}
+POST /v1/identify  {"distinct_id":"opaque-user","attributes":{"plan":"starter","tags":["new"]}}
+POST /v1/erase     {"distinct_id":"opaque-user"}</pre><p>Erasure deletes that project's identity and events, and blocks queued events from recreating it. Use a new generation-scoped opaque identity for later legitimate activity.</p></section><section class="panel"><h2>Owner API</h2><p>Bearer admin key or owner session. Cookie writes require the CSRF header and same origin.</p><pre>GET/POST /api/projects
+POST     /api/projects/{id}/rotate-key
+GET      /api/overview?project=my-app
+GET      /api/events?project=my-app
+GET      /api/people?project=my-app
+PATCH    /api/people?project=my-app
+POST     /api/query?project=my-app
+GET/POST /api/charts?project=my-app
+DELETE   /api/charts/{id}?project=my-app
+POST     /api/maintenance</pre><p>Query metrics: count, users, sum, average, p95. Property equality filters and hourly/daily buckets. Read the OpenAPI contract for types and bounds.</p></section></main></body></html>

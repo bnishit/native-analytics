@@ -188,3 +188,21 @@ It revokes the previous key immediately. No events or dashboards are deleted.
 
 Licensed under MIT. Fork and deploy your own instance; do not send your users' data to someone
 else's installation. See the CI workflow for executable service, Python collector and TypeScript SDK checks.
+
+## Optional native-app relay and erasure
+
+A distributed app must never embed a producer key. Owners may enable a constrained relay with
+`POST /api/projects/{project}/relay` and `{enabled:true,events:["app.opened","scan.completed"]}`.
+`POST /v1/relay/{project}` then accepts only the typed consent=true payload in OpenAPI: UUID event/install
+IDs, an allowed event, app version, enumerated feature/outcome, count and duration. Extra fields,
+free text, paths and process names are rejected. Rate: 60 requests/IP/project/minute. Relays are disabled
+unless explicitly configured. Records are client-reported, not authenticated proof of usage.
+They cannot read data and do not grant access to producer endpoints. The owner can disable a relay.
+
+`POST /v1/erase {distinct_id}` uses that project's producer key to remove the identity and its events.
+A tombstone rejects queued/stale events for that exact identity. Producers should derive an opaque
+identity from user/workspace generation, capture it before erasing, and use a new generation for new
+activity. The SDK erase operation resolves only after a confirming receipt; failures must be reported
+as unconfirmed, not silently represented as successful deletion. This service cannot delete data it
+never received an authorized erase request for. Project-key rotation also changes key-derived HMAC
+identities; retain the old derivation secret if old users must be erased after rotation.

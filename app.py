@@ -28,7 +28,7 @@ RETENTION_DAYS = max(1, min(3650, int(os.getenv('RETENTION_DAYS', '90'))))
 SENSITIVE = re.compile(r'password|passwd|secret|token|authorization|cookie|otp|api.?key|request.?body|response.?body', re.I)
 IDENTIFIER = r'^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,159}$'
 PROPERTY = r'^[A-Za-z_][A-Za-z0-9_]{0,63}$'
-app = FastAPI(title='Native Analytics', version='1.1.0', docs_url='/docs', redoc_url=None)
+app = FastAPI(title='Native Analytics', version='1.1.0', docs_url=None, redoc_url=None)
 _limits = {}
 _limit_lock = threading.Lock()
 _prune_stop = threading.Event()
@@ -64,6 +64,9 @@ def init_db():
         CREATE TABLE IF NOT EXISTS charts(id TEXT PRIMARY KEY,project TEXT NOT NULL REFERENCES projects(id),title TEXT NOT NULL,
           definition TEXT NOT NULL,created REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS login_limits(ip TEXT PRIMARY KEY,window REAL NOT NULL,attempts INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS erased_identities(project TEXT NOT NULL REFERENCES projects(id),distinct_id TEXT NOT NULL,
+          erased REAL NOT NULL,PRIMARY KEY(project,distinct_id));
+        CREATE TABLE IF NOT EXISTS relay_projects(project TEXT PRIMARY KEY REFERENCES projects(id),events TEXT NOT NULL,enabled INTEGER NOT NULL);
         ''')
     prune()
 
@@ -266,6 +269,10 @@ def stylesheet():return FileResponse(BASE/'static/style.css',media_type='text/cs
 def agent_guide():return FileResponse(BASE/'AGENTS.md',media_type='text/plain')
 
 
+@app.get('/docs',include_in_schema=False)
+def api_docs():return FileResponse(BASE/'static/api-docs.html',media_type='text/html')
+
+
 @app.post('/auth/login')
 async def login(request:Request,response:Response):
     try:data=await request.json()
@@ -323,6 +330,7 @@ def rotate_key(project:str):
 
 def identify_person(c,project,distinct_id,attributes,now):
     if not distinct_id:return
+    if c.execute('SELECT 1 FROM erased_identities WHERE project=? AND distinct_id=?',(project,distinct_id)).fetchone():return
     old=c.execute('SELECT attributes FROM people WHERE project=? AND distinct_id=?',(project,distinct_id)).fetchone()
     attrs=json.loads(old['attributes']) if old else {}
     attrs.update(attributes)
@@ -343,6 +351,7 @@ def ingest(req:Batch,project=Depends(writer)):
     try:
         with closing(connect()) as c,c:
             for event,ts in records:
+                if event.distinct_id and c.execute('SELECT 1 FROM erased_identities WHERE project=? AND distinct_id=?',(project,event.distinct_id)).fetchone():continue
                 changed=c.execute('INSERT OR IGNORE INTO events VALUES(?,?,?,?,?,?,?)',
                     (project,event.id,event.name,event.distinct_id,ts,now,json.dumps(event.properties))).rowcount
                 if changed:
@@ -358,6 +367,80 @@ def identify(req:Identify,project=Depends(writer)):
         with closing(connect()) as c,c:identify_person(c,project,req.distinct_id,req.attributes,time.time())
     except ValueError as exc:raise HTTPException(422,str(exc)) from None
     return {'ok':True}
+
+
+class Erase(Model):
+    distinct_id: str = Field(pattern=IDENTIFIER)
+
+
+@app.post('/v1/erase')
+def erase_identity(req:Erase,project=Depends(writer)):
+    with closing(connect()) as c,c:
+        removed=c.execute('DELETE FROM events WHERE project=? AND distinct_id=?',(project,req.distinct_id)).rowcount
+        c.execute('DELETE FROM people WHERE project=? AND distinct_id=?',(project,req.distinct_id))
+        c.execute('INSERT OR IGNORE INTO erased_identities VALUES(?,?,?)',(project,req.distinct_id,time.time()))
+    return {'ok':True,'erased_events':removed,'stale_identity_blocked':True}
+
+
+class RelayConfig(Model):
+    enabled: bool
+    events: list[str] = Field(min_length=1,max_length=30)
+
+    @field_validator('events')
+    @classmethod
+    def event_names(cls,values):
+        if any(not re.fullmatch(r'[a-z][a-z0-9_.]{0,60}',v) for v in values):raise ValueError('invalid event name')
+        return values
+
+
+class RelayEvent(Model):
+    id: uuid.UUID
+    install_id: uuid.UUID
+    consent: Literal[True]
+    event: str = Field(pattern=r'^[a-z][a-z0-9_.]{0,60}$')
+    version: str = Field(default='unknown',pattern=r'^[A-Za-z0-9_.-]{1,40}$')
+    feature: Literal['app','process','ports','disk','memory','energy','settings'] = 'app'
+    outcome: Literal['started','success','failure','cancelled'] = 'success'
+    count: int = Field(default=0,ge=0,le=100000)
+    duration_ms: float = Field(default=0,ge=0,le=3600000,allow_inf_nan=False)
+
+
+@app.post('/api/projects/{project}/relay',dependencies=[Depends(admin)])
+def configure_relay(project:str,req:RelayConfig):
+    project_exists(project)
+    with closing(connect()) as c,c:
+        c.execute('INSERT INTO relay_projects VALUES(?,?,?) ON CONFLICT(project) DO UPDATE SET events=excluded.events,enabled=excluded.enabled',
+                  (project,json.dumps(req.events),int(req.enabled)))
+    return {'ok':True,'enabled':req.enabled}
+
+
+@app.post('/v1/relay/{project}')
+def public_relay(project:str,req:RelayEvent,request:Request):
+    with closing(connect()) as c:
+        setting=c.execute('SELECT * FROM relay_projects WHERE project=?',(project,)).fetchone()
+    if not setting or not setting['enabled'] or req.event not in json.loads(setting['events']):raise HTTPException(403,'relay event not enabled')
+    candidate=request.headers.get('x-real-ip','') if os.getenv('RAILWAY_ENVIRONMENT_ID') else request.client.host if request.client else ''
+    try:ip=str(ipaddress.ip_address(candidate))
+    except ValueError:ip=None
+    bucket='relay:'+project+':'+(ip or 'unknown');now=time.monotonic()
+    with _limit_lock:
+        if len(_limits)>20000:
+            for k in list(_limits):
+                if now-_limits[k][0]>60:del _limits[k]
+            if len(_limits)>20000:raise HTTPException(429,'relay capacity reached')
+        start,count=_limits.get(bucket,(now,0))
+        if now-start>=60:start,count=now,0
+        if count>=60:raise HTTPException(429,'relay rate limit',headers={'Retry-After':'60'})
+        _limits[bucket]=(start,count+1)
+    # Fixed schema: no caller-defined text, properties, URLs, process names or paths.
+    identity='install:'+str(req.install_id)
+    properties={'source':project,'feature':req.feature,'outcome':req.outcome,'count':req.count,'duration_ms':req.duration_ms,
+                'version':req.version,'client_reported':True,'consent':True,'ip':ip}
+    with closing(connect()) as c,c:
+        if c.execute('SELECT 1 FROM erased_identities WHERE project=? AND distinct_id=?',(project,identity)).fetchone():return {'accepted':0,'duplicates':1}
+        changed=c.execute('INSERT OR IGNORE INTO events VALUES(?,?,?,?,?,?,?)',(project,str(req.id),req.event,identity,time.time(),time.time(),json.dumps(properties))).rowcount
+        if changed:identify_person(c,project,identity,{'source':project,'platform':'macOS','version':req.version},time.time())
+    return {'accepted':changed,'duplicates':1-changed}
 
 
 def where(project,q):

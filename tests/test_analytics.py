@@ -66,6 +66,26 @@ class AnalyticsTests(unittest.TestCase):
         result=self.client.get('/api/events?project=alpha',headers=self.admin).text
         self.assertNotIn('credential',result)
 
+    def test_erasure_is_project_scoped_and_blocks_queued_identity_resurrection(self):
+        self.ingest([self.event()]);self.ingest([self.event()],self.b)
+        result=self.client.post('/v1/erase',headers=self.a,json={'distinct_id':'support:ankit'})
+        self.assertEqual(result.status_code,200);self.assertTrue(result.json()['stale_identity_blocked'])
+        self.assertEqual(self.query()['total'],0);self.assertEqual(self.query(project='beta')['total'],1)
+        self.assertEqual(self.ingest([self.event('queued-old')]).json()['accepted'],0)
+        self.assertEqual(self.client.get('/api/people?project=alpha',headers=self.admin).json()['people'],[])
+
+    def test_native_relay_is_opt_in_allowlisted_keyless_and_has_no_free_text(self):
+        import uuid
+        body={'id':str(uuid.uuid4()),'install_id':str(uuid.uuid4()),'consent':True,'event':'app.opened','version':'1.3','feature':'app'}
+        self.assertEqual(self.client.post('/v1/relay/alpha',json=body).status_code,403)
+        self.client.post('/api/projects/alpha/relay',headers=self.admin,json={'enabled':True,'events':['app.opened']})
+        self.assertEqual(self.client.post('/v1/relay/alpha',json={**body,'consent':False}).status_code,422)
+        self.assertEqual(self.client.post('/v1/relay/alpha',json={**body,'path':'/private/home'}).status_code,422)
+        self.assertEqual(self.client.post('/v1/relay/alpha',json=body).json()['accepted'],1)
+        self.assertEqual(self.client.post('/v1/relay/alpha',json=body).json()['duplicates'],1)
+        self.assertEqual(self.query()['total'],1)
+        self.assertEqual(self.client.get('/api/projects').status_code,401)
+
     def test_event_id_deduplicates_and_does_not_reapply_traits(self):
         event=self.event(attributes={'plan':'starter','tags':['support']})
         self.assertEqual(self.ingest([event]).json(),{'accepted':1,'duplicates':0})

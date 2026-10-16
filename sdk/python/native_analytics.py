@@ -212,6 +212,6 @@ def install(app,db_path,credentials=None):
     app.add_middleware(RequestAnalytics,collector=collector,credentials=credentials,
                        trust_railway=os.getenv('NATIVE_ANALYTICS_TRUST_RAILWAY')=='true',
                        source=os.getenv('NATIVE_ANALYTICS_SOURCE','application'))
-    app.add_event_handler('startup',collector.start)
-    app.add_event_handler('shutdown',collector.close)
+    app.router.add_event_handler('startup',collector.start)
+    app.router.add_event_handler('shutdown',collector.close)
     return collector

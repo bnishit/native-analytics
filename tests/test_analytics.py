@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 import app as analytics
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'sdk/python'))
-from native_analytics import Collector,RequestAnalytics,route_path
+from native_analytics import Collector,RequestAnalytics,route_path,install
 
 ADMIN='na_admin_'+('a'*40)
 PASSWORD='p'+('b'*40)
@@ -175,5 +175,17 @@ class CollectorTests(unittest.TestCase):
         self.c.track('custom.event',properties={'token':'private-token','text':'Bearer abc123'})
         with self.c.db() as c:body=c.execute('SELECT payload FROM outbox').fetchone()[0]
         self.assertNotIn('private-token',body);self.assertNotIn('abc123',body)
+
+    def test_enabled_installation_starts_and_stops_collector_with_fastapi(self):
+        from fastapi import FastAPI
+        a=FastAPI()
+        @a.get('/healthz')
+        def health():return {'ok':True}
+        with patch.dict(os.environ,{'NATIVE_ANALYTICS_URL':'https://analytics.example','NATIVE_ANALYTICS_WRITE_KEY':'write-secret'}), \
+             patch.object(Collector,'start') as start,patch.object(Collector,'close') as close:
+            collector=install(a,self.path)
+            with TestClient(a) as client:self.assertEqual(client.get('/healthz').status_code,200)
+            start.assert_called_once();close.assert_called_once()
+            self.assertEqual(collector.status()['queued'],1)
 
 if __name__=='__main__':unittest.main()

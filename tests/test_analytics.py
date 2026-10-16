@@ -52,6 +52,20 @@ class AnalyticsTests(unittest.TestCase):
         self.assertEqual(self.query()['total'],1);self.assertEqual(self.query(project='beta')['total'],1)
         self.assertNotIn('write_key',self.client.get('/api/projects',headers=self.admin).text)
 
+    def test_schema_and_agent_guide_are_public_and_key_rotation_revokes_old_producer(self):
+        self.assertEqual(self.client.get('/openapi.json').status_code,200)
+        self.assertEqual(self.client.get('/llms.txt').status_code,200)
+        self.assertEqual(self.client.get('/api/projects').status_code,401)
+        rotated=self.client.post('/api/projects/alpha/rotate-key',headers=self.admin).json()
+        self.assertEqual(self.ingest([self.event()]).status_code,401)
+        self.assertEqual(self.ingest([self.event()],{'Authorization':'Bearer '+rotated['write_key']}).status_code,200)
+
+    def test_numeric_token_metrics_survive_while_credentials_are_redacted(self):
+        self.ingest([self.event(properties={'ai_input_tokens':123,'output_tokens':7,'token':'credential'})])
+        self.assertEqual(self.query(metric='sum',measure='ai_input_tokens')['total'],123)
+        result=self.client.get('/api/events?project=alpha',headers=self.admin).text
+        self.assertNotIn('credential',result)
+
     def test_event_id_deduplicates_and_does_not_reapply_traits(self):
         event=self.event(attributes={'plan':'starter','tags':['support']})
         self.assertEqual(self.ingest([event]).json(),{'accepted':1,'duplicates':0})

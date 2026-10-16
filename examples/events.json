@@ -1,0 +1,1 @@
+{"events":[{"id":"first-event-v1","name":"setup.completed","distinct_id":"demo-user","properties":{"environment":"development","version":1},"attributes":{"plan":"starter","tags":["demo"]}}]}

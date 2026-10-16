@@ -28,7 +28,7 @@ RETENTION_DAYS = max(1, min(3650, int(os.getenv('RETENTION_DAYS', '90'))))
 SENSITIVE = re.compile(r'password|passwd|secret|token|authorization|cookie|otp|api.?key|request.?body|response.?body', re.I)
 IDENTIFIER = r'^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,159}$'
 PROPERTY = r'^[A-Za-z_][A-Za-z0-9_]{0,63}$'
-app = FastAPI(title='Native Analytics', version='1.0.0', docs_url=None, redoc_url=None, openapi_url=None)
+app = FastAPI(title='Native Analytics', version='1.1.0', docs_url='/docs', redoc_url=None)
 _limits = {}
 _limit_lock = threading.Lock()
 _prune_stop = threading.Event()
@@ -101,7 +101,10 @@ def redact(value, depth=0):
     if isinstance(value, dict):
         if len(value) > 64:
             raise ValueError('maximum 64 properties per object')
-        return {k: '[redacted]' if SENSITIVE.search(k) else redact(v,depth+1) for k,v in value.items() if len(k)<=100}
+        return {k: '[redacted]' if SENSITIVE.search(k) and not (
+            re.fullmatch(r'(?:ai_)?(?:input|output|total|cached|reasoning|prompt|completion)_tokens',k)
+            and isinstance(v,(int,float)) and not isinstance(v,bool)) else redact(v,depth+1)
+            for k,v in value.items() if len(k)<=100}
     if isinstance(value,list):
         if len(value)>100:raise ValueError('maximum 100 array entries')
         return [redact(v,depth+1) for v in value]
@@ -259,6 +262,10 @@ def javascript():return FileResponse(BASE/'static/app.js',media_type='applicatio
 def stylesheet():return FileResponse(BASE/'static/style.css',media_type='text/css')
 
 
+@app.get('/llms.txt',include_in_schema=False)
+def agent_guide():return FileResponse(BASE/'AGENTS.md',media_type='text/plain')
+
+
 @app.post('/auth/login')
 async def login(request:Request,response:Response):
     try:data=await request.json()
@@ -303,6 +310,15 @@ def create_project(req:Project):
         with closing(connect()) as c,c:c.execute('INSERT INTO projects VALUES(?,?,?,?)',(req.id,req.name,hashlib.sha256(key.encode()).hexdigest(),time.time()))
     except sqlite3.IntegrityError:raise HTTPException(409,'project already exists') from None
     return {'id':req.id,'name':req.name,'write_key':key,'note':'Write-only key; shown once. Keep it server-side.'}
+
+
+@app.post('/api/projects/{project}/rotate-key',dependencies=[Depends(admin)])
+def rotate_key(project:str):
+    project_exists(project)
+    key='na_write_'+secrets.token_urlsafe(32)
+    with closing(connect()) as c,c:
+        c.execute('UPDATE projects SET key_hash=? WHERE id=?',(hashlib.sha256(key.encode()).hexdigest(),project))
+    return {'id':project,'write_key':key,'note':'Old producer key is revoked. Update the producer with this key.'}
 
 
 def identify_person(c,project,distinct_id,attributes,now):

@@ -133,3 +133,58 @@ node --check static/app.js
 
 Tests cover project isolation, key/read separation, cookie/CSRF/login limits, redaction, input bounds,
 deduplication, queries, traits/tags, charts, retention, cursor ties, outbox recovery and safe ASGI capture.
+
+## Agents and zero-to-first-event setup
+
+Start with [AGENTS.md](AGENTS.md). The running service exposes `/llms.txt`, `/openapi.json`
+and `/docs` so a coding agent can discover the real API instead of guessing it.
+
+```sh
+python scripts/setup.py --env-file .env
+pip install -r requirements.txt
+set -a; source .env; set +a
+uvicorn app:app --host 127.0.0.1 --port 8080
+# in another shell with the same env:
+python cli/native_analytics.py health
+python cli/native_analytics.py create-project --id my-app --name 'My app' --output my-app-key.json
+```
+
+The setup helper creates independent secrets in a mode-600 file and refuses to overwrite them.
+The key receipt is also mode-600 and is never printed. Set `NATIVE_ANALYTICS_WRITE_KEY` from
+that private receipt, send an event, then query it using the owner token:
+
+```sh
+python cli/native_analytics.py send --file examples/events.json
+python cli/native_analytics.py overview --project my-app
+python cli/native_analytics.py events --project my-app
+python cli/native_analytics.py query --project my-app --file examples/query.json
+```
+
+For Railway: authenticate the Railway CLI, then run
+`python scripts/setup.py --railway --workspace YOUR_WORKSPACE_ID --name native-analytics`.
+This provisions billable resources only when explicitly invoked, creates persistent storage,
+sets secrets over stdin, and submits a deployment. It reports the origin and project ID;
+verify `/healthz` and a real event receipt before claiming success. Partial setup keeps your
+keys in the private file so you can inspect/recover the cloud project without losing access.
+
+## TypeScript / Next.js / serverless
+
+Copy `sdk/typescript/native-analytics.ts` into your server code. It uses native `fetch`
+and `crypto`, no PostHog or client-side secret. Instantiate `createAnalytics({url,writeKey,source})`.
+Use `after(() => client.track('save.completed', opaqueUserId, {kind:'article'}))` on Next.js,
+or your platform's `waitUntil`. `identify`, `flush`, and `status` are also available.
+Stable IDs survive its two bounded delivery attempts. Its 500-event in-memory queue is
+best-effort and does not survive serverless termination; use a durable application ledger
+when replay is required. Never put the key behind `NEXT_PUBLIC_` or in a desktop binary.
+
+Numeric AI token usage is supported; raw prompts/messages/content and credential fields are
+redacted by the SDK. Existing analytics event names can be retained when moving from another
+provider. The legacy `$ai_generation` name becomes `ai.generation`, with queryable `ai_*`
+properties. Cookie-free application-side event relays must validate/authenticate inputs and
+rate-limit them; the collector is intentionally not a browser SDK with a public project key.
+
+Owner key rotation is available at `POST /api/projects/{id}/rotate-key` and through the CLI.
+It revokes the previous key immediately. No events or dashboards are deleted.
+
+Licensed under MIT. Fork and deploy your own instance; do not send your users' data to someone
+else's installation. See the CI workflow for executable service, Python collector and TypeScript SDK checks.

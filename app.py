@@ -501,6 +501,7 @@ def overview(project:str,days:int=7):
           sum(CASE WHEN name='http.request' THEN 1 ELSE 0 END) AS requests,
           sum(CASE WHEN name='http.request' AND json_extract(properties,'$.status')>=400 THEN 1 ELSE 0 END) AS errors,
           sum(CASE WHEN name='http.request' AND json_extract(properties,'$.status')>=500 THEN 1 ELSE 0 END) AS server_errors,
+          sum(CASE WHEN json_extract(properties,'$.outcome') IN ('failure','failed','error') OR json_extract(properties,'$.is_error')=1 OR name LIKE '%.failed' THEN 1 ELSE 0 END) AS event_errors,
           count(DISTINCT CASE WHEN name='http.request' THEN json_extract(properties,'$.ip') END) AS unique_ips
           FROM events WHERE '''+clause,params).fetchone())
         latency=[r[0] for r in c.execute("SELECT json_extract(properties,'$.duration_ms') FROM events WHERE "+clause+" AND name='http.request' AND json_type(properties,'$.duration_ms') IN ('integer','real')",params)]
@@ -509,8 +510,9 @@ def overview(project:str,days:int=7):
         pulse=c.execute("SELECT properties,received FROM events WHERE project=? AND name='analytics.pipeline' ORDER BY received DESC LIMIT 1",(project,)).fetchone()
     totals.update(p95_ms=percentile(latency),average_ms=sum(latency)/len(latency) if latency else None,last_ingest=latest,
                   error_rate=100*(totals['errors'] or 0)/(totals['requests'] or 1))
-    series=query_data(project,Query(days=days,event='http.request',interval='hour' if days==1 else 'day',breakdown='operation'))
-    return {'totals':totals,'traffic':series,'event_names':names,'pipeline':{**json.loads(pulse['properties']),'received':pulse['received']} if pulse else None,'retention_days':RETENTION_DAYS}
+    series=query_data(project,Query(days=days,event='http.request' if totals['requests'] else None,interval='hour' if days==1 else 'day',breakdown='operation' if totals['requests'] else None))
+    if not totals['requests']:series['breakdown']=[{'label':n['name'],'value':n['count']} for n in names[:20]]
+    return {'totals':totals,'traffic':series,'event_names':names,'pipeline':{**json.loads(pulse['properties']),'received':pulse['received']} if pulse else None,'retention_days':RETENTION_DAYS,'mode':'requests' if totals['requests'] else 'events'}
 
 
 @app.get('/api/events',dependencies=[Depends(admin)])

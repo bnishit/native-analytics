@@ -20,7 +20,7 @@ Set `NATIVE_ANALYTICS_URL` to YOUR HTTPS origin and `ANALYTICS_ADMIN_TOKEN` for 
 Set `NATIVE_ANALYTICS_WRITE_KEY` for send/identify. Use `--project` on project-scoped reads.
 
 - `health`, `schema`: availability and actual contracts.
-- `projects`: list; `create-project --id my-app --name 'My app'`: creates an isolated producer key.
+- `projects`: list; `create-project --id my-app --name 'My app' --output /private/path/my-app-key.json`: creates an isolated producer key.
 - `send --file events.json`: stable IDs, named events, properties/traits. Retry with same IDs.
 - `identify --file person.json`: update traits.
 - `overview --project my-app --days 7`, `events`, `people`, `charts`: inspect real stored results.

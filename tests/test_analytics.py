@@ -87,7 +87,7 @@ class AnalyticsTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/projects').status_code,401)
 
     def test_product_dashboard_uses_events_and_explicit_failures(self):
-        self.ingest([self.event('one',name='feature.used',properties={'outcome':'success'}),self.event('two',name='feature.failed',properties={'outcome':'failure'})])
+        self.ingest([self.event('one',name='feature.used',properties={'outcome':'success'}),self.event('two',name='feature.failed',properties={'outcome':'failure'}),self.event('pulse',name='analytics.pipeline',distinct_id=None)])
         result=self.client.get('/api/overview?project=alpha',headers=self.admin).json()
         self.assertEqual(result['mode'],'events')
         self.assertEqual(result['totals']['requests'],0)

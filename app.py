@@ -468,6 +468,7 @@ def aggregate(rows,q):
 
 def query_data(project,q):
     clause,params=where(project,q)
+    if q.event is None:clause+=" AND name!='analytics.pipeline'"
     with closing(connect()) as c:
         count=c.execute('SELECT count(*) FROM events WHERE '+clause,params).fetchone()[0]
         if count>200000:raise HTTPException(422,'query exceeds 200,000 events; shorten the time window')
@@ -495,7 +496,7 @@ def query(req:Query,project:str):
 @app.get('/api/overview',dependencies=[Depends(admin)])
 def overview(project:str,days:int=7):
     project_exists(project)
-    q=Query(days=days);clause,params=where(project,q)
+    q=Query(days=days);clause,params=where(project,q);clause+=" AND name!='analytics.pipeline'"
     with closing(connect()) as c:
         totals=dict(c.execute('''SELECT count(*) AS total_events,count(DISTINCT distinct_id) AS active_users,
           sum(CASE WHEN name='http.request' THEN 1 ELSE 0 END) AS requests,

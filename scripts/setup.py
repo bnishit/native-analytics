@@ -5,6 +5,7 @@ from pathlib import Path
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--env-file',default='.env');p.add_argument('--railway',action='store_true');p.add_argument('--workspace');p.add_argument('--name',default='native-analytics')
 a=p.parse_args()
+if a.railway and not a.workspace:p.error('--workspace is required for Railway setup')
 repo=Path(__file__).resolve().parents[1];path=Path(a.env_file).resolve()
 if path.exists():p.error('env file exists; refusing to replace your keys')
 values={'ANALYTICS_ADMIN_TOKEN':'na_admin_'+secrets.token_urlsafe(40),'ANALYTICS_PASSWORD':secrets.token_urlsafe(30),
@@ -18,11 +19,11 @@ def run(args,input=None):
 fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
 with os.fdopen(fd,'w') as f:f.write('\n'.join(k+'='+v for k,v in values.items())+'\n')
 if a.railway:
-    if not a.workspace:p.error('--workspace is required for Railway setup')
     project=json.loads(run(['init','--name',a.name,'--workspace',a.workspace,'--json']))
     service=json.loads(run(['add','--service',a.name,'--json']))
     run(['service','link',a.name]);run(['volume','add','--mount-path','/data','--json'])
-    origin=json.loads(run(['domain','--service',a.name,'--port','8080','--json']))['domain']
+    domain=json.loads(run(['domain','--service',a.name,'--port','8080','--json']))['domain']
+    origin=domain if domain.startswith('https://') else 'https://'+domain
     values.update(ANALYTICS_DB='/data/analytics.db',COOKIE_SECURE='true',ANALYTICS_PUBLIC_URL=origin,NATIVE_ANALYTICS_URL=origin,RAILWAY_DEPLOYMENT_OVERLAP_SECONDS='0')
     for key,value in values.items():
         if key!='NATIVE_ANALYTICS_URL':run(['variable','set',key,'--stdin','--skip-deploys','--service',a.name],value)

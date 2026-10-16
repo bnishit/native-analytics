@@ -108,6 +108,8 @@ Date windows are relative to now, graph buckets are UTC, UI timestamps use viewe
 `count` counts events, `users` counts non-null distinct IDs; anonymous requests do not become synthetic people.
 Numeric metrics ignore absent/non-numeric/bool properties. Percentile uses nearest-rank p95.
 
+Default charts exclude collector heartbeats (`analytics.pipeline`) so pipeline health does not inflate product usage. Select that event explicitly to query it.
+
 ## Limits and operational honesty
 
 This is a small, single-process tool; one volume, one replica. It is not a warehouse, security log

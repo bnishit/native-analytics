@@ -86,6 +86,15 @@ class AnalyticsTests(unittest.TestCase):
         self.assertEqual(self.query()['total'],1)
         self.assertEqual(self.client.get('/api/projects').status_code,401)
 
+    def test_product_dashboard_uses_events_and_explicit_failures(self):
+        self.ingest([self.event('one',name='feature.used',properties={'outcome':'success'}),self.event('two',name='feature.failed',properties={'outcome':'failure'})])
+        result=self.client.get('/api/overview?project=alpha',headers=self.admin).json()
+        self.assertEqual(result['mode'],'events')
+        self.assertEqual(result['totals']['requests'],0)
+        self.assertEqual(result['totals']['total_events'],2)
+        self.assertEqual(result['totals']['event_errors'],1)
+        self.assertEqual(len(result['traffic']['breakdown']),2)
+
     def test_event_id_deduplicates_and_does_not_reapply_traits(self):
         event=self.event(attributes={'plan':'starter','tags':['support']})
         self.assertEqual(self.ingest([event]).json(),{'accepted':1,'duplicates':0})

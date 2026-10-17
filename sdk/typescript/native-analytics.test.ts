@@ -36,3 +36,13 @@ test('erase requires a confirming server receipt',async()=>{
  await client.erase('user-1');reply={ok:true,stale_identity_blocked:false};
  await assert.rejects(client.erase('user-1'),/unconfirmed/);
 });
+test('deployment whitespace does not change endpoint, key or source',async()=>{
+ let captured: {url?:string;auth?:string|null;source?:string}={};
+ const client=createAnalytics({url:'https://example.test\n',writeKey:'write-key\n',source:'shelf\n',fetch:async(url,options)=>{
+  const event=JSON.parse(String(options?.body)).events[0];
+  captured={url:String(url),auth:new Headers(options?.headers).get('Authorization'),source:event.properties.source};
+  return new Response(JSON.stringify({accepted:1,duplicates:0}));
+ }});
+ await client.track('test.event');
+ assert.deepEqual(captured,{url:'https://example.test/v1/events',auth:'Bearer write-key',source:'shelf'});
+});

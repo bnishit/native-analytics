@@ -22,6 +22,7 @@ export function safeProperties(value: unknown, depth = 0): unknown {
   return typeof value === 'number' && !Number.isFinite(value) ? null : value;
 }
 export function createAnalytics(config: AnalyticsConfig = {}) {
+  config = { ...config, url: config.url?.trim(), writeKey: config.writeKey?.trim(), source: config.source?.trim() };
   const queue: object[] = [];
   let running: Promise<void> | undefined;
   const enabled = Boolean(config.url && config.writeKey);

@@ -208,3 +208,5 @@ activity. The SDK erase operation resolves only after a confirming receipt; fail
 as unconfirmed, not silently represented as successful deletion. This service cannot delete data it
 never received an authorized erase request for. Project-key rotation also changes key-derived HMAC
 identities; retain the old derivation secret if old users must be erased after rotation.
+
+For a browser site, set exact HTTPS `origins` on its owner-managed relay configuration. Only those origins receive CORS permission for fixed-schema, credential-free POSTs. The relay supports a `web` feature and optional `nav`/`hero`/`install` placement. Keep the same explicit opt-in and privacy signal handling in your site. No write or owner key belongs in browser code.

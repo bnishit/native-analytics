@@ -174,6 +174,24 @@ class AnalyticsTests(unittest.TestCase):
         self.assertEqual(self.ingest([self.event()]).status_code,429)
 
 
+    def test_browser_relay_cors_is_project_scoped_and_never_allows_credentials(self):
+        import uuid
+        origin='https://bnishit.github.io'
+        self.client.post('/api/projects/alpha/relay',headers=self.admin,json={'enabled':True,'events':['web.page_view'],'origins':[origin]})
+        headers={'Origin':origin,'Access-Control-Request-Method':'POST','Access-Control-Request-Headers':'content-type'}
+        response=self.client.options('/v1/relay/alpha',headers=headers)
+        self.assertEqual(response.status_code,204)
+        self.assertEqual(response.headers['Access-Control-Allow-Origin'],origin)
+        self.assertNotIn('Access-Control-Allow-Credentials',response.headers)
+        self.assertEqual(self.client.options('/v1/relay/beta',headers=headers).status_code,403)
+        self.assertEqual(self.client.options('/v1/relay/alpha',headers={**headers,'Origin':'https://unapproved.example'}).status_code,403)
+        self.assertEqual(self.client.options('/v1/relay/alpha',headers={**headers,'Access-Control-Request-Headers':'authorization'}).status_code,400)
+        body={'id':str(uuid.uuid4()),'install_id':str(uuid.uuid4()),'consent':True,'event':'web.page_view','feature':'web'}
+        response=self.client.post('/v1/relay/alpha',headers={'Origin':origin},json=body)
+        self.assertEqual(response.json()['accepted'],1)
+        self.assertEqual(self.client.post('/v1/relay/alpha',headers={'Origin':'https://unapproved.example'},json=body).status_code,403)
+        self.assertEqual(self.client.post('/api/projects/beta/relay',headers=self.admin,json={'enabled':True,'events':['web.page_view'],'origins':['https://example.com/path']}).status_code,422)
+
 class CollectorTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.path=Path(self.temp.name)/'queue.db'

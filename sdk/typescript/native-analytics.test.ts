@@ -75,3 +75,13 @@ test('diagnostic digests and false flags survive without loosening message or re
   assert.equal(clean.afterspan_audit.independent_proposal,false);
   assert.equal(clean.afterspan_audit.diagnostic_code,'input_mismatch');
 });
+test('deployment whitespace does not change endpoint, key or source',async()=>{
+ let captured: {url?:string;auth?:string|null;source?:string}={};
+ const client=createAnalytics({url:'https://example.test\n',writeKey:'write-key\n',source:'shelf\n',fetch:async(url,options)=>{
+  const event=JSON.parse(String(options?.body)).events[0];
+  captured={url:String(url),auth:new Headers(options?.headers).get('Authorization'),source:event.properties.source};
+  return new Response(JSON.stringify({accepted:1,duplicates:0}));
+ }});
+ await client.track('test.event');
+ assert.deepEqual(captured,{url:'https://example.test/v1/events',auth:'Bearer write-key',source:'shelf'});
+});

@@ -16,6 +16,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from accounts import Accounts
 from billing import Billing
@@ -101,6 +102,8 @@ def init_db():
         ProductAnalytics.init_db(c)
         Catalog.init_db(c)
         Audit.init_db(c)
+        if 'origins' not in {r['name'] for r in c.execute('PRAGMA table_info(relay_projects)')}:
+            c.execute("ALTER TABLE relay_projects ADD COLUMN origins TEXT NOT NULL DEFAULT '[]'")
     prune()
 
 
@@ -614,6 +617,16 @@ def erase_identity(req:Erase,project=Depends(writer)):
 class RelayConfig(Model):
     enabled: bool
     events: list[str] = Field(min_length=1,max_length=30)
+    origins: list[str] = Field(default_factory=list,max_length=10)
+
+    @field_validator('origins')
+    @classmethod
+    def browser_origins(cls,values):
+        for value in values:
+            url=urlsplit(value)
+            if url.scheme!='https' or not url.netloc or url.path or url.query or url.fragment or url.username or url.password:
+                raise ValueError('origins must be exact HTTPS origins')
+        return values
 
     @field_validator('events')
     @classmethod
@@ -628,7 +641,8 @@ class RelayEvent(Model):
     consent: Literal[True]
     event: str = Field(pattern=r'^[a-z][a-z0-9_.]{0,60}$')
     version: str = Field(default='unknown',pattern=r'^[A-Za-z0-9_.-]{1,40}$')
-    feature: Literal['app','process','ports','disk','memory','energy','settings'] = 'app'
+    feature: Literal['app','process','ports','disk','memory','energy','settings','web'] = 'app'
+    placement: Literal['nav','hero','install'] | None = None
     outcome: Literal['started','success','failure','cancelled'] = 'success'
     count: int = Field(default=0,ge=0,le=100000)
     duration_ms: float = Field(default=0,ge=0,le=3600000,allow_inf_nan=False)
@@ -638,10 +652,33 @@ class RelayEvent(Model):
 def configure_relay(project:str,req:RelayConfig,request:Request):
     project_exists(project)
     with closing(connect()) as c,c:
-        c.execute('INSERT INTO relay_projects VALUES(?,?,?) ON CONFLICT(project) DO UPDATE SET events=excluded.events,enabled=excluded.enabled',
-                  (project,json.dumps(req.events),int(req.enabled)))
+        c.execute('INSERT INTO relay_projects(project,events,enabled,origins) VALUES(?,?,?,?) ON CONFLICT(project) DO UPDATE SET events=excluded.events,enabled=excluded.enabled,origins=excluded.origins',
+                  (project,json.dumps(req.events),int(req.enabled),json.dumps(req.origins)))
         audit_project(c,request,project,'project.relay_enabled' if req.enabled else 'project.relay_disabled')
     return {'ok':True,'enabled':req.enabled}
+
+
+@app.middleware('http')
+async def relay_browser_origin(request:Request,call_next):
+    origin=request.headers.get('origin')
+    path=request.url.path
+    if not origin or not path.startswith('/v1/relay/'):
+        return await call_next(request)
+    project=path.removeprefix('/v1/relay/')
+    with closing(connect()) as c:
+        setting=c.execute('SELECT enabled,origins FROM relay_projects WHERE project=?',(project,)).fetchone()
+    if not setting or not setting['enabled'] or origin not in json.loads(setting['origins']):
+        return JSONResponse({'detail':'browser origin not enabled'},403)
+    if request.method=='OPTIONS':
+        requested={v.strip().lower() for v in request.headers.get('access-control-request-headers','').split(',') if v.strip()}
+        if request.headers.get('access-control-request-method')!='POST' or requested-{'content-type'}:
+            return JSONResponse({'detail':'unsupported preflight'},400)
+        response=Response(status_code=204,headers={'Access-Control-Allow-Methods':'POST','Access-Control-Allow-Headers':'Content-Type','Access-Control-Max-Age':'600'})
+    else:
+        response=await call_next(request)
+    response.headers['Access-Control-Allow-Origin']=origin
+    response.headers['Vary']='Origin'
+    return response
 
 
 @app.post('/v1/relay/{project}')
@@ -665,14 +702,14 @@ def public_relay(project:str,req:RelayEvent,request:Request):
     # Fixed schema: no caller-defined text, properties, URLs, process names or paths.
     identity='install:'+str(req.install_id)
     properties={'source':project,'feature':req.feature,'outcome':req.outcome,'count':req.count,'duration_ms':req.duration_ms,
-                'version':req.version,'client_reported':True,'consent':True,'ip':ip}
+                'version':req.version,'placement':req.placement,'client_reported':True,'consent':True,'ip':ip}
     with closing(connect()) as c,c:
         c.execute('BEGIN IMMEDIATE')
         if billing.seen(c,project,str(req.id)) or c.execute('SELECT 1 FROM erased_identities WHERE project=? AND distinct_id=?',(project,identity)).fetchone():return {'accepted':0,'duplicates':1}
         changed=c.execute('INSERT OR IGNORE INTO events VALUES(?,?,?,?,?,?,?)',(project,str(req.id),req.event,identity,time.time(),time.time(),json.dumps(properties))).rowcount
         if changed:
             billing.record(c,project,str(req.id),len(json.dumps(req.model_dump(mode='json'),separators=(',',':'),ensure_ascii=False).encode()),False,time.time())
-            identify_person(c,project,identity,{'source':project,'platform':'macOS','version':req.version},time.time())
+            identify_person(c,project,identity,{'source':project,'platform':'web' if req.feature=='web' else 'macOS','version':req.version},time.time())
     return {'accepted':changed,'duplicates':1-changed}
 
 

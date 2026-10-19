@@ -16,3 +16,5 @@
 #product-result{margin-bottom:24px;scroll-margin-top:20px}.saved-definition{display:grid;grid-template-columns:auto auto 1fr;justify-content:start;align-items:start}.saved-definition>div{grid-column:1/-1}.saved-definition button{justify-self:start}.event-rule>label{flex:1.4}.event-rule .event-filter-editor{min-width:130px}
 
 .audit-request{padding:18px 0;border-top:1px solid #d9dfd2}.audit-request summary{cursor:pointer}.historical-receipt{padding:18px 0;border-top:1px solid #d9dfd2;overflow-wrap:anywhere}.retention-table th,.retention-table td{min-width:85px;text-align:center}.retention-table td.immature{background:#f1f0e7;color:#818678}.retention-table small{font-weight:400}#retention-result{margin-bottom:24px;scroll-margin-top:16px}#retention-form>label,#property-meaning-form>label{display:block;margin-bottom:16px}#audit-connect-guide{border-top:1px solid #d9dfd2;margin-top:20px;padding-top:12px}#audit-connect-guide pre{white-space:pre-wrap;overflow-wrap:anywhere}
+
+.loop-question{font-size:clamp(1.15rem,2vw,1.6rem);line-height:1.4;margin:20px 0 10px}.loop-question+p{max-width:80ch}#loop-comparison{margin-top:16px}#loop-observe input{min-width:190px}

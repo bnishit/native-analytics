@@ -18,6 +18,36 @@ Open http://127.0.0.1:8769/app. This loopback preview creates private local emai
 
 `AFTERSPAN_EDITION=self_hosted` is the default. Usage counts remain useful for server capacity; there are no commercial event, payload, project or seat limits. Request rate, query-size, definition-count and retention bounds still protect the service. This is one process on one SQLite volume, not unlimited infrastructure.
 
+### Follow a repo goal through a tracking PR
+
+The **Goal loop** project page keeps one product question beside its tracking repair, PR, release evidence and qualified outcomes. The first supported goal asks whether an observed workspace gets a correctly grounded Codex answer within 24 hours. Each workspace starts its clock once. Retries cannot restart it. Waiting workspaces stay outside the mature denominator.
+
+The committed example is [`.afterspan/goals/first-answer.json`](.afterspan/goals/first-answer.json). Goal wording, measurement meaning, source mapping and owner policy have separate immutable revisions. Existing funnels retain their repeated-start rules. The loop does not claim lifetime-new workspace eligibility.
+
+```sh
+# Inspect committed files without a running service.
+python cli/native_analytics.py loop-inspect --repo . --repository YOUR_ORG/YOUR_REPO --base YOUR_BRANCH
+# Use an existing private owner session or a scoped workspace editor key.
+python cli/native_analytics.py loop-sync --project PROJECT_ID --repo . --repository YOUR_ORG/YOUR_REPO --base YOUR_BRANCH
+python cli/native_analytics.py loop-status --project PROJECT_ID
+python cli/native_analytics.py loop-prepare --project PROJECT_ID --request-id UUID
+python cli/native_analytics.py loop-action --project PROJECT_ID --id ACTION_UUID --operation draft-pr
+```
+
+The service independently fetches the committed GitHub goal and recomputes the supported repair. Configure `AFTERSPAN_GITHUB_REPOSITORY=YOUR_ORG/YOUR_REPO` and `AFTERSPAN_GITHUB_TOKEN` in the server's secret store. The fine-grained token needs that repository's contents and pull-request writes, plus metadata, checks, Actions, deployments and branch-protection reads. Never give this token to a coding agent. Missing permission blocks the affected operation. No repository code runs on the server.
+
+The first recipe repairs only the missing completion hook in `examples/loop_pilot.py`. It sends an opaque workspace and observation reference; it sends no question, answer, credential or user text. A retry with the same prepare request ID recovers the same action after an interrupted preparation. An unrelated edit produces no patch. Unsupported code needs review. This is a narrow supported repair, not a general code editor.
+
+Only an owner session or the instance operator can grant, pause or revoke action policy. Delegated workspace keys cannot grant themselves authority. In **Goal loop**, the owner can allow draft PRs for seven days. The CLI `loop-policy --revision N --file policy.json` exposes the full typed policy. Automatic merge requires protected, current code, pinned independent checks and review. The server token needs repository contents, pull requests and deployments access, plus Administration read access to inspect branch protection. It also requires release-on-merge permission because external deployment hooks may exist. An open or merged PR does not prove release. Reconciliation accepts the verified one-parent squash commit, or a normal merge whose parents are exactly the approved base and tracking head and whose full tree equals the verified tracking head. A successful GitHub deployment must name the exact merge commit and environment and include `artifact_sha256` in its payload. This is provider-reported release evidence, separate from an exact received completion event and a useful outcome.
+
+A completion event alone cannot qualify. `loop-assess` submits a structured answer and its exact event reference. The service compares source, meaning, counts including zero, limitations and next action against an immutable service-generated observation. The caller cannot choose expected counts or a pass/fail verdict. This first rubric checks faithful aggregate interpretation, not subjective usefulness.
+
+Use `loop-observe --id UUID --file window.json` with explicit `entry_start`, `entry_end`, `observed_through` and `as_of`. Use `loop-compare --file comparison.json` with observation IDs `before`, `after` and optional `action_id`. An optional `release` selects a release cohort after the first workspace entry is fixed across all release labels; a retry on another release cannot restart the clock. Excluded release entries are reported. The report separates checked, failed, unassessed, timed-out and waiting workspaces. Before/after remains observational. Missing release proof cannot establish a post-release improvement. Without a bound action the result stays `unknown`; a descriptive `unbound_rate_difference` does not establish impact. Retention, erasure, late arrivals and the 200,000-event read cap remain explicit limits.
+
+The fixed-checkout MCP bridge is `agent/loop_server.py`. Configure `AFTERSPAN_REPO_ROOT`, `AFTERSPAN_PROJECT`, `AFTERSPAN_WORKSPACE_KEY`, `NATIVE_ANALYTICS_URL`, `AFTERSPAN_GITHUB_REPOSITORY` and `AFTERSPAN_GITHUB_BASE` before launch. It has no operator fallback, policy-grant tool, shell tool or arbitrary path input. The workspace bridge also exposes remote loop operations. All routes and exact body schemas are in `/openapi.json`; the guide is `/docs#product-loop`.
+
+External aggregate imports remain attestations. They never join native totals or become independent answer checks. Missing source-contract coverage must remain unknown; an absent event schema cannot establish a zero conversion rate. The native loop is the first supported execution path. Automatic querying across arbitrary providers is not included.
+
 ### Funnels, saved segments and retention
 
 A **segment** is a saved set of rules that is checked again each time you run it. Open **Segments**, name the group, choose all/any, and add event-count or current-trait rules. Event rules support typed equality and one-of property filters and minimum/maximum counts, including zero. Trait rules support equals, not-equals, exists and numeric bounds. Only identities with a retained product event in the selected window are eligible. A zero-event rule does not find every inactive signup. Traits are current profiles, not historical snapshots.

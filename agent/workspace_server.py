@@ -117,7 +117,7 @@ def project_request(project,path,body=None,method=None,**params):
     workspace=os.environ.get('AFTERSPAN_WORKSPACE','');key=os.environ.get('AFTERSPAN_WORKSPACE_KEY','');origin=os.environ.get('NATIVE_ANALYTICS_URL','').rstrip('/')
     if not workspace or not key.startswith('as_workspace_'):raise ValueError('Configure the scoped workspace key; no operator fallback.')
     # The API checks the key's workspace, current membership and role for this project.
-    return http_request(origin,key,path,body,method,project=project,**params)
+    return http_request(origin,key,path,body,method,timeout=60 if path.startswith('/api/loop/') else 15,project=project,**params)
 
 @mcp.tool(annotations=READ)
 def product_definitions(project:str,kind:Literal['funnels','segments','retention'])->dict:
@@ -151,5 +151,50 @@ def describe_property(project:str,event:str,property:str,meaning:str,unit:str=''
 def attach_audit_evidence(project:str,id:str,evidence:dict)->dict:
     """Editor: attach an immutable, sanitized historical PostHog aggregate receipt. Use a stable UUIDv4 id for retries. Exact source window, source project URL, telemetry schema, observation/selected/eligible/agree/tool counts and query_sha256 are required. This is an agent attestation, not an independently fetched result; it never changes the native denominator or clears a quality gate. No raw request rows, identifiers or text are accepted."""
     return project_request(project,'/api/audit/evidence/'+quote(id,safe=''),evidence,'PUT')
+
+@mcp.tool(annotations=READ)
+def loop_goals(project:str)->dict:
+    """Read committed product goals and their evidence limits in this project."""
+    return project_request(project,'/api/loop/goals')
+
+@mcp.tool(annotations=READ)
+def loop_status(project:str,goal:str)->dict:
+    """Read separate tracking, PR, merge, release and qualified outcome evidence."""
+    return project_request(project,'/api/loop/goals/'+quote(goal,safe=''))
+
+@mcp.tool(annotations=WRITE)
+def loop_sync(project:str,goal:str,source:dict)->dict:
+    """Index an exact committed GitHub goal. Service checks bytes; repository prose grants no authority."""
+    return project_request(project,'/api/loop/goals/'+quote(goal,safe='')+'/sync',source,'PUT')
+
+@mcp.tool(annotations=WRITE)
+def loop_prepare(project:str,goal:str,request_id:str)->dict:
+    """Prepare the supported minimal tracking repair using a stable UUID. Does not open a PR."""
+    return project_request(project,'/api/loop/goals/'+quote(goal,safe='')+'/prepare',{'request_id':request_id},'POST')
+
+@mcp.tool(annotations=ACCESS)
+def loop_action(project:str,action_id:str,operation:Literal['draft-pr','reconcile','merge'])->dict:
+    """Run one action within current owner policy. Reconcile uncertain writes; a merge may deploy and requires release authority."""
+    return project_request(project,'/api/loop/actions/'+quote(action_id,safe='')+'/'+operation,{},'POST')
+
+@mcp.tool(annotations=WRITE)
+def loop_observe(project:str,goal:str,observation_id:str,window:dict)->dict:
+    """Freeze first-entry and mature outcome counts. Setup and producer quality flags do not prove usefulness."""
+    return project_request(project,'/api/loop/goals/'+quote(goal,safe='')+'/observations/'+quote(observation_id,safe=''),window,'PUT')
+
+@mcp.tool(annotations=WRITE)
+def loop_assess(project:str,goal:str,answer_id:str,submission:dict)->dict:
+    """Check a structured answer against trusted stored facts. The service decides the verdict."""
+    return project_request(project,'/api/loop/goals/'+quote(goal,safe='')+'/answers/'+quote(answer_id,safe=''),submission,'PUT')
+
+@mcp.tool(annotations=WRITE)
+def loop_external(project:str,goal:str,evidence_id:str,evidence:dict)->dict:
+    """Attach external aggregate evidence as an attestation. Never merged into native totals or promoted to provider proof."""
+    return project_request(project,'/api/loop/goals/'+quote(goal,safe='')+'/external/'+quote(evidence_id,safe=''),evidence,'PUT')
+
+@mcp.tool(annotations=READ)
+def loop_compare(project:str,goal:str,before:str,after:str,action_id:str|None=None)->dict:
+    """Compare compatible cohorts observationally with explicit release and measurement limits."""
+    return project_request(project,'/api/loop/goals/'+quote(goal,safe='')+'/compare',{'before':before,'after':after,**({'action_id':action_id} if action_id else {})},'POST')
 
 if __name__=='__main__':mcp.run(transport='stdio')

@@ -1,5 +1,27 @@
 /** Server-side, runtime-neutral Native Analytics client. Never ship write keys to browsers. */
 export type Properties = Record<string, unknown>;
+export interface JourneyContext {
+  id: string;
+  workflow: string;
+  environment: 'production' | 'staging' | 'development' | 'test' | 'local';
+  attempt_id: string;
+  attempt_number: number;
+  state: 'started' | 'succeeded' | 'failed' | 'cancelled';
+  subject_kind?: 'person' | 'account' | 'workspace' | 'installation' | 'service' | 'anonymous' | 'unknown';
+  release?: string | null;
+}
+function validJourney(j: JourneyContext): boolean {
+  const identifier = /^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,159}$/;
+  const allowed = ['id','workflow','environment','attempt_id','attempt_number','state','subject_kind','release'];
+  return Boolean(j && typeof j === 'object' && Object.keys(j).every(k => allowed.includes(k)) &&
+    typeof j.id === 'string' && identifier.test(j.id) && typeof j.attempt_id === 'string' && identifier.test(j.attempt_id) &&
+    typeof j.workflow === 'string' && /^[a-z][a-z0-9_.-]{0,79}$/.test(j.workflow) &&
+    ['production','staging','development','test','local'].includes(j.environment) &&
+    Number.isInteger(j.attempt_number) && j.attempt_number >= 1 && j.attempt_number <= 10000 &&
+    ['started','succeeded','failed','cancelled'].includes(j.state) &&
+    (j.subject_kind === undefined || ['person','account','workspace','installation','service','anonymous','unknown'].includes(j.subject_kind)) &&
+    (j.release == null || typeof j.release === 'string' && identifier.test(j.release)));
+}
 export interface AnalyticsConfig {
   url?: string;
   writeKey?: string;
@@ -18,7 +40,7 @@ export function safeProperties(value: unknown, depth = 0): unknown {
     return [key, forbidden.test(raw) && !metric ? '[redacted]' : safeProperties(v, depth + 1)];
   }));
   if (typeof value === 'bigint') return String(value);
-  if (typeof value === 'string') return value.slice(0, 2000).replace(/\bBearer\s+\S+|\b(?:na_write_|na_admin_|mbb_inv_|sk-)[A-Za-z0-9_-]+/gi, '[redacted]');
+  if (typeof value === 'string') return value.slice(0, 2000).replace(/\bBearer\s+\S+|\b(?:na_write_|na_admin_|as_read_|as_workspace_|as_session_|as_login_|as_invite_|mbb_inv_|sk-)[A-Za-z0-9_-]+/gi, '[redacted]');
   return typeof value === 'number' && !Number.isFinite(value) ? null : value;
 }
 export function createAnalytics(config: AnalyticsConfig = {}) {
@@ -53,9 +75,10 @@ export function createAnalytics(config: AnalyticsConfig = {}) {
     })();
     try { await running; } finally { running = undefined; }
   }
-  function track(name: string, distinctId?: string | null, properties: Properties = {}, attributes: Properties = {}): Promise<void> {
+  function track(name: string, distinctId?: string | null, properties: Properties = {}, attributes: Properties = {}, journey?: JourneyContext): Promise<void> {
     if (!enabled) return Promise.resolve();
     if (queue.length >= 500) { config.onError?.({ code: 'queue_full', queued: queue.length }); return Promise.resolve(); }
+    if (journey && (!validJourney(journey) || journey.subject_kind === 'anonymous' && distinctId)) { config.onError?.({code:'invalid_journey',queued:queue.length}); return Promise.resolve(); }
     const normalized = name.replace(/^\$ai_generation$/, 'ai.generation').replace(/^[^A-Za-z0-9]+/, '').replace(/[^A-Za-z0-9_.:@/-]/g, '_').slice(0, 160);
     const identity = distinctId?.replace(/[^A-Za-z0-9_.:@/-]/g, '_').slice(0, 160) || null;
     const clean = safeProperties({ ...properties, source: config.source ?? properties.source }) as Properties;
@@ -63,7 +86,7 @@ export function createAnalytics(config: AnalyticsConfig = {}) {
     if (!normalized || JSON.stringify(clean).length > 15000 || JSON.stringify(traits).length > 15000) {
       config.onError?.({ code: 'invalid_event', queued: queue.length }); return Promise.resolve();
     }
-    queue.push({ id: crypto.randomUUID(), name: normalized, distinct_id: identity, timestamp: new Date().toISOString(), properties: clean, attributes: traits });
+    queue.push({ id: crypto.randomUUID(), name: normalized, distinct_id: identity, timestamp: new Date().toISOString(), properties: clean, attributes: traits, ...(journey ? {journey: {...journey}} : {}) });
     return flush();
   }
   async function erase(id: string): Promise<void> {
@@ -73,6 +96,6 @@ export function createAnalytics(config: AnalyticsConfig = {}) {
     const receipt = await response.json() as {ok?:boolean;stale_identity_blocked?:boolean};
     if (receipt.ok !== true || receipt.stale_identity_blocked !== true) throw new Error('analytics_erasure_unconfirmed');
   }
-  return { track, flush, erase, identify: (id: string, attributes: Properties) => track('user.identified', id, {}, attributes),
+  return { track, trackJourney: (name: string, journey: JourneyContext, id?: string | null, properties: Properties = {}, attributes: Properties = {}) => track(name, id, properties, attributes, journey), flush, erase, identify: (id: string, attributes: Properties) => track('user.identified', id, {}, attributes),
     status: () => ({ enabled, queued: queue.length }) };
 }

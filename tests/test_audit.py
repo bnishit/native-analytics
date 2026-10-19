@@ -1,0 +1,114 @@
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+import time
+import unittest
+import uuid
+from contextlib import closing
+from fastapi.testclient import TestClient
+import app
+from audit import nearest
+import test_product as fixtures
+from test_workspaces import CSRF
+
+class AuditTests(unittest.TestCase):
+    user=fixtures.ProductTests.user;token=fixtures.ProductTests.token;workspace=fixtures.ProductTests.workspace;project=fixtures.ProductTests.project;join=fixtures.ProductTests.join;invite=fixtures.ProductTests.invite;key=fixtures.ProductTests.key;send=fixtures.ProductTests.send
+    def setUp(self):fixtures.ProductTests.setUp(self);self.release=str(uuid.uuid4())
+    def tearDown(self):fixtures.ProductTests.tearDown(self)
+    def facts(self,stage,ref,attempt,**kw):
+        return {'schema_version':'slack-request-v1','stage':stage,'environment':'production','request_ref':ref,'attempt_ref':attempt,'attempt_number':1,'release_ref':self.release,'request_kind':'read','comparison_eligible':True,'independent_proposal':True,'confirmation_required':False,'tool_required':False,'comparison_version':'canonical-plan-v1','context_digest':'a'*64,'decision_digest':'b'*64,'duration_ms':10.0,**kw}
+    def observe(self,facts,at=0):return self.send('stage.observed',None,at,properties={'afterspan_audit':facts,'messagePreview':'private chat sentinel','featureId':'private-feature-sentinel','email':'private-person@example.test','ip':'203.0.113.99'})
+    def chain(self,**kw):
+        ref=str(uuid.uuid4());attempt=str(uuid.uuid4())
+        for i,stage in enumerate(['parser','planner','shadow']):self.observe(self.facts(stage,ref,attempt,**kw),i)
+        return ref,attempt
+    def review(self,body=None,client=None,path='review'):
+        r=(client or self.owner).post('/api/audit/'+path+'?project='+self.p['id'],headers=CSRF,json=body or {});self.assertEqual(r.status_code,200,r.text);return r.json()
+    def test_misleading_183_events_two_writes_zero_comparisons(self):
+        for i in range(177):self.send('http.request',None,i)
+        for i in range(2):
+            ref,attempt=str(uuid.uuid4()),str(uuid.uuid4())
+            for j,stage in enumerate(['parser','planner','tool']):self.observe(self.facts(stage,ref,attempt,request_kind='write',comparison_eligible=False,confirmation_required=False,tool_required=True),200+i*10+j)
+        r=self.review();self.assertEqual(r['coverage']['stored_events_in_window'],183);self.assertEqual(r['denominators']['selected_requests'],2)
+        self.assertEqual(r['agreement']['denominator'],0);self.assertIsNone(r['agreement']['rate']);self.assertEqual(r['readiness'],'inconclusive');self.assertEqual(r['business_safety'],'not_established')
+        self.assertEqual(r['stage_counts']['shadow']['not_required'],2);self.assertEqual(r['coverage']['events_without_contract'],177)
+    def test_disagreement_unsafe_input_mismatch_and_required_unknown(self):
+        self.chain()
+        ref,attempt=str(uuid.uuid4()),str(uuid.uuid4())
+        for i,stage in enumerate(['parser','planner','shadow']):self.observe(self.facts(stage,ref,attempt,decision_digest=('c'*64 if stage=='shadow' else 'b'*64),proposal_safe=False if stage=='shadow' else None,confirmation_required=True,tool_required=None),10+i)
+        ref,attempt=str(uuid.uuid4()),str(uuid.uuid4())
+        for i,stage in enumerate(['parser','planner','shadow']):self.observe(self.facts(stage,ref,attempt,context_digest='c'*64 if stage=='shadow' else 'a'*64),20+i)
+        r=self.review();self.assertEqual(r['agreement']['denominator'],2);self.assertEqual(r['agreement']['numerator'],1);self.assertEqual(r['counts']['unsafe_proposals_reported'],1);self.assertEqual(r['counts']['planner_input_mismatches'],1)
+        self.assertEqual(r['stage_counts']['confirmation']['missing'],1);self.assertEqual(r['stage_counts']['tool']['unknown'],1);self.assertEqual(r['verdict'],'needs_attention')
+    def test_missing_null_redacted_never_join_and_catalog_preserves_false(self):
+        ref,attempt=str(uuid.uuid4()),str(uuid.uuid4())
+        a=self.facts('parser',ref,attempt);a.pop('request_ref');self.observe(a)
+        self.observe(self.facts('parser',None,attempt),1);self.observe(self.facts('planner','[redacted]',attempt),2)
+        self.chain(comparison_eligible=False,confirmation_required=False,proposal_safe=False)
+        r=self.review();self.assertEqual(r['coverage']['uncorrelated_observations'],{'missing':1,'null':1,'redacted':1});self.assertEqual(r['denominators']['selected_requests'],1)
+        catalog=self.review(path='catalog');fields={f['property']:f for f in catalog['fields']};self.assertEqual(fields['request_ref']['missing'],1);self.assertEqual(fields['request_ref']['null'],1);self.assertEqual(fields['request_ref']['redacted'],1);self.assertEqual(fields['proposal_safe']['types']['bool'],3)
+        self.assertNotIn(ref,json.dumps(catalog));self.assertNotIn('private chat sentinel',json.dumps(catalog));self.assertFalse(catalog['raw_value_examples'])
+    def test_retries_deliveries_ambiguous_stages_and_release_boundaries(self):
+        ref,attempt=self.chain();e=self.observe(self.facts('tool',ref,attempt,tool_required=True),3)
+        # A changed fact on only one stage conflicts; it cannot create a clean comparison.
+        response=self.client.post('/v1/events',headers={'Authorization':'Bearer '+self.p['write_key']},json={'events':[e]});self.assertEqual(response.json()['duplicates'],1)
+        self.assertEqual(self.review()['agreement']['denominator'],0)
+        second=str(uuid.uuid4())
+        for i,stage in enumerate(['parser','planner','shadow']):self.observe(self.facts(stage,ref,second,attempt_number=2),10+i)
+        r=self.review();self.assertEqual(r['denominators']['selected_requests'],1);self.assertEqual(r['counts']['repeated_business_attempts'],1);self.assertEqual(r['agreement']['denominator'],1)
+        self.observe(self.facts('planner',ref,second,attempt_number=2),20);self.assertEqual(self.review()['agreement']['denominator'],0)
+        other,other_attempt=str(uuid.uuid4()),str(uuid.uuid4())
+        for i,stage in enumerate(['parser','planner','shadow']):self.observe(self.facts(stage,other,other_attempt,release_ref=str(uuid.uuid4()) if stage=='shadow' else self.release),30+i)
+        self.assertEqual(self.review()['agreement']['denominator'],0)
+    def test_bounded_selection_across_100_event_page_and_frozen_trace_privacy(self):
+        for i in range(65):
+            ref,attempt=str(uuid.uuid4()),str(uuid.uuid4())
+            for j,stage in enumerate(['parser','planner','shadow']):self.observe(self.facts(stage,ref,attempt,duration_ms=float(i)),i*10+j)
+        r=self.review();self.assertEqual(r['denominators']['observed_request_chains_in_window'],65);self.assertEqual(r['denominators']['selected_requests'],60);self.assertEqual(r['agreement']['denominator'],60);self.assertEqual(r['coverage']['omitted_request_chains'],5)
+        trace=self.review({**r['query'],'request':r['requests'][0]['request']},path='trace');self.assertEqual(trace['fingerprint'],r['fingerprint']);self.assertEqual(len(trace['request']['stages']),5)
+        self.chain();again=self.review(r['query']);self.assertEqual(again['denominators'],r['denominators']);self.assertEqual(again['fingerprint'],r['fingerprint'])
+        payload=json.dumps(r)
+        for forbidden in ['private chat sentinel','private-feature-sentinel','private-person@example.test','203.0.113.99','a'*64,'b'*64,self.release]:self.assertNotIn(forbidden,payload)
+        self.assertEqual(nearest(list(range(1,21)),.95),19);self.assertEqual(nearest([0,100],.5),0)
+    def test_audit_key_cannot_query_general_properties_and_is_project_scoped(self):
+        self.chain();r=self.owner.post('/api/projects/'+self.p['id']+'/read-keys',headers=CSRF,json={'label':'Audit only','purpose':'audit','expires_days':1});self.assertEqual(r.status_code,200,r.text)
+        c=TestClient(app.app);c.headers.update({'Authorization':'Bearer '+r.json()['read_key']});self.assertEqual(self.review(client=c)['agreement']['denominator'],1)
+        for path in ['/api/overview','/api/charts','/api/segments','/api/funnels','/api/setup']:self.assertEqual(c.get(path+'?project='+self.p['id']).status_code,403)
+        self.assertEqual(c.post('/api/query?project='+self.p['id'],json={'breakdown':'email'}).status_code,403)
+        self.assertEqual(c.get('/api/events?project='+self.p['id']).status_code,401)
+        self.assertEqual(c.post('/api/audit/review?project=alpha',json={}).status_code,403)
+        self.assertEqual(self.client.post('/api/audit/review?project='+self.p['id'],json={}).status_code,401)
+    def test_contract_rejects_free_text_and_bad_types_and_marks_uncovered_history(self):
+        facts=self.facts('parser',str(uuid.uuid4()),str(uuid.uuid4()))
+        for field,value in [('comparison_eligible','false'),('request_ref','same-redacted-value'),('diagnostic_code','customer free text'),('duration_ms',True)]:
+            bad={**facts,field:value};r=self.client.post('/v1/events',headers={'Authorization':'Bearer '+self.p['write_key']},json={'events':[{'name':'stage.observed','properties':{'afterspan_audit':bad}}]});self.assertEqual(r.status_code,422,r.text)
+        self.send('slack_parser_outcome',None,properties={'messageHash':'[redacted]','finalAction':'add_users'});r=self.review();self.assertEqual(r['coverage']['events_without_contract'],1);self.assertEqual(r['denominators']['selected_requests'],0)
+    def test_mixed_environment_and_missing_attempt_never_create_clean_agreement(self):
+        ref,attempt=str(uuid.uuid4()),str(uuid.uuid4())
+        for i,stage in enumerate(['parser','planner','shadow']):self.observe(self.facts(stage,ref,attempt,environment='staging' if stage=='shadow' else 'production'),i)
+        self.assertEqual(self.review()['agreement']['denominator'],0);self.assertEqual(self.review()['counts']['environment_mistakes'],1);self.assertEqual(self.review()['latency_scope']['selected_requests'],0);self.assertEqual(self.review()['latency_scope']['excluded_environment_requests'],1)
+        f=self.facts('parser',str(uuid.uuid4()),None);self.observe(f,10);r=self.review();request=next(x for x in r['requests'] if x['latest_attempt_number'] is None);self.assertTrue(all(s['state']=='unknown' for s in request['stages']))
+
+    def test_a_shadow_stage_does_not_prove_independent_generation(self):
+        self.chain(independent_proposal=False)
+        r=self.review();self.assertEqual(r['agreement']['denominator'],0)
+        self.assertIn('independent_proposal_not_confirmed',r['requests'][0]['issues'])
+        self.chain(comparison_eligible=None,diagnostic_code='comparison_scope_unavailable')
+        self.assertTrue(any('comparison_scope_unavailable' in x['issues'] for x in self.review()['requests']));self.assertEqual(self.review()['counts']['requests_with_unavailable_comparison_scope'],1)
+        self.chain(independent_proposal=None)
+        ref,attempt=str(uuid.uuid4()),str(uuid.uuid4())
+        for i,stage in enumerate(['parser','planner','shadow']):
+            facts=self.facts(stage,ref,attempt);facts.pop('independent_proposal');self.observe(facts,20+i)
+        r=self.review();self.assertEqual(r['agreement']['denominator'],0);self.assertEqual(r['semantic_correctness'],'not_established')
+
+    def test_audit_launcher_rejects_shared_or_wrong_purpose_receipts(self):
+        launcher=Path(__file__).resolve().parents[1]/'agent/run_audit.py'
+        with tempfile.TemporaryDirectory() as folder:
+            receipt=Path(folder)/'audit.json';receipt.write_text('{"purpose":"audit"}');receipt.chmod(0o644)
+            r=subprocess.run([sys.executable,str(launcher),str(receipt)],capture_output=True,text=True)
+            self.assertNotEqual(r.returncode,0);self.assertIn('must be private',r.stderr)
+            receipt.chmod(0o600);receipt.write_text('{"purpose":"analytics"}')
+            r=subprocess.run([sys.executable,str(launcher),str(receipt)],capture_output=True,text=True)
+            self.assertNotEqual(r.returncode,0);self.assertIn('audit-purpose',r.stderr)

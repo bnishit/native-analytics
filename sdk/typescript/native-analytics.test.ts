@@ -36,3 +36,42 @@ test('erase requires a confirming server receipt',async()=>{
  await client.erase('user-1');reply={ok:true,stale_identity_blocked:false};
  await assert.rejects(client.erase('user-1'),/unconfirmed/);
 });
+
+test('journey context stays stable across delivery retries and caller mutation', async () => {
+  const sent: string[] = [];
+  let offline = true;
+  const client = createAnalytics({url:'https://analytics.example',writeKey:'test-key',fetch:async (_url, options) => {
+    sent.push(String(options?.body));
+    if (offline) throw new Error('offline');
+    return new Response(JSON.stringify({accepted:1,duplicates:0}),{status:200});
+  }});
+  const journey = {id:'task-one',workflow:'summary',environment:'local' as const,attempt_id:'attempt-one',attempt_number:1,state:'started' as const};
+  await client.trackJourney('summary.started', journey);
+  journey.attempt_number = 2;
+  offline = false;
+  await client.flush();
+  const events = sent.map(body => JSON.parse(body).events[0]);
+  assert.equal(new Set(events.map(e => e.id)).size,1);
+  assert.ok(events.every(e => e.journey.attempt_number === 1));
+});
+
+test('invalid journey context never sends or breaks the caller', async () => {
+  const errors: string[] = [];
+  let calls = 0;
+  const client = createAnalytics({url:'https://analytics.example',writeKey:'test-key',fetch:async () => {calls++;return new Response('{}');},onError:error=>errors.push(error.code)});
+  await client.trackJourney('summary.started',{id:'task',workflow:'summary',environment:'local',attempt_id:'a',attempt_number:0,state:'started'});
+  assert.equal(calls,0);
+  assert.deepEqual(errors,['invalid_journey']);
+});
+
+
+test('diagnostic digests and false flags survive without loosening message or reason redaction', () => {
+  const clean = safeProperties({messageHash:'private-hash',rejectionReason:'private-free-text',afterspan_audit:{schema_version:'slack-request-v1',context_digest:'a'.repeat(64),decision_digest:'b'.repeat(64),comparison_eligible:false,independent_proposal:false,proposal_safe:false,diagnostic_code:'input_mismatch'}}) as any;
+  assert.equal(clean.messageHash,'[redacted]');
+  assert.equal(clean.rejectionReason,'[redacted]');
+  assert.equal(clean.afterspan_audit.context_digest,'a'.repeat(64));
+  assert.equal(clean.afterspan_audit.comparison_eligible,false);
+  assert.equal(clean.afterspan_audit.proposal_safe,false);
+  assert.equal(clean.afterspan_audit.independent_proposal,false);
+  assert.equal(clean.afterspan_audit.diagnostic_code,'input_mismatch');
+});

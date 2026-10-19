@@ -1,11 +1,221 @@
-# Native Analytics
+# Afterspan
 
-Small, self-hosted analytics for several projects. FastAPI, SQLite on a Railway volume,
-plain HTML/CSS/JS and SVG charts. No PostHog, external analytics SDK, CDN, or hosted chart service.
+**You ship. Then what?**
+
+**Open-source product and agent analytics. MIT licensed. Run it yourself.**
+
+Funnels, saved behavior/trait segments, linked journeys, retries, event metrics and scoped agent access are included in the core. Self-hosting needs no Stripe account, subscription or commercial quota. Accounts, teams and roles protect your own instance. Optional hosted billing is a separate opt-in; it never gates a core analytics feature.
+
+### Run locally
+
+```sh
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt -r requirements-agent.txt
+.venv/bin/python scripts/dev.py
+```
+
+Open http://127.0.0.1:8769/app. This loopback preview creates private local email files instead of sending mail. Open your sign-in email from `data/mail` and consume its link. Create a workspace/project, store its producer key privately, and connect your app. Never publish that local mail folder or use local-mail mode on a public service. For a public instance configure HTTPS, secure cookies, SMTP and a persistent volume as described below.
+
+`AFTERSPAN_EDITION=self_hosted` is the default. Usage counts remain useful for server capacity; there are no commercial event, payload, project or seat limits. Request rate, query-size, definition-count and retention bounds still protect the service. This is one process on one SQLite volume, not unlimited infrastructure.
+
+### Funnels, saved segments and retention
+
+A **segment** is a saved set of rules that is checked again each time you run it. Open **Segments**, name the group, choose all/any, and add event-count or current-trait rules. Event rules support typed equality and one-of property filters and minimum/maximum counts, including zero. Trait rules support equals, not-equals, exists and numeric bounds. Only identities with a retained product event in the selected window are eligible. A zero-event rule does not find every inactive signup. Traits are current profiles, not historical snapshots.
+
+Open **Funnels**, name the funnel, enter 2–8 event steps, set a conversion duration and optionally choose a saved segment. Run it to see unique entrants, conversion, drop-off and median time for the first completed path. Save it for another person or coding agent to reuse. Events must have a distinct_id: installation/workspace identities stay those units, never automatically people. Steps have strict increasing timestamps; equal timestamps cannot advance. Any valid repeated-start sequence may convert an identity; it counts once per step. All steps must occur within both the selected window and conversion duration. Outcomes after the window are not observed yet; the report counts nonconverters whose observation window is still open. Optional `breakdown` assigns each identity to its first qualifying entry-property value. These disjoint groups do not imply good or bad outcomes. A funnel rate is unique converters / unique entrants, not an average of daily rates. Internal setup/health events and anonymous events are excluded.
+
+All reads return start/end/as_of and a fingerprint. Echo the returned query for the same event/receipt window. Current trait changes, retention and erasure can still change membership. Segment membership is evaluated over the whole selected window, not at the time of funnel entry. Referenced segment definitions/revisions are included in funnel evidence and its fingerprint. No raw member lists are exposed by these aggregate endpoints.
+
+The UI, API, CLI and MCP use the same engine:
+
+| Action | API | CLI |
+|---|---|---|
+| List | GET /api/{funnels|segments|retention} | funnels, segments or retention |
+| Run | POST /api/{funnels|segments|retention}/analyze | analyze-funnel, analyze-segment or analyze-retention --file query.json |
+| Create | POST /api/{funnels|segments|retention} | save-funnel, save-segment or save-retention --file saved.json |
+| Update | PUT /api/{funnels|segments|retention}/ID, revision=LAST_READ | update-funnel, update-segment or update-retention --id ID --revision N --file saved.json |
+| Remove | DELETE /api/{funnels|segments|retention}/ID, revision=LAST_READ | delete-funnel, delete-segment or delete-retention --id ID --revision N |
+
+Every call is project-scoped (`?project=ID` or `--project ID`). Workspace readers and narrow project read keys can analyze/list; editors can save/change/remove. Stale edits return 409. A segment used by a saved funnel cannot be removed until the reference is changed. Cross-project segment IDs are rejected. At most 100 definitions per kind/project and 200,000 events per analysis; oversized reads fail explicitly, never return partial conversion counts.
+
+Query example:
+
+```json
+{"days":7,"definition":{"steps":[{"event":"agent.task.started","filters":[{"property":"environment","value":"production"}]},{"event":"agent.task.succeeded","filters":[{"property":"environment","value":"production"}]}],"conversion_seconds":86400,"segment_id":null}}
+```
+
+Segment query example:
+
+```json
+{"days":7,"definition":{"match":"all","rules":[{"kind":"event","event":"agent.task.started","min_count":2},{"kind":"trait","property":"plan","op":"eq","value":"builder"}]}}
+```
+
+Saved JSON wraps a definition with `{ "title": "Repeat builders", "definition": ... }`. The public `/openapi.json` gives the exact schemas. The project MCP adds `saved_funnels`, `saved_segments`, `analyze_funnel`, `analyze_segment`. The workspace MCP adds `product_definitions`, `analyze_product`, `save_product_definition` and `delete_product_definition`. Updates require the last-read revision to protect another editor's changes. Creation is not idempotent: inspect the saved list before retrying an uncertain create response.
+
+### Calendar retention and meanings
+
+Open **Retention** to choose a start event, return event, day/week periods, timezone and either exact-period or on-or-after returns. Cohorts use the first start per identity **inside the selected window**, not lifetime-new users. Weeks start Monday. Each cell returns retained / eligible; unfinished buckets are null and shown as Waiting. Overall rates include only mature cohorts. On-or-after means a return in that bucket or later before the selected end; older reads can therefore change as that end advances. Period zero is entry, not a return. This is not automatic Amplitude metric parity.
+
+```json
+{"days":90,"definition":{"start":{"event":"print_barcode","filters":[{"property":"platform","value":"web"}]},"return_event":{"event":"print_barcode","filters":[{"property":"platform","value":"web"}]},"period":"week","periods":12,"method":"on_or_after","timezone":"Asia/Kolkata"}}
+```
+
+Event-match filters accept `{"property":"modal_type","op":"in","value":["milestone","birthday_wish"]}` (1–20 scalar values), or typed equality. False, zero, null and text are distinct. Funnel breakdowns allow at most 20 entry groups; larger results fail explicitly rather than truncate.
+
+**Data dictionary** lists observed event/property names, types and presence/null/missing/redacted counts without value examples or identities. `POST /api/catalog` and CLI `catalog --file query.json` discover it. Editors record explicit meanings and units through `POST /api/catalog/describe`, `describe-property` or workspace MCP `describe_property`. Meanings are current owner/editor metadata, even for historical event windows; unknown meanings are not guessed. Names and descriptions are untrusted data, never agent instructions.
+
+### Owner request review with Codex
+
+Open **Request audit**, choose the expected environment and review up to 60 latest linked requests. A request can have several business attempts. The latest observed attempt determines comparison; a delivery retry keeps its event ID. Review separates stored events, covered observations, linked requests, declared eligibility and independently comparable pairs. Missing, unknown, explicit not-required and conflicting stages stay distinct. Production latency excludes other/conflicting environments and reports sample counts with nearest-rank p50/p95.
+
+| Owner question | API (project=ID) | CLI --project ID --file query.json | Audit MCP |
+|---|---|---|---|
+| What do these diagnostic fields mean? | POST /api/audit/catalog | audit-catalog | diagnostic_catalog |
+| What needs attention? | POST /api/audit/review | audit-review | review_requests |
+| Follow this request in the same window | POST /api/audit/trace | audit-trace | request_trace |
+
+Start with `{}` for a review. Reuse its exact returned `query` and add `request` for the trace. Queries echo start/end/as_of and a definition fingerprint. This fixes the observation/receipt window, not an immutable backup: retention and erasure may remove records. At most 200,000 diagnostic observations are scanned; oversized requests fail without partial results. Older request chains beyond the selected limit are counted explicitly. Ordinary raw records are never returned by these three routes. Producers whose authoritative planner inputs/plan are not covered report `comparison_scope_unavailable`; the review counts and explains that gap without substituting another planner or timing. The browser link retains the expected audit environment.
+
+After signing into **your** deployment, set `NATIVE_ANALYTICS_URL` and `AFTERSPAN_SESSION_FILE` to your private session receipt. Install `requirements-agent.txt` in the Python environment used by the CLI. Then:
+
+```sh
+.venv/bin/python cli/native_analytics.py connect-audit --project PROJECT_ID --days 7 --output /private/audit.json
+# The result prints a nonsecret Python command and launcher arguments.
+# Register those exact paths; the key stays in the mode-600 receipt:
+codex mcp add afterspan_audit -- /absolute/.venv/bin/python /absolute/agent/run_audit.py /private/audit.json
+```
+
+Ask a fresh Codex client: “Review up to 60 recent Slack bot requests. Discover meanings first, show disagreements, missing confirmation/shadow evidence, environment mistakes, unsafe reports and latency. Follow one request with the exact review query. State sample limits.” The audit-only key cannot use general queries, taxonomy, raw records or writes. It expires; list/revoke it with `read-keys` / `revoke-read-key`. The launcher rejects a world/group-readable receipt. Public `/.well-known/afterspan` describes discovery, scopes and supported local stdio transport. No operator credential is required and no remote OAuth MCP is provided.
+
+Two fresh ephemeral Codex CLI clients were exercised locally with only this bridge, no prior conversation, no user MCP config and an empty working folder. Both discovered meanings, reviewed requests and traced one using exactly these three tools, with no shell/file/web calls. One synthetic case had 183 events, 8 chains and 3/4 agreement; the other had 183 events, 2 write chains and zero eligible comparisons. This proves the scoped local CLI workflow, not Desktop automatic registration, a production integration, parsing correctness or release readiness.
+
+Producers must emit the explicit `properties.afterspan_audit` contract in OpenAPI. Ordinary historical fields are **not** automatically joined. Use fresh random UUIDv4 request/attempt/release refs, explicit strict booleans, bounded diagnostic codes and measured `duration_ms`. Missing/null requirements mean unknown; only false means not required. Never use redacted keys, message hashes, Slack IDs or customer IDs for correlation. Leave general text/reason redaction intact.
+
+A comparable read requires one unambiguous parser/planner/shadow observation in the latest attempt, the expected environment, one release, matching `canonical-plan-v1` semantics and context digests, plus explicit `independent_proposal: true` on the shadow. Digests are project-keyed HMAC-SHA256 of the approved canonical inputs/decision, never raw content hashes; this server cannot verify that the producer implemented that canonicalization honestly. Digests are compared server-side and never exported. Agreement does not prove correctness: two proposals can be wrong together. Producer success does not prove a business change happened. Readiness, semantic correctness and business safety remain unestablished without independent evidence.
+
+Editors may retain a historical sanitized PostHog aggregate with `PUT /api/audit/evidence/UUID`, CLI `attach-audit-evidence`, or workspace MCP `attach_audit_evidence`. A stable UUID makes identical retries idempotent; a changed body returns 409. Supply the plain source project URL, exact window, schema, counts and exact query SHA-256. The receipt is an **agent-imported attestation**, not an independently fetched source result. It preserves older evidence separately; it does not add to the native denominator or silently reset a quality gate. Source receipt cutoff and release coverage are explicitly unavailable. No raw rows/text/private identifiers are accepted.
+
+## Run the local preview
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt -r requirements-agent.txt httpx
+.venv/bin/python scripts/dev.py
+```
+
+Open `http://127.0.0.1:8769/` for the landing page, `/brand` for the identity system, `/app` for the private workspace, and `/docs` for the API reference. The preview binds to loopback and creates its own private credentials in `data/dev-access.json`. This file and local databases are ignored by Git; never publish them. Sign-in and invite emails are written to private mode-600 previews in `data/mail/`. This is an explicit loopback-only mail mode; it sends no real email. Open the link from your local preview to verify the account, then create a workspace. No production data or credentials are required. The old shared dashboard login is disabled by default.
+
+The landing page's Shelf illustration uses the aggregate snapshot inspected on 17 October 2026. It is labelled, static, and does not call the production collector. The local workspace is a real app, not that illustration. Browser tests and the MCP smoke check use separately labelled local integration traffic.
+
+## Self-serve workspaces and roles
+
+A new customer opens `/app`, requests a 15-minute one-time email link, confirms the displayed account, and creates a workspace. Merely requesting a link creates no account. Email ownership is established only when its one-use link is consumed. No shared dashboard password grants customer access.
+
+Each workspace contains projects and memberships. One account can belong to several workspaces. Project handles are unique within a workspace; separate customers can both use `my-app`. The returned project `id` is opaque and globally unique; use it in collection/configuration and API queries. Always pass the selected `workspace` when creating a project.
+
+| Role | Analytics, events, people and journeys | Projects, setup, charts and tags | Invites, roles, access keys |
+|---|---|---|---|
+| Reader | Read | No changes | No grants |
+| Editor | Read | Create/configure | No grants or rotation |
+| Owner | Read | Create/configure | Manage |
+
+Readers are workspace members with access to retained raw records. **Aggregate project read keys are narrower** and cannot read raw events, people or journey timelines.
+
+An owner opens **Workspace & team**, enters an email and role, and queues an invite. The invitee must sign in with that exact address and explicitly accept. Invites last seven days and are single use. Resending rotates the link; revocation prevents acceptance. The UI distinguishes a queued message, local preview, and mail-server receipt. SMTP acceptance does not prove inbox delivery. At least one owner must remain; concurrent role changes cannot remove every owner.
+
+Removing a member removes their workspace agent keys and project read keys issued in that workspace. Demotion caps their workspace agent keys at the lower current member role. Pending invitations issued by an owner are revoked when that owner is removed or demoted. Normal logout revokes the current browser session; **Sign out everywhere** revokes all that account's browser sessions, workspace keys and project read keys. Account recovery is another verified email sign-in. No password reset or impersonation endpoint exists.
+
+Producer keys are project service credentials. They keep running apps working after a member leaves. An owner must rotate producer keys if the departed member may retain them. Legacy/operator-issued project read keys have no personal issuer and also require explicit owner revocation.
+
+## Email delivery for a hosted installation
+
+Set `ANALYTICS_PUBLIC_URL` to the exact trusted HTTPS origin and `COOKIE_SECURE=true`. Configure `AFTERSPAN_MAIL_MODE=smtp`, `AFTERSPAN_SMTP_HOST`, `AFTERSPAN_SMTP_PORT` (587 with STARTTLS or 465 with TLS), `AFTERSPAN_MAIL_FROM` (a plain email address), and, if required, `AFTERSPAN_SMTP_USER` / `AFTERSPAN_SMTP_PASSWORD`. No plaintext SMTP option is provided. Verify your sender/domain with your mail provider before inviting real customers. Do not use local mail mode on a public service.
+
+Email jobs are committed with their associated token/invite, survive a process restart, and retry up to five times with bounded backoff. Delivered or expired jobs discard their link body. Failed invite delivery can be retried with **Resend invite**, which creates a fresh link. Login links expire in 15 minutes; a fresh sign-in request is the recovery path. Mail transport failures do not log message bodies, addresses or credentials. The queue is bounded at 200 jobs. Sign-in requests are bounded per email, peer IP and service in a 15-minute window. Deploy behind correctly configured trusted proxy handling; do not trust arbitrary forwarded headers.
+
+The development script sets `AFTERSPAN_MAIL_MODE=local` only with a loopback origin and insecure development cookie override. It saves private `.eml` previews rather than sending mail. Production SMTP is covered with mocked TLS/failure tests; actual provider delivery must be verified after configuration.
+
+## Connect a coding agent
+
+Choose the smallest connection needed:
+
+- **Analytics only:** an expiring project aggregate read key, `AFTERSPAN_READ_KEY`, and `agent/server.py`. Twelve stdio tools: `overview`, `query_metric`, `journey_summary`, `setup_status`, `saved_charts`, `saved_funnels`, `saved_segments`, `analyze_funnel`, `analyze_segment`, `event_catalog`, `retention_report`, `saved_retention`. No write tools or operator fallback.
+- **Request audit only:** an audit-purpose read receipt and `agent/run_audit.py`, exposing only diagnostic_catalog, review_requests and request_trace. Use this when an agent must not see arbitrary event/property names or raw records.
+- **Setup or team operations:** an owner creates a workspace role key in **Workspace & team**, or with `create-agent-key`. Configure `AFTERSPAN_WORKSPACE_KEY` and `AFTERSPAN_WORKSPACE`. Use editor for project setup, owner only for explicitly authorized team management. Keys expire in 1–90 days and are stored hashed. The effective role never exceeds the issuer's current membership. A workspace key cannot sign in as an account, create workspaces, accept invites, or issue further workspace keys. An owner-scoped workspace key can issue project service/read credentials through the API or CLI; store their receipts privately.
+
+The separate `agent/workspace_server.py` exposes twenty-five tools: nine management tools for member/invite/history/delivery reads, invite/resend/revoke, and member role/removal operations, plus ten usage/plan/billing tools four product-definition/analysis tools, explicit property meanings and historical audit attestations. It uses only the selected workspace key and has no operator fallback. Inviting sends email; an agent must have the human's specific recipient and role authorization before using it. Role changes and removals likewise require a specific human request. Tool annotations identify these writes; the server enforces the role regardless of agent instructions.
+
+Provisioning is available through the same scoped API and JSON CLI. Secret-producing CLI commands require a mode-600 private receipt file rather than printing keys:
+
+```sh
+# Request an email link. Complete it from a private {"token":"..."} file.
+python cli/native_analytics.py login --email you@example.com
+python cli/native_analytics.py complete-login --file /private/login.json --output /private/session.json
+# Set AFTERSPAN_SESSION_FILE=/private/session.json for account actions.
+python cli/native_analytics.py create-workspace --name 'My studio'
+python cli/native_analytics.py create-project --workspace WORKSPACE_ID --id my-app --name 'My app' --output /private/project.json
+python cli/native_analytics.py create-agent-key --workspace WORKSPACE_ID --label Codex --role editor --days 30 --output /private/agent.json
+# Supply AFTERSPAN_WORKSPACE_KEY from the private receipt through your secret store.
+python cli/native_analytics.py members --workspace WORKSPACE_ID
+python cli/native_analytics.py invite --workspace WORKSPACE_ID --file /private/invite.json
+```
+
+The CLI also supports owner-only `rename-workspace`, `workspaces`, `me`, `invites`, `accept-invite`, `resend-invite`, `revoke-invite`, `change-role`, `remove-member`, `agent-keys`, `revoke-agent-key`, `mail` and `audit`. Read-only project operations accept the aggregate read key. All three bridges use the official MCP Python v1 SDK over local stdio; hosted OAuth/remote MCP remains planned.
+
+Queries accept fixed UTC start/end times and an as_of receipt cutoff. Echo the returned query to repeat the same window, including up to ten typed equality filters. Retention and authorized erasure may remove data; fingerprints identify a query and definition, not an immutable backup.
+
+## Upgrading an existing instance
+
+The additive migration preserves existing event/project IDs, collection keys, charts and data. Existing projects go into the separate `legacy` workspace. The first signup gets no ownership of them. Back up the volume before a hosted upgrade.
+
+Use an email account for ongoing team access. After the real owner verifies an email account, an operator may run `assign-existing --user ACCOUNT_ID --confirm existing-projects` with the operator token. This one-time action assigns that verified account to the existing workspace as owner. Thereafter use team controls.
+
+For password compatibility, the operator must explicitly set `AFTERSPAN_LEGACY_LOGIN=true`. Open `/app` and choose **Sign in to existing projects**. The existing owner password opens the shared dashboard for the `legacy` workspace. It can inspect and create projects there. The screen labels this an **Existing-owner session**. Team, billing, and new customer workspace controls require an email account. The password session cannot access customer workspaces or perform global maintenance.
+
+The CLI uses the same compatibility route. Save a JSON object with a `password` field in a private file with mode `600`. Do not pass the password as an argument. Then run:
+
+```sh
+python cli/native_analytics.py login-existing --file /private/existing-password.json --output /private/existing-session.json
+export AFTERSPAN_SESSION_FILE=/private/existing-session.json
+python cli/native_analytics.py projects --workspace legacy
+python cli/native_analytics.py connect-audit --project PROJECT_ID --days 7 --output /private/audit.json
+```
+
+Both session completion commands write private session receipts. `complete-login` writes `cookie_name: as_session`; `login-existing` writes `cookie_name: na_session`. Older receipts without `cookie_name` keep the account default. The CLI accepts only these two cookie names. An explicit session file takes precedence over inherited read, workspace, or operator credentials. Producer `send` and `identify` commands still use their separate write key, and `assign-existing` still requires the operator token.
+
+Give the downstream agent only the audit receipt and its returned launcher command. It contains a project-scoped audit key, with no owner session or password. Existing-owner audit keys expire or can be revoked with `revoke-read-key`; password logout and disabling legacy login do not revoke them. Revoke those keys separately when retiring compatibility access. `ANALYTICS_ADMIN_TOKEN` remains a broad operator credential. Never give it to a customer or agent.
+
+## Link a task across retries
+
+Open **Journeys** in the workspace. Events may include optional `journey` metadata:
+
+```json
+{"events":[{"id":"save-attempt-1-start","name":"save.started","distinct_id":"opaque-workspace",
+"journey":{"id":"stable-task-id","workflow":"save","environment":"production",
+"subject_kind":"workspace","attempt_id":"unique-attempt-1","attempt_number":1,"state":"started","release":"v1"}}]}
+```
+
+Send a separate stable event ID for each observation. Keep the journey ID across retries; increment attempt_number and change attempt_id for each business attempt. Delivery retries resend the same event ID and do not create a new business attempt. The highest recorded attempt number determines the latest outcome. A failed attempt followed by a higher successful attempt is one recovered journey, already included in succeeded. A higher started attempt remains in progress. Contradictory terminal reports stay unknown. Old unlinked events remain unlinked. These are producer reports, not independent proof of answer quality or business success.
+
+Python: `collector.track_journey(name, journey, distinct_id=None, properties=None, attributes=None)`.
+TypeScript: `client.trackJourney(name, journey, distinctId?, properties?, attributes?)`.
+Use explicit environment and subject_kind. Anonymous journeys have no distinct_id; a workspace ID never becomes a person count. The server rejects reassigned subjects, reused attempt slots and changed releases within an attempt. Erasure also tombstones linked journeys to prevent stale anonymous replay.
+
+`POST /api/journeys?project=...` returns aggregates and a fixed query. `/api/journeys/list` returns the owner's paged attempt timeline; aggregate read keys cannot use it. Results cover observed tasks with activity in the window and retained history through its end. Missing starts and attempt numbers remain visible. No adoption or eligible-population denominator is inferred.
+
+## Verify a connection
+
+Open **Connect & verify**, choose an environment, create a check, and send its exact event through your existing producer. The check lasts 15 minutes and resumes after a page reload. A matching receipt proves collection into that project/environment only. Check events are excluded from default product and journey totals. The next steps show separately whether a complete real journey and retry recovery were recorded in the last seven days.
+
+CLI: `check-setup --project my-app --environment local` creates a check with owner access; `send --file check.json` uses producer access; `setup --project my-app --environment local` reads progress. Wrap the returned event in an events array before sending. No customer action is retried by this flow.
+
+## Current engine
+
+FastAPI, SQLite on one persistent volume, plain HTML/CSS/JS and SVG charts. No hosted chart service. The existing service documentation follows, with deployment still a separate action.
 
 ## What ships
 
-- Each project gets its own write-only ingestion key. Owner-only dashboard authentication is separate.
+- Each project gets its own write-only ingestion key inside a customer workspace. Customer sessions and delegated roles govern reads and configuration.
 - Named events, stable event IDs for deduplication, optional identities, event properties and merged user attributes.
 - Default request traffic, HTTP errors, p95 latency, operation/status/IP breakdowns, tracking health.
 - Searchable request/event logs with cursor pagination; user traits, editable tags, saved charts per project.
@@ -20,7 +230,7 @@ plain HTML/CSS/JS and SVG charts. No PostHog, external analytics SDK, CDN, or ho
    `ANALYTICS_PASSWORD`, `ANALYTICS_SESSION_SECRET`.
 3. Set `ANALYTICS_PUBLIC_URL` to the service HTTPS origin, `ANALYTICS_DB=/data/analytics.db`,
    `COOKIE_SECURE=true`, `RETENTION_DAYS=90`, `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS=0`.
-4. Open `/` and sign in using the dashboard password. Create a project to obtain its write key once.
+4. Configure SMTP as above. Open `/app`, verify the email sign-in link, create a workspace and project, then verify a real collection receipt.
 5. Use the Railway volume backup facility for backups. A persistent volume is not an off-site backup.
 
 For local development use a writable `ANALYTICS_DB` and `COOKIE_SECURE=false` on localhost only.
@@ -87,13 +297,13 @@ HTTP status success is not business success; `action_state` is separate where in
 
 ## Read/manage API
 
-All `/api/*` routes require `Authorization: Bearer <admin token>` or a signed owner session.
+Customer operations use a revocable account session or workspace role key. All project routes check workspace membership and the required role. The project list, overview, query, journey summary, setup and chart-definition reads also accept scoped aggregate read keys. The operator token is separate and broad.
 Cookie-authenticated writes require `X-Native-CSRF: 1` and same origin. Keys are stored hashed.
-Dashboard sessions expire after 12 hours. Login is rate limited in persistent storage.
+Account sessions expire after 12 hours and are hashed in persistent storage. Login-link requests are rate limited in persistent storage.
 
 - `GET/POST /api/projects`: list or create (`id`, `name`); creation returns write key **once**.
 - `GET /api/overview?project=...&days=7`: defaults, pipeline report and event names.
-- `POST /api/query?project=...`: `{days,event,distinct_id,property,value,metric,measure,breakdown,interval}`.
+- `POST /api/query?project=...`: `{days,start,end,as_of,event,distinct_id,property,value,filters,metric,measure,breakdown,interval}`.
   All optional; default metric `count`. `measure` is required for numeric metrics. Fixed columns only,
   top-level property names, bound SQL parameters. Maximum 200,000 matching events/query.
 - `GET /api/events?project=...`: days, event, distinct_id, property/value, status, ip, operation.
@@ -104,16 +314,16 @@ Dashboard sessions expire after 12 hours. Login is rate limited in persistent st
   `DELETE /api/charts/{chart_id}?project=...`.
 - `POST /api/maintenance`: immediate retention cleanup. Hourly cleanup is automatic.
 
-Date windows are relative to now, graph buckets are UTC, UI timestamps use viewer local time.
+Relative day windows are frozen once per query. Explicit start/end must be timezone-aware, span at most 90 days, and use inclusive start/exclusive end. as_of excludes later received events. Graph buckets are UTC; UI timestamps use viewer local time.
 `count` counts events, `users` counts non-null distinct IDs; anonymous requests do not become synthetic people.
 Numeric metrics ignore absent/non-numeric/bool properties. Percentile uses nearest-rank p95.
 
-Default charts exclude collector heartbeats (`analytics.pipeline`) so pipeline health does not inflate product usage. Select that event explicitly to query it.
+Default charts exclude collector heartbeats (`analytics.pipeline`) and setup checks (`afterspan.setup.checked`) so they do not inflate product usage. Select either event explicitly to query it.
 
 ## Limits and operational honesty
 
 This is a small, single-process tool; one volume, one replica. It is not a warehouse, security log
-archive, session replay tool, funnel/experiment engine, or unlimited-scale telemetry service.
+archive, session replay tool, experiment engine, or unlimited-scale telemetry service.
 Events start at integration time; it cannot recover old IPs. Requests blocked at Railway's edge
 never reach ASGI and are not logged. Disconnect/process death before local enqueue can lose a request.
 Delivery retries are idempotent; the local queue defaults to 100,000 events, reports drops at capacity,
@@ -123,14 +333,88 @@ Unauthorized callers are shown as unauthenticated. Forwarded headers and user ag
 metadata; network IPs may belong to NAT/proxies. This service makes no bank/customer/device outcome claim.
 
 Retention limits disk growth over time, but capacity depends on traffic. Railway compute and storage
-still incur normal infrastructure costs. No per-project pricing or billing code exists in this app.
+still incur normal infrastructure costs. Usage metering, bounded draft plans and a hosted Stripe adapter exist locally; real Stripe sandbox receipts exist, while live payments and a production billing rollout are unverified. SSO, MFA, hosted OAuth MCP and multi-replica storage remain absent. Paid plans do not change the single-process storage architecture.
 Volume backups must be configured separately; no backup schedule is claimed by this deployment.
+
+## Optional hosted billing
+
+This section applies only when an operator explicitly sets `AFTERSPAN_EDITION=hosted`. Self-hosted instances show **Usage** with no commercial quotas and cannot create checkout links. Hosted installations can retain the existing optional billing adapter and draft catalog. Switching editions does not cancel any existing Stripe subscription; inspect and manage provider subscriptions separately before changing a billed installation. The default local command uses self-hosted mode; use `scripts/dev.py --billing local` only to exercise the separate hosted simulation.
+
+Open **Usage** in a hosted workspace. Readers and editors see counters and plan limits; only owners see subscription state, checkout and invoices. Workspace owner keys can create review links; payment remains a human action in the hosted provider. There is no endpoint or MCP tool that charges a saved card. The local simulation route is unavailable outside explicit loopback mode.
+
+| Draft plan | USD / month, before tax | Events / UTC month | Validated payload | Projects | Seats |
+|---|---:|---:|---:|---:|---:|
+| Free | $0 | 10,000 | 50 MB | 2 | 3 |
+| Builder | $19 | 100,000 | 1 GB | 10 | 10 |
+| Team | $79 | 500,000 | 5 GB | 50 | 25 |
+
+These are editable draft prices and limits, version `2026-10-17-v1`. No automatic overage charges. Accepted events count once by project/event ID. A new failed business attempt is still an event; a repeated delivery of the same ID is not. UTC receipt time chooses the usage month, independent of subscription renewal. Upgrade does not reset usage. Quota rejection is HTTP 429 with Retry-After; the whole new batch rolls back. The collectors retain the analytics queue and do not retry the business action. At capacity they can drop queued telemetry as documented above.
+
+Payload means compact UTF-8 JSON after schema validation, not wire bytes/storage. Collector heartbeats and setup checks use payload but not the commercial event allowance, with a daily safety cap of 2,000 per existing project. Both collection paths enforce the workspace ledger. HMAC delivery receipts survive raw retention/erasure for 400 days and contain no raw identity or content. Retained events at migration establish deduplication without backdated counters. Monthly/daily numeric usage stays for account history. History is compared to the current plan, not a reconstructed old entitlement. The existing operator workspace keeps its old unbilled 100-project/100-seat allowance until it enters a paid subscription.
+
+Pending active invitations reserve seats. Resend/accept does not count the same seat twice. Expiry/revocation releases it. Downgrade keeps members, projects and data; additions and new collection can stop when above the new limits. This version meters events/payload and bounds project/seats; it does not separately meter identify calls, query compute, replay storage, surveys or AI token costs.
+
+CLI commands all take `--workspace ID`: `usage [--month YYYY-MM]`, `plans`, `billing`, `billing-invoices`, `billing-quote --plan builder`, `billing-checkout --plan builder [--request-id UUID]`, `billing-portal [--request-id UUID]`, `billing-refresh`, `billing-close-checkout`, `billing-downgrade --confirm-plan builder --request-id UUID`. Portal supports `--action manage|cancel|change_plan|payment_method`. The workspace MCP adds `usage`, `plans`, `billing_status`, `billing_invoices`, `billing_quote`, `billing_checkout`, `billing_portal`, `billing_refresh`, `billing_close_checkout`, `billing_downgrade`. Downgrade requires a stable UUID and `confirm_plan=builder`, is owner-only, schedules a cheaper renewal, and never charges or credits now. Checkout/portal tools require a stable UUID request ID; server-side pending checkout recovery also prevents duplicate sessions from routine retries. Private checkout/portal URLs belong only with the owner, never a public report.
+
+### Local test provider
+
+`scripts/dev.py` explicitly selects `AFTERSPAN_BILLING_MODE=local` and generates a private local webhook signing secret. An owner opens a checkout review link and uses the clearly marked local test page to simulate failed/successful payment, renewal failure, scheduled cancellation and term end. It writes no card data, makes no Stripe request, and moves no funds. Simulation uses the signed webhook queue and canonical provider reconciliation path. It is **not Stripe sandbox verification**.
+
+### Repeat the isolated real Stripe test setup
+
+The 17 October sandbox expires **24 October 2026** unless its owner claims it. No key or claim URL is included in public artifacts. Claiming requires the person to complete Stripe account setup; do not accept account terms for them. Anonymous sandbox keys do not grant test-clock permissions. A claimed test account/full test key is required for real time-advanced renewal tests.
+
+From this source checkout, install the official CLI into ignored data, then create an isolated profile. Use a synthetic address for an unclaimed fixture, not a customer's address. Capture CLI output privately, because it contains credentials and an account-claim link:
+
+```sh
+mkdir -p data/stripe-test
+npm install --prefix data/stripe-tools @stripe/cli
+umask 077
+data/stripe-tools/node_modules/.bin/stripe --config data/stripe-test/cli.toml sandbox create --email builder@example.test --non-interactive > data/stripe-test/sandbox-create.log
+.venv/bin/python scripts/stripe_test.py --cli-config data/stripe-test/cli.toml --output data/stripe-test/provider.json
+.venv/bin/python scripts/stripe_listen.py --stripe-cli data/stripe-tools/node_modules/.bin/stripe --cli-config data/stripe-test/cli.toml --provider-config data/stripe-test/provider.json --port 8770
+```
+
+Keep the last command running. It writes the listener's actual signing secret into the private provider config and forwards only billing events. Then start a second terminal:
+
+```sh
+.venv/bin/python scripts/dev.py --billing stripe-test --stripe-config data/stripe-test/provider.json --port 8770
+```
+
+Open `http://127.0.0.1:8770/pricing`. Choose Builder, verify the private local email preview, name a workspace and review checkout. Use only Stripe's documented synthetic test cards. The preview uses a separate database/mail/credential folder from local simulation. Both development ports use the same host cookie name, so signing into one can replace the other's browser cookie; this is a loopback demo detail, not cross-customer access. Real inbox delivery and public hosting are not proved by local mail previews.
+
+The setup script is idempotent and stores product/price/portal IDs privately. It only accepts a test key. The listener never prints its signing secret. Restart the test preview after restarting the listener so the new signing secret is loaded. `dev.py` always sets live billing off. Expired sandbox credentials need a new isolated profile/database or a deliberate migration; do not swap a different account's keys into existing customer mappings.
+
+To retain the sandbox, the human can run `stripe --config data/stripe-test/cli.toml sandbox claim` using the installed CLI and complete the account flow themselves. This opens a private claim link; keep it out of reports, Git and chat.
+
+### Signup and billing returns
+
+Public `/pricing` reads the same versioned `/api/plans` catalog as the workspace. A chosen plan is carried in the one-time email link and through new-workspace creation, then opens a review. Neither signup nor a forged return flag grants paid access. Checkout and portal return to the selected workspace; Afterspan reconciles canonical provider state and clears the return marker. Invoices load separately so provider delays do not hide usage. Currency receipts retain their cents.
+
+Portal actions can open general settings, change-plan selection, payment-method updates or period-end cancellation. Only an upgrade to Team is selectable in the portal. Team → Builder uses an explicit review and a two-phase subscription schedule: keep Team through this paid term, start Builder at the next term, then continue Builder. The server rejects unpaid/inactive, cancelling, discounted, pending-update or unfamiliar scheduled subscriptions rather than overwriting their billing. A provider timeout retains a recoverable operation; retry the same request/plan. This version does not provide an app button to remove an already scheduled downgrade; an operator must inspect the provider schedule before any change.
+
+### Configure an actual Stripe test deployment
+
+The default mode is `disabled`; Free collection still works. An operator must configure a trusted public HTTPS origin and secure cookies before hosted operation. Do not copy local provider/customer rows into another mode; profiles are environment-bound and require an explicit migration.
+
+1. For hosted billing, set `AFTERSPAN_EDITION=hosted` and `AFTERSPAN_BILLING_MODE=stripe_test` and a private `AFTERSPAN_STRIPE_SECRET_KEY` beginning `sk_test_`, `rk_test_` or `rkcs_test_` (temporary sandbox key).
+2. Create one licensed monthly USD Price for Builder ($19) and Team ($79). Set their distinct IDs as `AFTERSPAN_STRIPE_PRICE_BUILDER` / `AFTERSPAN_STRIPE_PRICE_TEAM`. The adapter checks mode, amount, currency and recurrence against the versioned catalog before checkout/portal creation. Do not silently change catalog prices for existing subscriptions.
+3. Set `AFTERSPAN_STRIPE_PORTAL_CONFIGURATION` to a test configuration with only the Team product/price allowed for updates. Builder and Team are separate products, because the portal rejects two monthly prices under one product. Enable price-only updates, always-invoice upgrade proration, `decreasing_item_amount` scheduling, and period-end cancellation. Lower-tier changes happen through the explicit Afterspan downgrade review and a provider subscription schedule, never an immediate portal credit. The adapter rejects a broader policy. Enable only customer/payment/invoice portal features appropriate for the service. Set `AFTERSPAN_STRIPE_AUTOMATIC_TAX=true` only after Stripe Tax is set up; checkout collects billing address and shows the final amount before human confirmation.
+4. Register `POST /api/billing/webhook` with Stripe for checkout completion/async payment results, subscription created/updated/deleted, invoice paid/payment_failed/voided/marked_uncollectible. Configure its private `AFTERSPAN_STRIPE_WEBHOOK_SECRET` (`whsec_`). The official SDK verifies the unchanged request body and timestamp. Event IDs are durably deduplicated and queued; the background worker retrieves current canonical subscription/invoice state, so stale/duplicate notifications cannot directly write a paid entitlement.
+5. Exercise actual test checkout (including provider-required authentication), invoice receipt, upgrades, scheduled downgrade, failed renewal and cancellation in the intended hosted deployment. Real sandbox checkout, card decline, paid invoice, Team upgrade, period-end cancellation, signed delivery, and actual terminal cancellation were exercised on 17 October. Unclaimed sandbox keys block Stripe test clocks; time-advanced renewal/expiry is still unverified.
+
+Paid access requires a matching paid invoice covering the recognized subscription period. A checkout return URL or subscription label alone is insufficient. A failed refresh preserves the last confirmed paid term; a failed renewal does not extend it. At confirmed cancellation or paid-term expiry the workspace falls back to Free. Owner Refresh reconciles missed receipts; failed queue jobs retry with bounded backoff and surface pending status. Keep monitoring these failures; no external alert integration exists yet.
+
+Live mode additionally requires a matching `sk_live_` key and `AFTERSPAN_ENABLE_LIVE_BILLING=true`, with live prices/webhook/portal in an explicitly authorized production release. Merely changing the environment is not a tested release. Backups/restore, verified email delivery, real provider checks, commercial policy/tax review and hosted signup tests remain launch work.
 
 ## Tests
 
 ```sh
 python -m unittest discover -s tests -v
 node --check static/app.js
+node --check static/accounts.js
+node --check static/journeys.js
+node --experimental-strip-types --test sdk/typescript/native-analytics.test.ts
 ```
 
 Tests cover project isolation, key/read separation, cookie/CSRF/login limits, redaction, input bounds,
@@ -153,7 +437,7 @@ python cli/native_analytics.py create-project --id my-app --name 'My app' --outp
 
 The setup helper creates independent secrets in a mode-600 file and refuses to overwrite them.
 The key receipt is also mode-600 and is never printed. Set `NATIVE_ANALYTICS_WRITE_KEY` from
-that private receipt, send an event, then query it using the owner token:
+that private receipt, send an event, then query it using a workspace or project read key:
 
 ```sh
 python cli/native_analytics.py send --file examples/events.json
@@ -208,3 +492,5 @@ activity. The SDK erase operation resolves only after a confirming receipt; fail
 as unconfirmed, not silently represented as successful deletion. This service cannot delete data it
 never received an authorized erase request for. Project-key rotation also changes key-derived HMAC
 identities; retain the old derivation secret if old users must be erased after rotation.
+
+Authentication design references: [OWASP one-use token guidance](https://cheatsheetseries.owasp.org/cheatsheets/Forgot_Password_Cheat_Sheet.html) and [Python SMTP TLS transport](https://docs.python.org/3/library/smtplib.html).

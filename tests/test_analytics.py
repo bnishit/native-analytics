@@ -20,7 +20,7 @@ PASSWORD='p'+('b'*40)
 class AnalyticsTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory()
-        self.env=patch.dict(os.environ,{'ANALYTICS_ADMIN_TOKEN':ADMIN,'ANALYTICS_PASSWORD':PASSWORD,'ANALYTICS_SESSION_SECRET':'s'*40,'COOKIE_SECURE':'false'})
+        self.env=patch.dict(os.environ,{'ANALYTICS_ADMIN_TOKEN':ADMIN,'ANALYTICS_PASSWORD':PASSWORD,'ANALYTICS_SESSION_SECRET':'s'*40,'COOKIE_SECURE':'false','AFTERSPAN_LEGACY_LOGIN':'true'})
         self.env.start();self.path=patch.object(analytics,'DB_PATH',Path(self.temp.name)/'a.db');self.path.start()
         analytics._limits.clear();analytics.init_db()
         self.client=TestClient(analytics.app)

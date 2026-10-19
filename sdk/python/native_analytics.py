@@ -24,13 +24,30 @@ def safe_properties(value,depth=0):
     if depth>5:raise ValueError('properties nested too deeply')
     if isinstance(value,dict):
         if len(value)>64:raise ValueError('too many properties')
-        return {k:'[redacted]' if re.search(r'password|secret|token|authorization|cookie|otp|api.?key|request.?body|response.?body',k,re.I)
+        return {k:'[redacted]' if re.search(r'password|secret|token|authorization|cookie|otp|api.?key|request.?body|response.?body',k,re.I) and not (
+                    re.fullmatch(r'(?:ai_)?(?:input|output|total|cached|reasoning|prompt|completion)_tokens',k)
+                    and isinstance(v,(int,float)) and not isinstance(v,bool))
                 else safe_properties(v,depth+1) for k,v in value.items() if isinstance(k,str) and len(k)<=100}
     if isinstance(value,list):
         if len(value)>100:raise ValueError('too many list items')
         return [safe_properties(v,depth+1) for v in value]
-    if isinstance(value,str):return re.sub(r'(?i)\bBearer\s+[^\s]+|\b(?:mbb_inv_|na_write_|na_admin_|sk-)[A-Za-z0-9_-]+','[redacted]',value[:2000])
+    if isinstance(value,str):return re.sub(r'(?i)\bBearer\s+[^\s]+|\b(?:mbb_inv_|na_write_|na_admin_|as_read_|as_workspace_|as_session_|as_login_|as_invite_|sk-)[A-Za-z0-9_-]+','[redacted]',value[:2000])
     return value
+
+
+def safe_journey(value):
+    required={'id','workflow','environment','attempt_id','attempt_number','state'}
+    if not isinstance(value,dict) or not required.issubset(value) or set(value)-required-{'subject_kind','release'}:
+        raise ValueError('invalid journey fields')
+    for key in ['id','attempt_id']:
+        if not isinstance(value[key],str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,159}',value[key]):raise ValueError('invalid journey reference')
+    if not isinstance(value['workflow'],str) or not re.fullmatch(r'[a-z][a-z0-9_.-]{0,79}',value['workflow']):raise ValueError('invalid workflow')
+    if value['environment'] not in {'production','staging','development','test','local'}:raise ValueError('invalid environment')
+    if type(value['attempt_number']) is not int or not 1<=value['attempt_number']<=10000:raise ValueError('invalid attempt number')
+    if value['state'] not in {'started','succeeded','failed','cancelled'}:raise ValueError('invalid attempt state')
+    if value.get('subject_kind','unknown') not in {'person','account','workspace','installation','service','anonymous','unknown'}:raise ValueError('invalid subject kind')
+    if value.get('release') is not None and (not isinstance(value['release'],str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,159}',value['release'])):raise ValueError('invalid release')
+    return dict(value)
 
 
 class Collector:
@@ -49,7 +66,7 @@ class Collector:
     def db(self):
         return sqlite3.connect(self.path,timeout=1)
 
-    def track(self,name,distinct_id=None,properties=None,attributes=None):
+    def track(self,name,distinct_id=None,properties=None,attributes=None,journey=None):
         eid=str(uuid.uuid4())
         try:
             for value in [name]+([distinct_id] if distinct_id is not None else []):
@@ -60,6 +77,9 @@ class Collector:
             if max(len(json.dumps(properties)),len(json.dumps(attributes)))>16000:raise ValueError('properties exceed 16 KB')
             event={'id':eid,'name':name,'distinct_id':distinct_id,'timestamp':datetime.now(timezone.utc).isoformat(),
                    'properties':properties,'attributes':attributes}
+            if journey is not None:
+                event['journey']=safe_journey(journey)
+                if event['journey'].get('subject_kind')=='anonymous' and distinct_id is not None:raise ValueError('anonymous journey has an identity')
             with closing(self.db()) as c,c:
                 if c.execute('SELECT count(*) FROM outbox').fetchone()[0]>=self.max_queue:
                     c.execute('UPDATE delivery SET dropped=dropped+1,last_error=? WHERE id=1',('queue capacity reached',))
@@ -70,6 +90,9 @@ class Collector:
         except Exception:
             log.exception('analytics local enqueue failed; application request continues')
             return None
+
+    def track_journey(self,name,journey,distinct_id=None,properties=None,attributes=None):
+        return self.track(name,distinct_id,properties,attributes,journey=journey)
 
     def identify(self,distinct_id,attributes):
         return self.track('user.identified',distinct_id,attributes=attributes)

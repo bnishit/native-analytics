@@ -14,7 +14,7 @@ python -m venv .venv
 .venv/bin/python scripts/dev.py
 ```
 
-Open http://127.0.0.1:8769/app. This loopback preview creates private local email files instead of sending mail. Open your sign-in email from `data/mail` and consume its link. Create a workspace/project, store its producer key privately, and connect your app. Never publish that local mail folder or use local-mail mode on a public service. For a public instance configure HTTPS, secure cookies, SMTP and a persistent volume as described below.
+Open http://127.0.0.1:8769/app. This loopback preview creates private local email files instead of sending mail. Open your sign-in email from `data/mail` and consume its link. Create a workspace/project, store its producer key privately, and connect your app. Never publish that local mail folder or use local-mail mode on a public service. For a public instance configure HTTPS, secure cookies, email delivery and a persistent volume as described below.
 
 `AFTERSPAN_EDITION=self_hosted` is the default. Usage counts remain useful for server capacity; there are no commercial event, payload, project or seat limits. Request rate, query-size, definition-count and retention bounds still protect the service. This is one process on one SQLite volume, not unlimited infrastructure.
 
@@ -155,7 +155,7 @@ Each workspace contains projects and memberships. One account can belong to seve
 
 Readers are workspace members with access to retained raw records. **Aggregate project read keys are narrower** and cannot read raw events, people or journey timelines.
 
-An owner opens **Workspace & team**, enters an email and role, and queues an invite. The invitee must sign in with that exact address and explicitly accept. Invites last seven days and are single use. Resending rotates the link; revocation prevents acceptance. The UI distinguishes a queued message, local preview, and mail-server receipt. SMTP acceptance does not prove inbox delivery. At least one owner must remain; concurrent role changes cannot remove every owner.
+An owner opens **Workspace & team**, enters an email and role, and queues an invite. The invitee must sign in with that exact address and explicitly accept. Invites last seven days and are single use. Resending rotates the link; revocation prevents acceptance. The UI distinguishes a queued message, local preview, and mail-server receipt. Provider acceptance does not prove inbox delivery. At least one owner must remain; concurrent role changes cannot remove every owner.
 
 Removing a member removes their workspace agent keys and project read keys issued in that workspace. Demotion caps their workspace agent keys at the lower current member role. Pending invitations issued by an owner are revoked when that owner is removed or demoted. Normal logout revokes the current browser session; **Sign out everywhere** revokes all that account's browser sessions, workspace keys and project read keys. Account recovery is another verified email sign-in. No password reset or impersonation endpoint exists.
 
@@ -163,11 +163,13 @@ Producer keys are project service credentials. They keep running apps working af
 
 ## Email delivery for a hosted installation
 
-Set `ANALYTICS_PUBLIC_URL` to the exact trusted HTTPS origin and `COOKIE_SECURE=true`. Configure `AFTERSPAN_MAIL_MODE=smtp`, `AFTERSPAN_SMTP_HOST`, `AFTERSPAN_SMTP_PORT` (587 with STARTTLS or 465 with TLS), `AFTERSPAN_MAIL_FROM` (a plain email address), and, if required, `AFTERSPAN_SMTP_USER` / `AFTERSPAN_SMTP_PASSWORD`. No plaintext SMTP option is provided. Verify your sender/domain with your mail provider before inviting real customers. Do not use local mail mode on a public service.
+Set `ANALYTICS_PUBLIC_URL` to the exact trusted HTTPS origin and `COOKIE_SECURE=true`. For AgentMail HTTPS delivery, set `AFTERSPAN_MAIL_MODE=agentmail`, `AFTERSPAN_MAIL_FROM` to your AgentMail inbox address, and `AFTERSPAN_AGENTMAIL_API_KEY` in the server secret store. Limit the key to that inbox with Inbox Read (identity verification) and Message Send; message reading and administrative access are unnecessary. Requests use the fixed AgentMail HTTPS endpoint and the queued mail ID as their idempotency key. A valid provider message receipt is required before the queued link body is discarded. Provider deduplication has its own retention window; this is not an indefinite exactly-once guarantee. See [AgentMail sending](https://docs.agentmail.to/api-reference/inboxes/messages/send) and [idempotency](https://docs.agentmail.to/idempotency).
+
+SMTP remains available with `AFTERSPAN_MAIL_MODE=smtp`, `AFTERSPAN_SMTP_HOST`, `AFTERSPAN_SMTP_PORT` (587 with STARTTLS or 465 with TLS), `AFTERSPAN_MAIL_FROM`, and, if required, `AFTERSPAN_SMTP_USER` / `AFTERSPAN_SMTP_PASSWORD`. No plaintext SMTP option is provided. Railway Free/Trial/Hobby blocks SMTP; use HTTPS delivery on those plans. Verify your sender and actual inbox delivery before inviting real customers. Do not use local mail mode on a public service.
 
 Email jobs are committed with their associated token/invite, survive a process restart, and retry up to five times with bounded backoff. Delivered or expired jobs discard their link body. Failed invite delivery can be retried with **Resend invite**, which creates a fresh link. Login links expire in 15 minutes; a fresh sign-in request is the recovery path. Mail transport failures do not log message bodies, addresses or credentials. The queue is bounded at 200 jobs. Sign-in requests are bounded per email, peer IP and service in a 15-minute window. Deploy behind correctly configured trusted proxy handling; do not trust arbitrary forwarded headers.
 
-The development script sets `AFTERSPAN_MAIL_MODE=local` only with a loopback origin and insecure development cookie override. It saves private `.eml` previews rather than sending mail. Production SMTP is covered with mocked TLS/failure tests; actual provider delivery must be verified after configuration.
+The development script sets `AFTERSPAN_MAIL_MODE=local` only with a loopback origin and insecure development cookie override. It saves private `.eml` previews rather than sending mail. SMTP and AgentMail are covered with transport/failure tests; actual provider delivery must be verified after configuration.
 
 ## Connect a coding agent
 
@@ -264,7 +266,7 @@ FastAPI, SQLite on one persistent volume, plain HTML/CSS/JS and SVG charts. No h
    `ANALYTICS_PASSWORD`, `ANALYTICS_SESSION_SECRET`.
 3. Set `ANALYTICS_PUBLIC_URL` to the service HTTPS origin, `ANALYTICS_DB=/data/analytics.db`,
    `COOKIE_SECURE=true`, `RETENTION_DAYS=90`, `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS=0`.
-4. Configure SMTP as above. Open `/app`, verify the email sign-in link, create a workspace and project, then verify a real collection receipt.
+4. Configure email delivery as above. Open `/app`, verify the email sign-in link, create a workspace and project, then verify a real collection receipt.
 5. Use the Railway volume backup facility for backups. A persistent volume is not an off-site backup.
 
 For local development use a writable `ANALYTICS_DB` and `COOKIE_SECURE=false` on localhost only.

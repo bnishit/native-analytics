@@ -1,5 +1,7 @@
 """Email accounts, workspace boundaries, delegated keys and transactional membership rules."""
 import hashlib
+import http.client
+import json
 import os
 import re
 import secrets
@@ -13,7 +15,7 @@ from contextlib import closing
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlencode,urlsplit
+from urllib.parse import quote,urlencode,urlsplit
 
 from fastapi import Depends,HTTPException,Request,Response
 from pydantic import BaseModel,ConfigDict,Field,field_validator
@@ -165,6 +167,10 @@ class Accounts:
     def mail_ready(self):
         _,local=self.origin();mode=os.environ.get('AFTERSPAN_MAIL_MODE','disabled')
         if mode=='local' and local and os.environ.get('AFTERSPAN_MAIL_DIR'):return
+        if mode=='agentmail' and os.environ.get('AFTERSPAN_AGENTMAIL_API_KEY') and os.environ.get('AFTERSPAN_MAIL_FROM'):
+            try:EmailInput(email=os.environ['AFTERSPAN_MAIL_FROM'])
+            except ValueError:raise HTTPException(503,'configure a valid AgentMail inbox sender') from None
+            return
         if mode=='smtp' and os.environ.get('AFTERSPAN_SMTP_HOST') and os.environ.get('AFTERSPAN_MAIL_FROM'):
             try:
                 EmailInput(email=os.environ['AFTERSPAN_MAIL_FROM']);port=int(os.environ.get('AFTERSPAN_SMTP_PORT','587'))
@@ -194,6 +200,20 @@ class Accounts:
                         directory=Path(os.environ['AFTERSPAN_MAIL_DIR']);directory.mkdir(mode=0o700,parents=True,exist_ok=True)
                         path=directory/(row['id']+'.eml')
                         with os.fdopen(os.open(path,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600),'w') as handle:handle.write(message.as_string())
+                    elif os.environ.get('AFTERSPAN_MAIL_MODE')=='agentmail':
+                        client=http.client.HTTPSConnection('api.agentmail.to',timeout=10)
+                        try:
+                            payload=json.dumps({'to':[row['recipient']],'subject':row['subject'],'text':row['body']}).encode()
+                            client.request('POST','/v0/inboxes/'+quote(message['From'],safe='')+'/messages/send',body=payload,
+                                           headers={'Authorization':'Bearer '+os.environ['AFTERSPAN_AGENTMAIL_API_KEY'],
+                                                    'Content-Type':'application/json','Idempotency-Key':'afterspan-mail-'+row['id']})
+                            response=client.getresponse();raw=response.read(8193)
+                            if not 200<=response.status<300 or len(raw)>8192:
+                                raise RuntimeError('AgentMail did not accept the message')
+                            receipt=json.loads(raw)
+                            if not isinstance(receipt,dict) or not isinstance(receipt.get('message_id'),str) or not receipt['message_id']:
+                                raise RuntimeError('AgentMail returned no message receipt')
+                        finally:client.close()
                     else:
                         context=ssl.create_default_context();port=int(os.environ.get('AFTERSPAN_SMTP_PORT','587'));host=os.environ['AFTERSPAN_SMTP_HOST']
                         client=smtplib.SMTP_SSL(host,port,timeout=10,context=context) if port==465 else smtplib.SMTP(host,port,timeout=10)

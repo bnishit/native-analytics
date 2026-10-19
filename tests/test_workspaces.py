@@ -217,6 +217,59 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(sorted(results),[200,409])
         self.assertEqual(sum(m['role']=='owner' for m in owner.get('/api/workspaces/'+w+'/members').json()['members']),1)
 
+    def test_agentmail_scrubs_only_after_a_provider_receipt(self):
+        self.client.post('/auth/request-link',headers=CSRF,json={'email':'api@example.test'})
+        settings={'AFTERSPAN_MAIL_MODE':'agentmail','AFTERSPAN_AGENTMAIL_API_KEY':'private-test-key','AFTERSPAN_MAIL_FROM':'afterspan@agentmail.to'}
+        with patch.dict(os.environ,settings),patch('accounts.http.client.HTTPSConnection') as https:
+            response=https.return_value.getresponse.return_value;response.status=200;response.read.return_value=b'{"message_id":"accepted"}'
+            app.accounts.deliver_pending()
+            https.assert_called_once_with('api.agentmail.to',timeout=10)
+            call=https.return_value.request.call_args
+            self.assertEqual(call.args,('POST','/v0/inboxes/afterspan%40agentmail.to/messages/send'))
+            payload=json.loads(call.kwargs['body']);self.assertEqual(payload['to'],['api@example.test'])
+            self.assertIn('#sign-in=',payload['text'])
+            self.assertEqual(call.kwargs['headers']['Authorization'],'Bearer private-test-key')
+            self.assertNotIn('api_key',payload)
+            https.return_value.close.assert_called_once()
+        with closing(app.connect()) as c:row=c.execute("SELECT state,body FROM account_mail WHERE recipient='api@example.test'").fetchone()
+        self.assertEqual(row['state'],'sent');self.assertIsNone(row['body'])
+
+    def test_agentmail_uncertain_send_retries_the_same_provider_operation(self):
+        self.client.post('/auth/request-link',headers=CSRF,json={'email':'retry-api@example.test'})
+        settings={'AFTERSPAN_MAIL_MODE':'agentmail','AFTERSPAN_AGENTMAIL_API_KEY':'private-test-key','AFTERSPAN_MAIL_FROM':'afterspan@agentmail.to'}
+        with patch.dict(os.environ,settings),patch('accounts.http.client.HTTPSConnection') as https:
+            response=https.return_value.getresponse.return_value;response.status=200
+            response.read.side_effect=[TimeoutError(),b'{"message_id":"accepted"}']
+            app.accounts.deliver_pending()
+            with closing(app.connect()) as c,c:
+                row=c.execute("SELECT * FROM account_mail WHERE recipient='retry-api@example.test'").fetchone()
+                self.assertEqual(row['attempts'],1);self.assertEqual(row['state'],'queued');self.assertIsNotNone(row['body'])
+                c.execute('UPDATE account_mail SET next_attempt=0 WHERE id=?',(row['id'],))
+            app.accounts.deliver_pending()
+            first,second=https.return_value.request.call_args_list
+            self.assertEqual(first,second)
+            self.assertEqual(first.kwargs['headers']['Idempotency-Key'],'afterspan-mail-'+row['id'])
+        with closing(app.connect()) as c:row=c.execute('SELECT state,body FROM account_mail WHERE id=?',(row['id'],)).fetchone()
+        self.assertEqual(row['state'],'sent');self.assertIsNone(row['body'])
+
+    def test_agentmail_rejection_and_invalid_receipts_keep_recoverable_mail(self):
+        cases=[(302,b'{}'),(401,b'{}'),(429,b'{}'),(500,b'{}'),(200,b'not json'),(200,b'{}'),(200,b'{"message_id":false}'),(200,b'x'*8193)]
+        for index,(status,raw) in enumerate(cases):
+            with self.subTest(status=status,case=index):
+                email=f'rejected-{index}@example.test'
+                self.client.post('/auth/request-link',headers=CSRF,json={'email':email})
+                with patch.dict(os.environ,{'AFTERSPAN_MAIL_MODE':'agentmail','AFTERSPAN_AGENTMAIL_API_KEY':'private-test-key','AFTERSPAN_MAIL_FROM':'afterspan@agentmail.to'}),patch('accounts.http.client.HTTPSConnection') as https:
+                    response=https.return_value.getresponse.return_value;response.status=status;response.read.return_value=raw
+                    app.accounts.deliver_pending();https.return_value.close.assert_called_once()
+                with closing(app.connect()) as c:row=c.execute('SELECT state,body,attempts FROM account_mail WHERE recipient=?',(email,)).fetchone()
+                self.assertEqual(row['state'],'queued');self.assertEqual(row['attempts'],1);self.assertIsNotNone(row['body'])
+
+    def test_agentmail_signup_requires_sender_and_private_credential(self):
+        for sender,key in [('afterspan@agentmail.to',''),('invalid','private-test-key')]:
+            with self.subTest(sender=sender),patch.dict(os.environ,{'AFTERSPAN_MAIL_MODE':'agentmail','AFTERSPAN_AGENTMAIL_API_KEY':key,'AFTERSPAN_MAIL_FROM':sender}):
+                self.assertFalse(self.client.get('/auth/config').json()['email_sign_in'])
+                self.assertEqual(self.client.post('/auth/request-link',headers=CSRF,json={'email':'blocked@example.test'}).status_code,503)
+
     def test_smtp_uses_tls_and_scrubs_sent_mail_body(self):
         self.client.post('/auth/request-link',headers=CSRF,json={'email':'smtp@example.test'})
         with patch.dict(os.environ,{'AFTERSPAN_MAIL_MODE':'smtp','AFTERSPAN_SMTP_HOST':'smtp.example.test','AFTERSPAN_MAIL_FROM':'hello@example.test'}),patch('accounts.smtplib.SMTP') as smtp:

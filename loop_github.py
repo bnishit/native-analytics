@@ -319,7 +319,15 @@ class GitHub:
             if pr.get("merged") is True:
                 if not _SHA.fullmatch(str(result["merge_sha"])):
                     _fail("The merge commit could not be verified")
-                self._verify_head(plan, result["merge_sha"])
+                merged = self._commit(result["merge_sha"])
+                if [parent.get("sha") for parent in merged.get("parents", [])] == [plan["base_sha"], head]:
+                    tree, expected = merged.get("tree"), self._commit(head).get("tree")
+                    if (not isinstance(tree, dict) or not isinstance(expected, dict)
+                            or not isinstance(tree.get("sha"), str) or not _SHA.fullmatch(tree["sha"])
+                            or tree["sha"] != expected.get("sha")):
+                        _fail("The merge commit changed the verified tracking tree")
+                else:
+                    self._verify_head(plan, result["merge_sha"])
                 return result, pr
             if pr.get("state") != "open":
                 _fail("The tracking PR was closed without merging")

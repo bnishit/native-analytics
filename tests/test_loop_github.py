@@ -499,6 +499,37 @@ class GitHubTests(unittest.TestCase):
         self.assertEqual(self.github.prepare(self.github.load_goal(self.source)),
                          {"status": "healthy", "reason": "The supported completion event is already tracked"})
 
+    def test_manual_merge_commit_reconciles_without_claiming_release(self):
+        plan, receipt = self.drafted()
+        self.http.files[MERGE] = copy.deepcopy(self.http.files[HEAD])
+        self.http.parents[MERGE] = [BASE, HEAD]
+        self.http.pr.update(merged=True, state="closed", merge_commit_sha=MERGE)
+        writes = len(self.http.writes)
+        merged = self.github.reconcile(plan, receipt)
+        self.assertEqual((merged["merged"], merged["merge_sha"], merged["release_status"]), (True, MERGE, "release_pending"))
+        self.assertEqual(len(self.http.writes), writes)
+
+    def test_manual_merge_rejects_changed_tree_or_unapproved_parents(self):
+        plan, receipt = self.drafted()
+        for mutation in ["tree", "parents", "missing_tree", "invalid_tree"]:
+            with self.subTest(mutation=mutation):
+                self.http.read_overrides.pop("/git/commits/" + MERGE, None)
+                self.http.files[MERGE] = copy.deepcopy(self.http.files[HEAD])
+                self.http.parents[MERGE] = [BASE, HEAD]
+                self.http.pr.update(merged=True, state="closed", merge_commit_sha=MERGE)
+                if mutation == "tree":
+                    self.http.files[MERGE]["unrelated.py"] = "unapproved edit"
+                elif mutation == "parents":
+                    self.http.parents[MERGE] = ["f" * 40, HEAD]
+                else:
+                    commit = {"sha": MERGE, "parents": [{"sha": BASE}, {"sha": HEAD}]}
+                    if mutation == "invalid_tree":
+                        commit["tree"] = None
+                    self.http.read_overrides["/git/commits/" + MERGE] = (200, commit)
+                writes = len(self.http.writes)
+                self.assertBlocked(lambda: self.github.reconcile(plan, receipt))
+                self.assertEqual(len(self.http.writes), writes)
+
     def test_unrelated_goal_mapping_events_or_filters_do_not_offer_repairs(self):
         mutations = [lambda goal: goal["mapping"].update({"environment": "production"}),
                      lambda goal: goal["mapping"].update({"source": "external"}),

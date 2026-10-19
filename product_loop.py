@@ -1,4 +1,3 @@
-"""Immutable product goals, owner authority and evidence-bound answer outcomes."""
 import hashlib
 import json
 import threading
@@ -14,7 +13,7 @@ from fastapi import Depends, HTTPException, Request
 from pydantic import Field, ValidationError, field_validator, model_validator
 
 from product_analytics import EventMatch, Model
-from loop_measurement import LIMITATIONS, check_answer, compare, eligible, evaluate, event_matches, next_action
+from loop_measurement import LIMITATIONS, check_answer, compare, eligible, count_first_entry_outcomes, event_matches, next_action
 
 
 Digest = Annotated[str, Field(pattern=r'^[0-9a-f]{64}$')]
@@ -413,34 +412,39 @@ class ProductLoop:
         return result
 
     def prepare(self, project, goal, request_id):
-        with closing(self.connect()) as c, c:
-            c.execute('BEGIN IMMEDIATE')
-            current = self.goal(c, project, goal)
-            definition = current['bundle']['definition']
-            completion = definition['measurement']['completion']
-            if (definition['mapping']['environment'] != 'local' or completion['event'] != 'codex.answer.ready'
-                    or any(item['property'] != 'environment' for item in completion.get('filters', []))
-                    or not event_matches({'name': 'codex.answer.ready', 'properties': {'environment': 'local'}}, completion)):
-                raise HTTPException(422, 'the supported repair tracks codex.answer.ready in local only')
-            old = c.execute('SELECT id,goal_revision FROM loop_actions WHERE project=? AND goal=? AND request_id=?', (project, goal, request_id)).fetchone()
-            if old:
-                if old['goal_revision'] != current['revision']:
-                    raise HTTPException(409, 'request ID belongs to an older goal revision')
-                return self.action(c, project, old['id'])
-            id = str(uuid.uuid4())
-            c.execute('INSERT INTO loop_actions VALUES(?,?,?,?,?,?,?,?,?)',
-                      (project, goal, id, request_id, current['revision'], None, None, 'preparing', time.time()))
-        try:
-            plan = self.provider().prepare(current['bundle'])
-        except HTTPException:
+        with self.action_locks[(project, 'prepare', goal, request_id)]:
             with closing(self.connect()) as c, c:
-                c.execute("UPDATE loop_actions SET status='prepare_failed' WHERE project=? AND id=?", (project, id))
-            raise
-        plan = {**plan, 'id': id, 'action_id': id, **self.refs(current)}
-        with closing(self.connect()) as c, c:
-            c.execute('UPDATE loop_actions SET plan=?,status=? WHERE project=? AND id=?',
-                      (canonical(plan), plan['status'], project, id))
-            return self.action(c, project, id)
+                c.execute('BEGIN IMMEDIATE')
+                current = self.goal(c, project, goal)
+                definition = current['bundle']['definition']
+                completion = definition['measurement']['completion']
+                if (definition['mapping']['environment'] != 'local' or completion['event'] != 'codex.answer.ready'
+                        or any(item['property'] != 'environment' for item in completion.get('filters', []))
+                        or not event_matches({'name': 'codex.answer.ready', 'properties': {'environment': 'local'}}, completion)):
+                    raise HTTPException(422, 'the supported repair tracks codex.answer.ready in local only')
+                old = c.execute('SELECT id,goal_revision FROM loop_actions WHERE project=? AND goal=? AND request_id=?', (project, goal, request_id)).fetchone()
+                if old:
+                    if old['goal_revision'] != current['revision']:
+                        raise HTTPException(409, 'request ID belongs to an older goal revision')
+                    action = self.action(c, project, old['id'])
+                    if action['plan'] is not None:
+                        return action
+                    id = old['id']
+                else:
+                    id = str(uuid.uuid4())
+                    c.execute('INSERT INTO loop_actions VALUES(?,?,?,?,?,?,?,?,?)',
+                              (project, goal, id, request_id, current['revision'], None, None, 'preparing', time.time()))
+            try:
+                plan = self.provider().prepare(current['bundle'])
+            except HTTPException:
+                with closing(self.connect()) as c, c:
+                    c.execute("UPDATE loop_actions SET status='prepare_failed' WHERE project=? AND id=?", (project, id))
+                raise
+            plan = {**plan, 'id': id, 'action_id': id, **self.refs(current)}
+            with closing(self.connect()) as c, c:
+                c.execute('UPDATE loop_actions SET plan=?,status=? WHERE project=? AND id=?',
+                          (canonical(plan), plan['status'], project, id))
+                return self.action(c, project, id)
 
     def guard(self, project, action, operation, request):
         self.editor(request, project)
@@ -570,15 +574,15 @@ class ProductLoop:
                     AND measurement_revision=? AND mapping_revision=? AND created<=?''',
                     (project, goal, current['measurement_revision'], current['mapping_revision'], stamps['as_of'])):
                 assessments[row['completion_event_id']].append(row['verdict'])
-            result = evaluate(events, definition['measurement'], stamps, assessments, definition['mapping']['environment'])
+            result = count_first_entry_outcomes(events, definition['measurement'], stamps, assessments, definition['mapping']['environment'])
             retention_gap = stamps['entry_start'] < time.time() - self.retention_days * 86400
-            erasure = bool(c.execute('SELECT 1 FROM erased_identities WHERE project=? AND erased<=? AND erased>=? LIMIT 1',
-                                    (project, stamps['as_of'], stamps['entry_start'])).fetchone())
+            erasure = bool(c.execute('SELECT 1 FROM erased_identities WHERE project=? AND erased>=? LIMIT 1',
+                                    (project, stamps['entry_start'])).fetchone())
             limitations = list(LIMITATIONS)
             if retention_gap:
                 limitations.append('The entry window extends beyond current event retention; historical coverage is incomplete.')
             if erasure:
-                limitations.append('Authorized erasure occurred during this evidence window; coverage is incomplete.')
+                limitations.append('Authorized erasure since this entry window removed retained evidence; historical coverage is incomplete.')
             release_gap = any(result[key] for key in ['release_excluded_starters', 'release_missing_starters',
                                                       'release_mismatched_completions', 'release_missing_completions'])
             if result['release_excluded_starters'] or result['release_missing_starters']:

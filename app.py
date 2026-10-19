@@ -22,6 +22,7 @@ from accounts import Accounts
 from billing import Billing
 from audit import Audit,Observation
 from retention import Retention
+from product_loop import ProductLoop
 from catalog import Catalog
 from product_analytics import Window,PropertyFilter,ProductAnalytics
 
@@ -102,6 +103,7 @@ def init_db():
         ProductAnalytics.init_db(c)
         Catalog.init_db(c)
         Audit.init_db(c)
+        ProductLoop.init_db(c)
         if 'origins' not in {r['name'] for r in c.execute('PRAGMA table_info(relay_projects)')}:
             c.execute("ALTER TABLE relay_projects ADD COLUMN origins TEXT NOT NULL DEFAULT '[]'")
     prune()
@@ -983,11 +985,13 @@ Retention(app,products,reader,editor)
 Catalog(app,products,reader,editor)
 
 Audit(app,connect,audit_reader,freeze,evidence_metadata,editor)
+product_loop=ProductLoop(app,connect,reader,editor,owner,RETENTION_DAYS)
 
 
 @app.get('/.well-known/afterspan')
 def capabilities():
     return {'product':'Afterspan','license':'MIT','schema':'/openapi.json','agent_guide':'/llms.txt',
       'analytics':{'catalog':'/api/catalog','funnels':'/api/funnels/analyze','retention':'/api/retention/analyze','unit':'explicit opaque identity; not automatically a person'},
+      'product_loop':{'goals':'/api/loop/goals','contract':'committed goals, scoped tracking PRs, independent answer checks and mature observational outcomes','local_mcp':'agent/loop_server.py','production_release_proof':'separate from PR and merge'},
       'audit':{'catalog':'/api/audit/catalog','review':'/api/audit/review','trace':'/api/audit/trace','contract':'properties.afterspan_audit / slack-request-v1','scope':'project audit-purpose read key','historical_evidence':'/api/audit/evidence/{UUIDv4}','max_requests':60,'raw_data':False,'overall_readiness_claim':False},
       'connection':{'transport':'local stdio MCP','bootstrap':'An owner uses connect-audit to issue a private, expiring audit-only connection receipt. No operator token fallback.','launcher':'agent/run_audit.py PRIVATE_RECEIPT','remote_oauth':False}}

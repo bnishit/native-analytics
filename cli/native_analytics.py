@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+import uuid
 from typing import Literal
 import urllib.error
 import urllib.parse
@@ -88,11 +89,28 @@ def parser():
     key=sub.add_parser('create-read-key');key.add_argument('--purpose',choices=['analytics','audit'],default='analytics');key.add_argument('--project',required=True);key.add_argument('--label',required=True);key.add_argument('--days',type=int,default=30);key.add_argument('--output',required=True)
     key=sub.add_parser('read-keys');key.add_argument('--project',required=True)
     key=sub.add_parser('revoke-read-key');key.add_argument('--project',required=True);key.add_argument('--id',required=True)
+    for name in ['loop-inspect','loop-sync']:
+        command=sub.add_parser(name);command.add_argument('--repo',default='.');command.add_argument('--goal',default='first-answer');command.add_argument('--repository');command.add_argument('--base',default='main')
+        if name=='loop-sync':command.add_argument('--project',required=True)
+    for name in ['loop-goals','loop-status','loop-policy','loop-prepare','loop-action','loop-observe','loop-assess','loop-external','loop-compare']:
+        command=sub.add_parser(name);command.add_argument('--project',required=True)
+        if name not in ['loop-goals','loop-action']:command.add_argument('--goal',default='first-answer')
+        if name in ['loop-policy','loop-observe','loop-assess','loop-external','loop-compare']:command.add_argument('--file',required=True)
+        if name=='loop-policy':command.add_argument('--revision',type=int,required=True)
+        if name in ['loop-observe','loop-assess','loop-external','loop-action']:command.add_argument('--id',required=True,type=uuid.UUID)
+        if name=='loop-prepare':command.add_argument('--request-id',required=True,type=uuid.UUID)
+        if name=='loop-action':command.add_argument('--operation',required=True,choices=['draft-pr','reconcile','merge'])
     return p
 
 
 def main(argv=None):
     args=parser().parse_args(argv);command=args.command
+    if command in ['loop-inspect','loop-sync']:
+        from loop_repo import inspect
+        inspected=inspect(args.repo,args.goal,args.repository,args.base)
+        if command=='loop-inspect':
+            print(json.dumps(inspected,indent=2));return 0
+        if inspected['draft']:raise ValueError('commit the changed goal and dependencies before sync')
     origin=os.environ.get('NATIVE_ANALYTICS_URL','').rstrip('/')
     parsed=urllib.parse.urlsplit(origin)
     if not (parsed.scheme=='https' and parsed.hostname or parsed.scheme=='http' and parsed.hostname=='127.0.0.1') or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:raise ValueError('set NATIVE_ANALYTICS_URL to your HTTPS origin')
@@ -101,6 +119,17 @@ def main(argv=None):
     body=None;method='GET';params={}
     if hasattr(args,'project'):params['project']=args.project
     if hasattr(args,'days'):params['days']=args.days
+    if command.startswith('loop-'):
+        path='/api/loop/goals'
+        if command not in ['loop-goals','loop-action']:path+='/'+urllib.parse.quote(args.goal,safe='')
+        if command=='loop-sync':path+='/sync';body=inspected['source'];method='PUT'
+        if command=='loop-policy':path+='/policy';params['revision']=args.revision;method='PUT'
+        if command=='loop-prepare':path+='/prepare';body={'request_id':str(args.request_id)};method='POST'
+        if command=='loop-action':path='/api/loop/actions/'+str(args.id)+'/'+args.operation;body={};method='POST'
+        if command in ['loop-observe','loop-assess','loop-external']:
+            path+='/'+{'loop-observe':'observations','loop-assess':'answers','loop-external':'external'}[command]+'/'+str(args.id);method='PUT'
+        if command=='loop-compare':path+='/compare';method='POST'
+        if hasattr(args,'file'):body=json.loads(Path(args.file).read_text())
     if command in ['projects','create-project'] and (getattr(args,'workspace',None) or os.environ.get('AFTERSPAN_WORKSPACE')):params['workspace']=getattr(args,'workspace',None) or os.environ['AFTERSPAN_WORKSPACE']
     if command in ['usage','plans','billing','billing-invoices','billing-quote','billing-checkout','billing-portal','billing-refresh','billing-close-checkout','billing-downgrade']:
         path='/api/workspaces/'+urllib.parse.quote(args.workspace,safe='')+'/'+{'billing-invoices':'billing/invoices','billing-quote':'billing/quote','billing-checkout':'billing/checkout','billing-close-checkout':'billing/checkout','billing-portal':'billing/portal','billing-refresh':'billing/refresh','billing-downgrade':'billing/downgrade'}.get(command,command)
@@ -166,7 +195,7 @@ def main(argv=None):
     key_name='NATIVE_ANALYTICS_WRITE_KEY' if command in ['send','identify'] else 'ANALYTICS_ADMIN_TOKEN'
     key=os.environ.get(key_name)
     if key_name!='NATIVE_ANALYTICS_WRITE_KEY' and command!='assign-existing':key=os.environ.get('AFTERSPAN_WORKSPACE_KEY') or key
-    if command in ['projects','overview','query','journeys','setup','charts','funnels','segments','retention','analyze-funnel','analyze-segment','analyze-retention','catalog','audit-catalog','audit-review','audit-trace']:
+    if command in ['projects','overview','query','journeys','setup','charts','funnels','segments','retention','analyze-funnel','analyze-segment','analyze-retention','catalog','audit-catalog','audit-review','audit-trace','loop-goals','loop-status','loop-observe','loop-compare']:
         key=os.environ.get('AFTERSPAN_READ_KEY') or key
     public=command in ['health','schema','login','complete-login','login-existing']
     session_file=os.environ.get('AFTERSPAN_SESSION_FILE')
@@ -183,7 +212,7 @@ def main(argv=None):
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self,*args):return None
     try:
-        with urllib.request.build_opener(NoRedirect).open(request,timeout=20) as r:
+        with urllib.request.build_opener(NoRedirect).open(request,timeout=60 if command.startswith('loop-') else 20) as r:
             result=json.load(r)
             if command in ['complete-login','login-existing']:
                 name='na_session' if command=='login-existing' else 'as_session'

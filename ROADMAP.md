@@ -1,6 +1,6 @@
 # Afterspan build state
 
-19 October 2026 · Local development only · No new public deployment or domain registration.
+19 October 2026. The receiver and Tracker audit integration are deployed. The first product loop is built and locally exercised on its own branch; it is not included in that release.
 
 ## Current priority: real owner and Codex acceptance
 
@@ -8,7 +8,7 @@ Benchmark MyBillBook through the connected Amplitude MCP and historical Experime
 
 Real saved MyBillBook chart definitions/results and historical Experiment Tracker aggregate queries were completed read-only. They drove typed one-of filters, entry breakdowns, calendar retention, explicit field meanings and request-quality review.
 
-Two fresh ephemeral Codex CLI clients completed the local owner audit using only the three audit tools, no shell/files/web/source reads. One found 3 agreements in 4 independent comparable pairs among 8 synthetic request chains; another correctly found zero comparisons among 2 write chains despite 183 events. Historical PostHog evidence remains separately labeled. This is local synthetic workflow proof; the actual deployed Slack producer needs the new contract before this audit can run there. Desktop automatic connection and remote OAuth remain unproved.
+Two fresh ephemeral Codex CLI clients completed the local owner audit using only the three audit tools, no shell/files/web/source reads. One found 3 agreements in 4 independent comparable pairs among 8 synthetic request chains; another correctly found zero comparisons among 2 write chains despite 183 events. Historical PostHog evidence remains separately labeled. Those two checks are local synthetic workflow proof. The compatible receiver and Tracker producer contract were subsequently deployed. A fresh production audit found zero compatible real request chains, so real request quality and latency remain unknown. Desktop automatic connection and remote OAuth remain unproved.
 
 ## Open-source product core — working locally
 
@@ -45,9 +45,13 @@ Two fresh ephemeral Codex CLI clients completed the local owner audit using only
 - Clearly marked loopback-only local provider simulation; plus a separate real Stripe sandbox. Hosted test checkout/decline, paid invoices, portal upgrade and cancellation, signed webhooks and MCP scheduling were exercised. No real funds moved.
 - API, ten usage/billing CLI commands and ten workspace MCP tools.
 
-## Next evidence unit
+## First product loop
 
-Tracker producer integration is implemented in draft PR #151 and tested locally through signed webhooks, real model calls, fake business data and a fresh Codex client. Roll out the compatible receiver before enabling producer diagnostics. Current live-agent reads explicitly lack a comparable authoritative input/plan; they do not borrow a deterministic baseline or model latency. Then run the scoped audit against real incoming traffic and reconcile a sampled intended result with actual business state. Do not retrofit joins from redacted legacy keys. Keep the historical 60-request PostHog aggregate as its own source, not a new denominator. Then prove remote authenticated onboarding and operating capacity. Replay, surveys and other expansion stay behind this evidence unit.
+The local first loop connects one committed repo goal to a tracking repair PR, independently checked release evidence, and mature before/after outcomes. A real draft tracking PR, two fresh scoped Codex clients and the actual Python collector have been exercised. Production release and real customer impact remain unproved. Keep PR, merge, release, exact signal and user value as separate states. The first supported rule counts a workspace from its first observed start and waits 24 hours before including it in the denominator. A completion event alone cannot pass the useful-answer rubric. API, CLI, MCP and one project page share this meaning.
+
+Keep historical PostHog counts separate from native counts. Retention, missing reviews, changed measurement meaning and missing release proof must produce a stated limit or an unknown result. Before/after results remain observational. Do not send real Slack messages or make business writes to manufacture evidence.
+
+The receiver deployment is `134764aa-7089-44d5-b504-37723eda75de`. Tracker deployment `f1f6eee6-b0d7-4672-b850-767e97ba6a54` includes merged PR #151. A production audit currently has no compatible real request chains to assess. Live-agent reads still lack a comparable authoritative input/plan and cannot borrow a deterministic baseline or model latency. The historical 60-request PostHog aggregate remains its own source.
 
 ## Hosted operations backlog
 

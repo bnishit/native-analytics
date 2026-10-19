@@ -7,6 +7,16 @@ GET/POST /api/projects?workspace=WORKSPACE_ID
 POST /api/projects/{project}/read-keys {"label":"Codex audit","purpose":"audit","expires_days":7}
 GET  /api/projects/{project}/read-keys
 DELETE /api/projects/{project}/read-keys/{key_id}</pre><p>Browser/account writes require X-Native-CSRF: 1. Use the trusted origin. The CLI stores sign-in/key receipts privately rather than printing tokens. Existing projects are never assigned to the first signup. Public source does not make a deployment or its data public.</p></section>
+<section id="product-loop"><h2>Repo goal to tracking PR to outcome</h2><p>Commit <code>.afterspan/goals/first-answer.json</code>, sync the exact GitHub commit, prepare the supported Python completion hook, then open a policy-bound draft PR. The Goal loop page and CLI/MCP use the same service.</p><pre>GET  /api/loop/goals?project=ID
+GET  /api/loop/goals/{goal}?project=ID
+PUT  /api/loop/goals/{goal}/sync?project=ID
+PUT  /api/loop/goals/{goal}/policy?project=ID&amp;revision=N
+POST /api/loop/goals/{goal}/prepare?project=ID
+POST /api/loop/actions/{id}/{draft-pr|reconcile|merge}?project=ID
+PUT  /api/loop/goals/{goal}/observations/{UUID}?project=ID
+PUT  /api/loop/goals/{goal}/answers/{UUID}?project=ID
+PUT  /api/loop/goals/{goal}/external/{UUID}?project=ID
+POST /api/loop/goals/{goal}/compare?project=ID</pre><p>Readers inspect and measure. Editors sync, propose and submit answers. Current owner policy governs each GitHub write. Delegated keys cannot grant policy. No repository text can grant permission. Provider reads verify code and PR facts. Unknown writes require reconciliation. Merge and release authority are separate; unprotected branches cannot auto-merge.</p><p>The first rubric checks a structured answer against trusted stored aggregate facts. Producer quality flags are ignored. One workspace has one first-entry clock and a full 24-hour follow-up. Mature, waiting, failed, unassessed and timed-out counts stay separate. Before/after is observational. External attestations never silently enter the native denominator. Exact request schemas are in OpenAPI.</p></section>
 <section><h2>Product analytics</h2><pre>GET/POST   /api/{funnels|segments|retention}?project=ID
 POST       /api/{funnels|segments|retention}/analyze?project=ID
 PUT/DELETE /api/{funnels|segments|retention}/{id}?project=ID&amp;revision=LAST_READ

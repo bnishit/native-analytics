@@ -1,4 +1,3 @@
-"""First-entry answer outcomes and deterministic aggregate-answer checks."""
 from collections import defaultdict
 from datetime import datetime
 
@@ -35,8 +34,7 @@ def eligible(row, environment):
             and properties.get('subject_kind') not in {'anonymous', 'internal'})
 
 
-def evaluate(rows, measurement, window, assessments, environment):
-    """Count one first entry per retained identity, with an independent verdict per completion."""
+def count_first_entry_outcomes(rows, measurement, window, assessments, environment):
     start, end = window['entry_start'], window['entry_end']
     through, as_of = window['observed_through'], window['as_of']
     by_identity = defaultdict(list)
@@ -124,7 +122,7 @@ def compare(before, after, release=None):
     windows = before.get('window') is not None and after.get('window') is not None
     if not windows:
         reasons.append('observation_window_unavailable')
-    elif before['window']['observed_through'] > after['window']['entry_start']:
+    elif datetime.fromisoformat(before['window']['observed_through']) > datetime.fromisoformat(after['window']['entry_start']):
         reasons.append('entry_windows_overlap_or_reversed')
     for label, observation in [('before', before), ('after', after)]:
         if not observation['coverage']['complete'] or observation['waiting']:

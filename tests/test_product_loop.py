@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 import app
 import test_workspaces
-from loop_measurement import evaluate
+from loop_measurement import count_first_entry_outcomes
 from product_loop import EVENT_CAP, ProductLoop, canonical, digest
 
 
@@ -108,6 +108,18 @@ class ProductLoopTests(unittest.TestCase):
         self.source = {'repository': 'example/loop', 'base': 'loop-pilot', 'commit': 'a' * 40,
                        'path': '.afterspan/goals/first-answer.json', 'content_sha256': digest(self.provider.definition)}
         self.synced = self.call('PUT', '/goals/first-answer/sync', self.source).json()
+
+    def test_prepare_retry_recovers_the_same_read_intent_after_a_crash(self):
+        request_id=str(uuid.uuid4())
+        with patch.object(self.provider,'prepare',side_effect=RuntimeError('read interrupted')):
+            with self.assertRaises(RuntimeError):
+                self.call('POST','/goals/first-answer/prepare',{'request_id':request_id})
+        interrupted=self.call('GET','/goals/first-answer').json()['actions'][0]
+        recovered=self.call('POST','/goals/first-answer/prepare',{'request_id':request_id})
+        self.assertEqual(recovered.status_code,200,recovered.text)
+        self.assertEqual(recovered.json()['id'],interrupted['id'])
+        self.assertEqual(recovered.json()['status'],'prepared')
+        self.assertEqual(self.provider.writes,[])
 
     def tearDown(self):
         test_workspaces.WorkspaceTests.tearDown(self)
@@ -294,7 +306,7 @@ class ProductLoopTests(unittest.TestCase):
         old = self.observe()
         erased = self.client.post('/v1/erase', headers={'Authorization': 'Bearer ' + self.p['write_key']}, json={'distinct_id': 'erased'})
         self.assertEqual(erased.status_code, 200)
-        current = self.observe()
+        current = self.observe(old['window'])
         self.assertEqual((current['entrants'], current['coverage']['erasure'], current['coverage']['complete']), (0, True, False))
         self.assertEqual(self.observe(old['window'], old['id'])['entrants'], 1)
         retained = self.observe({**self.window(), 'entry_start': stamp(time.time() - 91 * 86400), 'entry_end': stamp(time.time() - 2 * 86400)})
@@ -594,6 +606,6 @@ class ProductLoopTests(unittest.TestCase):
         rows = [row('numeric', 'codex.question.started', 0, tier=1), row('start', 'codex.question.started', 1, tier=True),
                 row('tie', 'codex.answer.ready', 1), row('exact', 'codex.answer.ready', 86401),
                 row('exact', 'codex.answer.ready', 86401), row('late', 'codex.answer.ready', 86402)]
-        result = evaluate(rows, measurement, {'entry_start': 0, 'entry_end': 2, 'observed_through': 86401, 'as_of': 10},
+        result = count_first_entry_outcomes(rows, measurement, {'entry_start': 0, 'entry_end': 2, 'observed_through': 86401, 'as_of': 10},
                           {'exact': ['qualified']}, 'local')
         self.assertEqual((result['entrants'], result['qualified'], result['timed_out'], result['rate']), (1, 1, 0, 1.0))

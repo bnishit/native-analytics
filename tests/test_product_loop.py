@@ -1,3 +1,4 @@
+import json
 import copy
 import threading
 import time
@@ -101,7 +102,7 @@ class ProductLoopTests(unittest.TestCase):
         self.loop_app = FastAPI()
         with closing(app.connect()) as c, c:
             ProductLoop.init_db(c)
-        self.loop = ProductLoop(self.loop_app, app.connect, app.reader, app.editor, app.owner, app.RETENTION_DAYS, self.provider)
+        self.loop = ProductLoop(self.loop_app, app.connect, app.reader, app.editor, app.owner, app.RETENTION_DAYS, self.provider, store_events=app.store_events)
         self.api = self.loop_client(self.owner)
         self.t = time.time() - 72 * 3600
         self.n = 0
@@ -123,6 +124,129 @@ class ProductLoopTests(unittest.TestCase):
 
     def tearDown(self):
         test_workspaces.WorkspaceTests.tearDown(self)
+
+    def connection_goal(self):
+        self.provider.definition['measurement']['entry']['event'] = 'codex.connection.started'
+        self.source['content_sha256'] = digest(self.provider.definition)
+        response = self.call('PUT', '/goals/first-answer/sync', self.source)
+        self.assertEqual(response.status_code, 200, response.text)
+
+    def connect_codex(self):
+        response = self.call('POST', '/goals/first-answer/connection', {})
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def deliver_answer(self, connection, evidence, id=None, answer=None, client=None):
+        return self.call('PUT', '/goals/first-answer/connections/' + connection['id'] + '/answers/' + (id or str(uuid.uuid4())),
+                         {'evidence_id': evidence['id'], 'answer': answer or self.answer(evidence)}, client)
+
+    def test_real_connection_clock_delivery_and_idempotent_retries(self):
+        self.connection_goal()
+        evidence = self.observe()
+        with patch('product_loop.time.time', return_value=self.t):
+            connection = self.connect_codex()
+        answer_id = str(uuid.uuid4())
+        with patch('product_loop.time.time', return_value=self.t + 3600):
+            self.assertEqual(self.connect_codex(), connection)
+            response = self.deliver_answer(connection, evidence, answer_id)
+        self.assertEqual(response.status_code, 200, response.text)
+        checked = response.json()
+        self.assertEqual((checked['verdict'], checked['elapsed_seconds'], checked['within_deadline']), ('qualified', 3600, True))
+        self.assertEqual(self.deliver_answer(connection, evidence, answer_id).json(), checked)
+        self.assertEqual(self.deliver_answer(connection, evidence, answer_id, {**self.answer(evidence), 'mature': 1}).status_code, 409)
+        with closing(app.connect()) as c:
+            rows = c.execute('SELECT * FROM events WHERE project=? ORDER BY ts', (self.p['id'],)).fetchall()
+            self.assertEqual(len(rows), 2)
+            self.assertEqual({row['distinct_id'] for row in rows}, {self.w})
+            self.assertEqual([row['ts'] for row in rows], [self.t, self.t + 3600])
+            self.assertTrue(all(app.billing.seen(c, self.p['id'], row['id']) for row in rows))
+            self.assertTrue(all('answer' not in json.loads(row['properties']) for row in rows))
+        measured = self.observe(self.window(start=-1))
+        self.assertEqual((measured['mature'], measured['qualified'], measured['rate']), (1, 1, 1))
+
+    def test_recent_connection_is_waiting_even_after_checked_answer(self):
+        self.connection_goal()
+        evidence = self.observe()
+        connection = self.connect_codex()
+        self.assertEqual(self.deliver_answer(connection, evidence).json()['verdict'], 'qualified')
+        now = time.time()
+        measured = self.observe({'entry_start': stamp(now - 30), 'entry_end': stamp(now), 'observed_through': stamp(now), 'as_of': stamp(now)})
+        self.assertEqual((measured['mature'], measured['waiting'], measured['rate']), (0, 1, None))
+        view = self.call('GET', '/goals/first-answer').json()
+        self.assertEqual(view['connection']['id'], connection['id'])
+        self.assertEqual(view['latest_answer']['connection_id'], connection['id'])
+
+    def test_wrong_answer_and_late_answer_do_not_create_qualified_conversion(self):
+        self.connection_goal()
+        evidence = self.observe()
+        with patch('product_loop.time.time', return_value=self.t):
+            connection = self.connect_codex()
+        with patch('product_loop.time.time', return_value=self.t + 3600):
+            failed = self.deliver_answer(connection, evidence, answer={**self.answer(evidence), 'mature': 7})
+        self.assertEqual(failed.json()['verdict'], 'failed')
+        with patch('product_loop.time.time', return_value=self.t + 25 * 3600):
+            late = self.deliver_answer(connection, evidence)
+        self.assertEqual((late.json()['verdict'], late.json()['within_deadline']), ('qualified', False))
+        measured = self.observe(self.window(start=-1))
+        self.assertEqual((measured['qualified'], measured['failed']), (0, 1))
+
+    def test_connection_scope_and_contract_changes_are_rejected(self):
+        self.connection_goal()
+        evidence = self.observe()
+        reader, _ = self.join(self.owner, self.w, 'connection-reader@example.test')
+        reader_api = self.loop_client(reader)
+        self.assertEqual(self.call('POST', '/goals/first-answer/connection', {}, reader_api).status_code, 403)
+        connection = self.connect_codex()
+        self.assertEqual(self.deliver_answer(connection, evidence, client=reader_api).status_code, 403)
+        outsider, _ = self.user('connection-outsider@example.test')
+        self.assertEqual(self.deliver_answer(connection, evidence, client=self.loop_client(outsider)).status_code, 403)
+        self.provider.definition['measurement']['entry']['filters'] = [{'property': 'plan', 'op': 'eq', 'value': 'pro'}]
+        self.source['content_sha256'] = digest(self.provider.definition)
+        self.assertEqual(self.call('PUT', '/goals/first-answer/sync', self.source).status_code, 200)
+        self.assertEqual(self.deliver_answer(connection, evidence).status_code, 409)
+        self.assertEqual(self.call('POST', '/goals/first-answer/connection', {}).status_code, 409)
+
+    def test_erasure_never_resurrects_a_connection_start_or_clock(self):
+        self.connection_goal()
+        evidence = self.observe()
+        connection = self.connect_codex()
+        erased = self.client.post('/v1/erase', headers={'Authorization': 'Bearer ' + self.p['write_key']}, json={'distinct_id': self.w})
+        self.assertEqual(erased.status_code, 200)
+        self.assertEqual(self.call('POST', '/goals/first-answer/connection', {}).status_code, 410)
+        self.assertEqual(self.deliver_answer(connection, evidence).status_code, 410)
+        view = self.call('GET', '/goals/first-answer').json()
+        self.assertEqual(view['connection_status'], 'evidence_unavailable')
+        self.assertEqual(view['connection']['id'], connection['id'])
+        with closing(app.connect()) as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM events WHERE project=?', (self.p['id'],)).fetchone()[0], 0)
+
+    def test_delivery_rechecks_service_environment_but_replay_is_immutable(self):
+        self.connection_goal()
+        evidence = self.observe()
+        connection = self.connect_codex()
+        id = str(uuid.uuid4())
+        checked = self.deliver_answer(connection, evidence, id).json()
+        with patch.dict('os.environ', {'AFTERSPAN_ENVIRONMENT': 'production'}):
+            self.assertEqual(self.call('POST', '/goals/first-answer/connection', {}).status_code, 409)
+            self.assertEqual(self.call('GET', '/goals/first-answer').json()['connection_status'], 'environment_changed')
+            self.assertEqual(self.deliver_answer(connection, evidence).status_code, 409)
+            self.assertEqual(self.deliver_answer(connection, evidence, id).json(), checked)
+
+    def test_failed_ingestion_rolls_back_connection_and_answer_together(self):
+        self.connection_goal()
+        evidence = self.observe()
+        with patch.object(self.loop, 'store_events', side_effect=ValueError('private storage detail')):
+            response = self.call('POST', '/goals/first-answer/connection', {})
+        self.assertEqual(response.status_code, 422)
+        self.assertNotIn('private storage detail', response.text)
+        self.assertIsNone(self.call('GET', '/goals/first-answer').json()['connection'])
+        connection = self.connect_codex()
+        with patch.object(self.loop, 'check_completion', side_effect=RuntimeError('checker interrupted')):
+            with self.assertRaises(RuntimeError):
+                self.deliver_answer(connection, evidence)
+        with closing(app.connect()) as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM events WHERE project=?', (self.p['id'],)).fetchone()[0], 1)
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM loop_answers WHERE project=?', (self.p['id'],)).fetchone()[0], 0)
 
     def loop_client(self, human):
         client = TestClient(self.loop_app)

@@ -92,13 +92,14 @@ def parser():
     for name in ['loop-inspect','loop-sync']:
         command=sub.add_parser(name);command.add_argument('--repo',default='.');command.add_argument('--goal',default='first-answer');command.add_argument('--repository');command.add_argument('--base',default='main')
         if name=='loop-sync':command.add_argument('--project',required=True)
-    for name in ['loop-goals','loop-status','loop-policy','loop-prepare','loop-action','loop-observe','loop-assess','loop-external','loop-compare']:
+    for name in ['loop-goals','loop-status','loop-policy','loop-prepare','loop-action','loop-observe','loop-assess','loop-external','loop-compare','loop-connect','loop-deliver']:
         command=sub.add_parser(name);command.add_argument('--project',required=True)
         if name not in ['loop-goals','loop-action']:command.add_argument('--goal',default='first-answer')
-        if name in ['loop-policy','loop-observe','loop-assess','loop-external','loop-compare']:command.add_argument('--file',required=True)
+        if name in ['loop-policy','loop-observe','loop-assess','loop-external','loop-compare','loop-deliver']:command.add_argument('--file',required=True)
         if name=='loop-policy':command.add_argument('--revision',type=int,required=True)
-        if name in ['loop-observe','loop-assess','loop-external','loop-action']:command.add_argument('--id',required=True,type=uuid.UUID)
+        if name in ['loop-observe','loop-assess','loop-external','loop-action','loop-deliver']:command.add_argument('--id',required=True,type=uuid.UUID)
         if name=='loop-prepare':command.add_argument('--request-id',required=True,type=uuid.UUID)
+        if name=='loop-deliver':command.add_argument('--connection',required=True,type=uuid.UUID)
         if name=='loop-action':command.add_argument('--operation',required=True,choices=['draft-pr','reconcile','merge'])
     return p
 
@@ -129,6 +130,8 @@ def main(argv=None):
         if command in ['loop-observe','loop-assess','loop-external']:
             path+='/'+{'loop-observe':'observations','loop-assess':'answers','loop-external':'external'}[command]+'/'+str(args.id);method='PUT'
         if command=='loop-compare':path+='/compare';method='POST'
+        if command=='loop-connect':path+='/connection';body={};method='POST'
+        if command=='loop-deliver':path+='/connections/'+str(args.connection)+'/answers/'+str(args.id);method='PUT'
         if hasattr(args,'file'):body=json.loads(Path(args.file).read_text())
     if command in ['projects','create-project'] and (getattr(args,'workspace',None) or os.environ.get('AFTERSPAN_WORKSPACE')):params['workspace']=getattr(args,'workspace',None) or os.environ['AFTERSPAN_WORKSPACE']
     if command in ['usage','plans','billing','billing-invoices','billing-quote','billing-checkout','billing-portal','billing-refresh','billing-close-checkout','billing-downgrade']:

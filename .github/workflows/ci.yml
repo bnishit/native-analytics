@@ -11,8 +11,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - run: pip install -r requirements.txt httpx
+      - run: pip install -r requirements.txt -r requirements-agent.txt httpx
       - run: python -m unittest discover -s tests -v
+      - run: node --check static/evidence.js
+      - run: node --check static/product.js
+      - run: node --check static/journeys.js
+      - run: node --check static/pricing.js
+      - run: node --check static/billing.js
+      - run: node --check static/billing-test.js
+      - run: node --check static/accounts.js
       - run: node --check static/app.js
+      - run: node --check static/landing.js
       - run: node --experimental-strip-types --test sdk/typescript/native-analytics.test.ts
       - run: python cli/native_analytics.py --help

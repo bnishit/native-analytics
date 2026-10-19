@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Afterspan — You ship. Then what?</title>
+  <meta name="description" content="Open-source product and agent analytics. Run it yourself. Understand what people do, what your AI does, and what to improve next.">
+  <meta name="theme-color" content="#F6F3E9"><meta property="og:title" content="Afterspan — You ship. Then what?"><meta property="og:description" content="The whole story behind what you ship. Product behavior, AI work, replay and feedback, in one place.">
+  <link rel="icon" href="/assets/brand/mark.svg" type="image/svg+xml"><link rel="stylesheet" href="/assets/landing.css"><script src="/assets/landing.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-header wrap">
+  <a href="/" class="wordmark" aria-label="Afterspan home"><img src="/assets/brand/mark.svg" width="35" height="35" alt="">afterspan<span class="wordmark-period">.</span></a>
+  <nav aria-label="Main navigation"><a href="#product">The product</a><a href="#agents">For your agent</a><a href="#status">Build status</a></nav>
+  <a class="header-login" href="/app">Open workspace <span aria-hidden="true">↗</span></a>
+</header>
+<main id="main">
+<section class="hero wrap">
+  <div class="hero-intro"><div class="eyebrow"><span class="little-mark" aria-hidden="true"></span> FOR PEOPLE WHO BUILD WITH AGENTS</div>
+    <h1>You ship.<br><span class="hero-bottom">Then what<span class="question">?</span></span></h1>
+    <p class="hero-copy">Understand what people do, what your AI does,<br class="desktop-break"> and what to improve next.</p>
+    <div class="hero-actions"><a class="button primary" href="#product">Meet Afterspan <span aria-hidden="true">↘</span></a><a class="text-link" href="#agents">Bring your coding agent <span aria-hidden="true">→</span></a></div>
+    <div class="build-note"><span class="status-dot"></span> MIT licensed. Self-hosted. <a href="#status">See what works today.</a></div>
+  </div>
+  <div class="hero-art" aria-label="Product behavior and AI work share one story">
+    <div class="art-index">AFTER THE COMMIT / BEFORE THE NEXT GUESS</div>
+    <svg class="span-art" viewBox="0 0 480 450" role="img" aria-label="Two paths, people and agents, connect into one shared view">
+      <defs><pattern id="dots" width="20" height="20" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r=".8" fill="#899183" opacity=".26"/></pattern></defs>
+      <rect width="480" height="450" fill="url(#dots)"/>
+      <path class="span-back" d="M82 315V145q0-60 60-60h168" fill="none" stroke="#C7CEB9" stroke-width="60"/>
+      <path class="span-front" d="M398 135v170q0 60-60 60H170" fill="none" stroke="#F2673C" stroke-width="60"/>
+      <path d="M82 315v24M310 85h24M398 135v-24M170 365h-24" fill="none" stroke="#232B25" stroke-width="2"/>
+      <g fill="#232B25"><circle cx="82" cy="339" r="4"/><circle cx="334" cy="85" r="4"/><circle cx="398" cy="111" r="4"/><circle cx="146" cy="365" r="4"/></g>
+      <path d="M189 226l34 34 69-84" fill="none" stroke="#232B25" stroke-width="9"/>
+    </svg>
+    <div class="art-label label-people"><span>01</span> What people do</div><div class="art-label label-agents"><span>02</span> What agents do</div>
+    <div class="art-caption"><span class="cross">+</span> One connected picture. <span class="cross">+</span></div>
+  </div>
+</section>
+<div class="capability-strip"><div class="wrap"><span>PRODUCT ANALYTICS</span><i>↗</i><span>SESSION REPLAY</span><i>↗</i><span>SURVEYS</span><i>↗</i><span>AI TRACES & EVALS</span><i>↗</i><span>MCP & API</span></div></div>
+<section class="product-section wrap" id="product">
+  <div class="section-heading"><div><div class="eyebrow">01 / THE WHOLE STORY</div><h2>Your users.<br>Your agents.<br><em>The same product.</em></h2></div><p>A person sees a slow answer.<br>Your logs see a request.<br>Your AI tool sees a model call.<br><strong>You need to see how they connect.</strong></p></div>
+  <div class="product-window">
+    <div class="window-header"><div class="window-brand"><img src="/assets/brand/mark.svg" width="22" height="22" alt="">afterspan <span>/</span> Shelf</div><span class="snapshot-badge">OBSERVED SNAPSHOT · 17 OCT 2026</span></div>
+    <div class="product-body">
+      <div class="product-tabs" role="tablist" aria-label="Explore the evidence"><button id="tab-product" role="tab" aria-selected="true" aria-controls="evidence-panel" data-view="product"><span>01</span> Product</button><button id="tab-agent" role="tab" aria-selected="false" aria-controls="evidence-panel" data-view="agent" tabindex="-1"><span>02</span> Agent</button><button id="tab-replay" role="tab" aria-selected="false" aria-controls="evidence-panel" data-view="replay" tabindex="-1"><span>03</span> Replay <small>Next</small></button><button id="tab-feedback" role="tab" aria-selected="false" aria-controls="evidence-panel" data-view="feedback" tabindex="-1"><span>04</span> Feedback <small>Next</small></button><div class="tab-bottom">Different evidence.<br>One question.</div></div>
+      <div class="evidence-panel" id="evidence-panel" role="tabpanel" aria-labelledby="tab-product" tabindex="0">
+        <div class="panel-topline"><span class="eyebrow" id="panel-eyebrow">PRODUCT / SUMMARY ACTIVITY</span><span class="small-label" id="panel-label">Stored event counts</span></div>
+        <h3 id="panel-title">Did the summary finish?</h3><p class="panel-subtitle" id="panel-subtitle">The first question. Before charts, costs, or another release.</p>
+        <div id="panel-content"><div class="summary-numbers"><div><strong>48</strong><span>completion events</span></div><div class="failure-count"><strong>7</strong><span>failure events</span></div></div><div class="outcome-bar" role="img" aria-label="48 completion events and 7 failure events"><span></span><i></i></div><div class="evidence-note"><span class="note-icon">↳</span><p>These are attempts, not unique people. Next: connect retries to the original saved item.</p></div></div>
+      </div>
+    </div>
+    <div class="window-footer"><span><span class="status-dot"></span> Real aggregate counts from the existing collector</span><span>Not a recording of a customer session</span></div>
+  </div>
+  <div class="product-caption"><span>AN INTERACTIVE LOOK AT THE DIRECTION</span><p>Product and AI events, linked journeys and retry evidence work in the local build. This illustration uses historical aggregates; replay and feedback remain planned.</p></div>
+</section>
+<section class="suite-section" id="suite"><div class="wrap">
+  <div class="section-heading"><div><div class="eyebrow">02 / MORE CONTEXT. LESS DETECTIVE WORK.</div><h2>Five tools.<br>One train of thought.</h2></div><p>Follow the question across your product.<br>Keep the evidence beside the answer.</p></div>
+  <div class="suite-grid">
+    <article><div class="feature-index">01 <span>↗</span></div><h3>Understand behavior.</h3><p>Events, funnels, groups and return use. Find out where people get value—and where they stop.</p><div class="feature-label">PRODUCT ANALYTICS</div></article>
+    <article><div class="feature-index">02 <span>▷</span></div><h3>See the moment.</h3><p>Jump from a stuck journey to masked browser playback. See the interaction around the event.</p><div class="feature-label">SESSION REPLAY <span>IN DEVELOPMENT</span></div></article>
+    <article><div class="feature-index">03 <span>↳</span></div><h3>Ask the person.</h3><p>A small, timely question for the right group. Keep the answer beside what actually happened.</p><div class="feature-label">SURVEYS <span>IN DEVELOPMENT</span></div></article>
+    <article><div class="feature-index">04 <span>⌁</span></div><h3>Follow the AI work.</h3><p>Models, tools, retries, quality and cost. Connect a completed run to a useful result for someone.</p><div class="feature-label">AGENT ANALYTICS <span>EXPANDING</span></div></article>
+    <article class="suite-wide"><div class="feature-index">05 <span>↗</span></div><div><h3>Bring your agent<br>into the picture.</h3><p>Let Codex inspect the evidence. Prepare the next change. Check what happened after it shipped.</p></div><div class="feature-label">API · CLI · MCP</div></article>
+  </div>
+</div></section>
+<section class="agent-section wrap" id="agents">
+  <div class="agent-copy"><div class="eyebrow">03 / WHERE YOU ALREADY WORK</div><h2>Made for you.<br>And your<br><em>coding agent.</em></h2><p>Ask in Codex. Inspect in the browser.<br>Both should tell the same story.</p><p class="agent-detail">The first MCP connection can read one project's overview, compute metrics, and inspect saved chart definitions. Setup automation and the rest of the suite come next.</p><a class="text-link" href="/docs">Explore the real API <span aria-hidden="true">↗</span></a></div>
+  <div class="terminal"><div class="terminal-header"><span><i></i><i></i><i></i></span> AFTERSPAN / AGENT HANDOFF <span>01</span></div><div class="terminal-content"><p class="terminal-comment"># Start with a question.</p><p class="terminal-prompt">“What do we know about<br>the failed summaries?”</p><div class="terminal-rule"></div><div class="terminal-line"><span>READ</span> Project overview</div><div class="terminal-line"><span>QUERY</span> Summary outcome events</div><div class="terminal-line"><span>CHECK</span> What the data can support</div><div class="terminal-answer"><span class="terminal-star">↳</span><p>7 failure events are recorded.<br>Unique affected items: unknown.<br><strong>Link attempts before claiming a failure rate.</strong></p></div><p class="terminal-caption">Example answer from the observed snapshot.<br>No model was called by this page.</p></div><div class="terminal-footer"><span class="status-dot"></span> Project-scoped. Read-only. Revocable.</div></div>
+</section>
+<section class="manifesto"><div class="wrap"><div class="eyebrow">THE POINT ISN'T MORE CHARTS.</div><h2>Build with ambition.<br><span>Learn with evidence.</span></h2><p>Know what changed. See who it reached.<br>Make the next thing better.</p></div></section>
+<section class="status-section wrap" id="status">
+  <div class="section-heading"><div><div class="eyebrow">04 / BUILT IN THE OPEN, WITHOUT THE MAKE-BELIEVE</div><h2>A bigger idea.<br>A real first step.</h2></div><p>Afterspan is an early build.<br>Here's what you can actually use<br>in this local version.</p></div>
+  <div class="status-grid"><div><div class="status-title"><span class="status-dot"></span> WORKING FOUNDATION</div><ul><li>Separate projects and event collection</li><li>Event logs, metrics and saved charts</li><li>Ordered funnels and saved segments</li><li>Python and TypeScript collectors</li><li>Project-scoped, expiring read keys</li><li>Nine aggregate analytics MCP tools</li><li>Customer workspaces, invites and roles</li><li>Usage visibility without paid plans</li><li>Scoped agent APIs, CLI and MCP</li></ul><a class="button ink" href="/app">Open the local workspace <span aria-hidden="true">↗</span></a></div><div><div class="status-title"><span class="status-ring"></span> THE SUITE WE'RE BUILDING</div><ul><li>Agent-guided, verified setup</li><li>Return-use cohorts and group accounts</li><li>Masked browser replay</li><li>Targeted surveys and linked feedback</li><li>Agent runs, evaluations and release outcomes</li><li>OpenTelemetry and richer agent spans</li></ul><p class="status-fine">MIT license. Your infrastructure. Your data.<br>Local build; public deployment is a separate step.</p></div></div>
+</section>
+<section class="faq-section wrap"><div class="eyebrow">A FEW GOOD QUESTIONS</div><div class="faq-grid"><h2>Less mystery.<br>By design.</h2><div><details><summary>Is the full suite available today?<span>+</span></summary><p>Not yet. This build includes analytics, linked journeys, retries, fixed evidence queries, collector verification, read access controls and a local MCP bridge. Email accounts, customer workspaces, invites and member roles now work in the local build. Hosted email delivery still needs configuration and live verification. Funnels, entry breakdowns, saved behavior/trait segments, calendar retention, a data dictionary and scoped request audits are included. The default self-hosted edition has no paid plans or commercial quotas. Replay, surveys and richer tracing remain planned.</p></details><details><summary>Does Afterspan need my users' private content?<span>+</span></summary><p>Many useful metrics need only events and numeric fields. The planned recording and AI-content features will need explicit collection boundaries, masking, separate access and retention. They are not enabled by this page.</p></details><details><summary>Can my coding agent change the product?<span>+</span></summary><p>The analytics connection reads aggregates and chart definitions in one project. A separate workspace management connection can invite teammates and change roles within an explicitly delegated workspace role. Account signup, workspace-key issuance and invite acceptance stay with the person. The workspace bridge can save, update, delete and analyze funnels, segments and retention. A third, audit-only connection discovers approved meanings and follows request evidence without exposing raw records. No billing account is required. Neither bridge deploys code or publishes surveys.</p></details><details><summary>What about bots, desktop tools and CLIs?<span>+</span></summary><p>The existing server collectors and constrained app relay support event measurement beyond the browser. Visual replay is a separate web capability; a CLI or bot will need its own event and agent timeline.</p></details></div></div></section>
+<section class="closing wrap"><div class="eyebrow">THE COMMIT IS JUST THE BEGINNING.</div><h2>See what<br>happens next<span>.</span></h2><a href="/app" class="button primary">Open the workspace <span aria-hidden="true">↗</span></a><p>Early build · Local preview · No signup required to explore</p></section>
+</main>
+<footer class="site-footer wrap"><a href="/" class="wordmark"><img src="/assets/brand/mark.svg" width="30" height="30" alt="">afterspan.</a><span>You ship. Then what?</span><div><a href="/pricing">Open source</a><a href="/brand">The brand</a><a href="/docs">API reference</a><a href="#status">Build status</a></div><small>2026 · Built from Native Analytics</small></footer>
+</body></html>

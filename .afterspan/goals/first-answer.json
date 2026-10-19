@@ -1,0 +1,15 @@
+{
+  "schema": "afterspan-goal-v1",
+  "id": "first-answer",
+  "question": "Does an observed workspace receive a correctly grounded Codex answer within 24 hours of starting its connection?",
+  "measurement": {
+    "unit": "workspace",
+    "entry": {"event": "codex.connection.started", "filters": []},
+    "completion": {"event": "codex.answer.ready", "filters": []},
+    "followup_seconds": 86400,
+    "entry_rule": "first_in_entry_window",
+    "rubric": "aggregate-answer-v1"
+  },
+  "mapping": {"source": "native", "environment": "local", "observation_id_property": "observation_id"},
+  "tracking": {"recipe": "python-answer-v1", "path": "examples/loop_pilot.py", "dependencies": ["examples/loop_pilot.py"]}
+}

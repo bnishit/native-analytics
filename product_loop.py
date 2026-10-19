@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import threading
 import time
 import uuid
@@ -185,6 +186,11 @@ class AnswerCheck(Model):
     answer: AggregateAnswer
 
 
+class DeliveredAnswer(Model):
+    evidence_id: uuid.UUID
+    answer: AggregateAnswer
+
+
 class ExternalObservation(ObservationWindow):
     kind: Literal['aggregate'] = 'aggregate'
     measurement_revision: Digest
@@ -269,12 +275,17 @@ class ProductLoop:
           project TEXT NOT NULL,goal TEXT NOT NULL,id TEXT NOT NULL,input_sha256 TEXT NOT NULL,
           completion_event_id TEXT NOT NULL,measurement_revision TEXT NOT NULL,mapping_revision TEXT NOT NULL,
           verdict TEXT NOT NULL,receipt TEXT NOT NULL,created REAL NOT NULL,PRIMARY KEY(project,id));
+        CREATE TABLE IF NOT EXISTS loop_connections(
+          project TEXT NOT NULL,goal TEXT NOT NULL,id TEXT NOT NULL,measurement_revision TEXT NOT NULL,
+          mapping_revision TEXT NOT NULL,receipt TEXT NOT NULL,PRIMARY KEY(project,id),
+          UNIQUE(project,goal,measurement_revision,mapping_revision));
         CREATE INDEX IF NOT EXISTS loop_answer_completion ON loop_answers(project,goal,completion_event_id);
         ''')
 
-    def __init__(self, app, connect, reader, editor, owner, retention_days, github=None):
+    def __init__(self, app, connect, reader, editor, owner, retention_days, github=None, store_events=None):
         self.connect, self.reader, self.editor, self.owner = connect, reader, editor, owner
         self.retention_days, self.github = retention_days, github
+        self.store_events = store_events
         self.action_locks = defaultdict(threading.Lock)
 
         @app.get('/api/loop/goals', dependencies=[Depends(reader)])
@@ -311,6 +322,14 @@ class ProductLoop:
         @app.put('/api/loop/goals/{goal}/answers/{id}', dependencies=[Depends(editor)])
         def assess(project: str, goal: GoalID, id: uuid.UUID, req: AnswerCheck):
             return self.assess(project, goal, str(id), req)
+
+        @app.post('/api/loop/goals/{goal}/connection', dependencies=[Depends(editor)])
+        def connect_goal(project: str, goal: GoalID, req: Empty):
+            return self.connect_goal(project, goal)
+
+        @app.put('/api/loop/goals/{goal}/connections/{connection_id}/answers/{id}', dependencies=[Depends(editor)])
+        def deliver(project: str, goal: GoalID, connection_id: uuid.UUID, id: uuid.UUID, req: DeliveredAnswer):
+            return self.deliver(project, goal, str(connection_id), str(id), req)
 
         @app.put('/api/loop/goals/{goal}/external/{id}', dependencies=[Depends(editor)])
         def external(project: str, goal: GoalID, id: uuid.UUID, req: ExternalObservation | ExternalContractGap):
@@ -601,6 +620,103 @@ class ProductLoop:
             c.execute('INSERT INTO loop_observations VALUES(?,?,?,?,?,?)', (project, goal, id, fingerprint, canonical(receipt), time.time()))
             return receipt
 
+    def service_environment(self):
+        return os.getenv('AFTERSPAN_ENVIRONMENT') or ('local' if urlsplit(os.getenv('ANALYTICS_PUBLIC_URL', 'http://127.0.0.1')).hostname in {'localhost', '127.0.0.1'} else 'production')
+
+    def connect_goal(self, project, goal):
+        with closing(self.connect()) as c, c:
+            c.execute('BEGIN IMMEDIATE')
+            current = self.goal(c, project, goal)
+            definition = current['bundle']['definition']
+            configured = self.service_environment()
+            if definition['mapping']['environment'] != configured:
+                raise HTTPException(409, 'goal environment differs from this service')
+            measurement = definition['measurement']
+            if (measurement['entry']['event'] != 'codex.connection.started' or measurement['entry'].get('filters')
+                    or measurement['completion']['event'] != 'codex.answer.ready' or measurement['completion'].get('filters')):
+                raise HTTPException(409, 'this connection supports only the explicit Codex start and answer contract')
+            row = c.execute('SELECT receipt FROM loop_connections WHERE project=? AND goal=? AND measurement_revision=? AND mapping_revision=?',
+                            (project, goal, current['measurement_revision'], current['mapping_revision'])).fetchone()
+            if row:
+                receipt = json.loads(row['receipt'])
+                self.connection_entry(c, project, receipt)
+                return receipt
+            workspace = c.execute('SELECT workspace FROM projects WHERE id=?', (project,)).fetchone()['workspace']
+            if workspace == 'legacy':
+                raise HTTPException(409, 'connect a customer workspace project')
+            id = str(uuid.uuid4())
+            now = time.time()
+            receipt = {'id': id, 'goal_id': goal, **self.refs(current), 'workspace': workspace,
+                       'environment': configured, 'started_at': now, 'deadline_at': now + 86400,
+                       'entry_event_id': 'loop-connection-' + id,
+                       'limit': 'The service records explicit connection and checked-answer submission, not inbox delivery or whether a person read the answer. No release is inferred.'}
+            self.emit(c, project, receipt, receipt['entry_event_id'], 'codex.connection.started')
+            c.execute('INSERT INTO loop_connections VALUES(?,?,?,?,?,?)',
+                      (project, goal, id, current['measurement_revision'], current['mapping_revision'], canonical(receipt)))
+            return receipt
+
+    def connection_status(self, c, project, connection):
+        if connection is None:
+            return 'not_started'
+        if connection['environment'] != self.service_environment():
+            return 'environment_changed'
+        if not c.execute('SELECT 1 FROM events WHERE project=? AND id=? AND distinct_id=?',
+                         (project, connection['entry_event_id'], connection['workspace'])).fetchone():
+            return 'evidence_unavailable'
+        return 'ready'
+
+    def connection_entry(self, c, project, connection):
+        status = self.connection_status(c, project, connection)
+        if status == 'environment_changed':
+            raise HTTPException(409, 'connection environment differs from this service')
+        if status != 'ready':
+            raise HTTPException(410, 'connection entry was erased or expired; its original clock cannot be reconstructed')
+
+    def emit(self, c, project, connection, id, name, evidence_id=None):
+        if self.store_events is None:
+            raise HTTPException(503, 'connection event storage is unavailable')
+        properties = {'environment': connection['environment'], 'subject_kind': 'workspace',
+                      'loop_connection_id': connection['id'], 'origin': 'afterspan_codex_connection'}
+        if evidence_id:
+            properties['observation_id'] = evidence_id
+        try:
+            result = self.store_events(c, project, [{'id': id, 'name': name, 'distinct_id': connection['workspace'], 'properties': properties}])
+        except ValueError:
+            raise HTTPException(422, 'connection telemetry could not be stored') from None
+        if result['accepted'] != 1:
+            raise HTTPException(409, 'connection event was erased or its ID already exists')
+
+    def deliver(self, project, goal, connection_id, id, req):
+        fingerprint = digest({'connection_id': connection_id, **req.model_dump(mode='json')})
+        with closing(self.connect()) as c, c:
+            c.execute('BEGIN IMMEDIATE')
+            old = self.existing_receipt(c, 'loop_answers', project, goal, id, fingerprint)
+            if old:
+                return old
+            row = c.execute('SELECT receipt FROM loop_connections WHERE project=? AND goal=? AND id=?',
+                            (project, goal, connection_id)).fetchone()
+            if row is None:
+                raise HTTPException(404, 'connection not found')
+            connection = json.loads(row['receipt'])
+            current = self.goal(c, project, goal)
+            evidence = self.evidence(c, project, goal, str(req.evidence_id))
+            if any(connection[key] != item[key] for key in ['measurement_revision', 'mapping_revision'] for item in [current, evidence]):
+                raise HTTPException(409, 'connection, current goal and answer evidence must share measurement and mapping')
+            if evidence['source'] != 'native':
+                raise HTTPException(422, 'a connection answer needs a native service observation')
+            self.connection_entry(c, project, connection)
+            completion_id = 'loop-answer-' + id
+            self.emit(c, project, connection, completion_id, 'codex.answer.ready', str(req.evidence_id))
+            checked = self.check_completion(c, project, goal, id,
+                                            AnswerCheck(completion_event_id=completion_id, evidence_id=req.evidence_id, answer=req.answer), fingerprint)
+            event = c.execute('SELECT ts FROM events WHERE project=? AND id=?', (project, completion_id)).fetchone()
+            receipt = {**checked, 'connection_id': connection_id, 'accepted_at': event['ts'],
+                       'elapsed_seconds': event['ts'] - connection['started_at'],
+                       'within_deadline': event['ts'] <= connection['deadline_at'],
+                       'delivery': 'accepted_for_presentation_not_proof_of_human_read'}
+            c.execute('UPDATE loop_answers SET receipt=? WHERE project=? AND id=?', (canonical(receipt), project, id))
+            return receipt
+
     def assess(self, project, goal, id, req):
         payload = req.model_dump(mode='json')
         fingerprint = digest(payload)
@@ -609,29 +725,32 @@ class ProductLoop:
             old = self.existing_receipt(c, 'loop_answers', project, goal, id, fingerprint)
             if old:
                 return old
-            evidence = self.evidence(c, project, goal, str(req.evidence_id))
-            current = self.goal(c, project, goal, evidence['goal_revision'])
-            definition = current['bundle']['definition']
-            row = c.execute('SELECT * FROM events WHERE project=? AND id=?', (project, req.completion_event_id)).fetchone()
-            if row is None:
-                raise HTTPException(422, 'completion event not observed')
-            event = {**dict(row), 'properties': json.loads(row['properties'])}
-            if (not eligible(event, definition['mapping']['environment'])
-                    or not event_matches(event, definition['measurement']['completion'])
-                    or event['properties'].get('observation_id') != str(req.evidence_id)
-                    or evidence['window'] and evidence['window'].get('release') is not None
-                    and event['properties'].get('release') != evidence['window']['release']):
-                raise HTTPException(422, 'completion does not match the committed goal and evidence receipt')
-            answer = req.answer.model_dump(mode='json')
-            check = check_answer(answer, evidence)
-            stored_answer = {**answer, 'limitations': answer['limitations'] if answer['limitations'] == evidence['limitations'] else []}
-            receipt = {'id': id, 'goal_id': goal, 'evidence_id': str(req.evidence_id),
-                       'completion_event_id': req.completion_event_id, **self.refs(current),
-                       'answer_sha256': digest(answer), 'answer': stored_answer, **check}
-            c.execute('INSERT INTO loop_answers VALUES(?,?,?,?,?,?,?,?,?,?)',
-                      (project, goal, id, fingerprint, req.completion_event_id, current['measurement_revision'],
-                       current['mapping_revision'], check['verdict'], canonical(receipt), time.time()))
-            return receipt
+            return self.check_completion(c, project, goal, id, req, fingerprint)
+
+    def check_completion(self, c, project, goal, id, req, fingerprint):
+        evidence = self.evidence(c, project, goal, str(req.evidence_id))
+        current = self.goal(c, project, goal, evidence['goal_revision'])
+        definition = current['bundle']['definition']
+        row = c.execute('SELECT * FROM events WHERE project=? AND id=?', (project, req.completion_event_id)).fetchone()
+        if row is None:
+            raise HTTPException(422, 'completion event not observed')
+        event = {**dict(row), 'properties': json.loads(row['properties'])}
+        if (not eligible(event, definition['mapping']['environment'])
+                or not event_matches(event, definition['measurement']['completion'])
+                or event['properties'].get('observation_id') != str(req.evidence_id)
+                or evidence['window'] and evidence['window'].get('release') is not None
+                and event['properties'].get('release') != evidence['window']['release']):
+            raise HTTPException(422, 'completion does not match the committed goal and evidence receipt')
+        answer = req.answer.model_dump(mode='json')
+        check = check_answer(answer, evidence)
+        stored_answer = {**answer, 'limitations': answer['limitations'] if answer['limitations'] == evidence['limitations'] else []}
+        receipt = {'id': id, 'goal_id': goal, 'evidence_id': str(req.evidence_id),
+                   'completion_event_id': req.completion_event_id, **self.refs(current),
+                   'answer_sha256': digest(answer), 'answer': stored_answer, **check}
+        c.execute('INSERT INTO loop_answers VALUES(?,?,?,?,?,?,?,?,?,?)',
+                  (project, goal, id, fingerprint, req.completion_event_id, current['measurement_revision'],
+                   current['mapping_revision'], check['verdict'], canonical(receipt), time.time()))
+        return receipt
 
     def external(self, project, goal, id, req):
         payload = req.model_dump(mode='json')
@@ -695,6 +814,13 @@ class ProductLoop:
         observations = [json.loads(row['receipt']) for row in c.execute('SELECT receipt FROM loop_observations WHERE project=? AND goal=? ORDER BY created DESC LIMIT 100', (project, goal))]
         history = [{'goal_revision': row['revision'], 'source': json.loads(row['bundle']), 'measurement_revision': row['measurement_revision'],
                     'mapping_revision': row['mapping_revision'], 'goal_digest': row['goal_digest']} for row in c.execute('SELECT * FROM loop_goals WHERE project=? AND goal=? ORDER BY revision', (project, goal))]
+        row = c.execute('SELECT receipt FROM loop_connections WHERE project=? AND goal=? AND measurement_revision=? AND mapping_revision=?',
+                        (project, goal, current['measurement_revision'], current['mapping_revision'])).fetchone()
+        codex_connection = json.loads(row['receipt']) if row else None
+        latest_answer = None
+        if codex_connection:
+            answers = [json.loads(row['receipt']) for row in c.execute('SELECT receipt FROM loop_answers WHERE project=? AND goal=? ORDER BY created DESC LIMIT 100', (project, goal))]
+            latest_answer = next((answer for answer in answers if answer.get('connection_id') == codex_connection['id']), None)
         latest = next((action for action in actions if action['goal_revision'] == current['revision']), None)
         current_observations = [item for item in observations if item['measurement_revision'] == current['measurement_revision']
                                 and item['mapping_revision'] == current['mapping_revision']]
@@ -719,5 +845,5 @@ class ProductLoop:
         return {'goal': {'id': goal, 'question': definition['question'], 'source': current['bundle'],
                          **self.refs(current), 'definition': definition},
                 'history': history, 'policy': {key: value for key, value in policy.items() if key != 'issuer'} if policy else None,
-                'actions': actions, 'observations': observations, 'dependency_status': 'committed_snapshot',
+                'actions': actions, 'observations': observations, 'connection': codex_connection, 'connection_status': self.connection_status(c, project, codex_connection), 'latest_answer': latest_answer, 'dependency_status': 'committed_snapshot',
                 'stages': stages, 'next_action': following, 'limitations': list(LIMITATIONS)}

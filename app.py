@@ -568,30 +568,34 @@ def record_journey(c,project,event):
         (project,event.id,j.id,j.workflow,j.environment,j.subject_kind,j.attempt_id,j.attempt_number,j.state,j.release))
 
 
-@app.post('/v1/events')
-def ingest(req:Batch,project=Depends(writer)):
+def store_events(c,project,events):
     now=time.time();accepted=0
     records=[]
-    for event in req.events:
+    for event in Batch(events=events).events:
         ts=event.timestamp.timestamp() if event.timestamp else now
         if ts<now-RETENTION_DAYS*86400 or ts>now+300:raise HTTPException(422,'timestamp outside retention or more than five minutes in future')
         records.append((event,ts))
+    for event,ts in records:
+        if billing.seen(c,project,event.id):continue
+        if event.distinct_id and c.execute('SELECT 1 FROM erased_identities WHERE project=? AND distinct_id=?',(project,event.distinct_id)).fetchone():continue
+        if event.journey and c.execute('SELECT 1 FROM erased_journeys WHERE project=? AND environment=? AND workflow=? AND journey_id=?',(project,event.journey.environment,event.journey.workflow,event.journey.id)).fetchone():continue
+        changed=c.execute('INSERT OR IGNORE INTO events VALUES(?,?,?,?,?,?,?)',
+            (project,event.id,event.name,event.distinct_id,ts,now,json.dumps(event.properties))).rowcount
+        if changed:
+            record_journey(c,project,event)
+            billing.record(c,project,event.id,len(json.dumps(event.model_dump(mode="json"),separators=(",",":"),ensure_ascii=False).encode()),event.name in {"analytics.pipeline","afterspan.setup.checked"},now)
+            accepted+=1
+            identify_person(c,project,event.distinct_id,event.attributes,now)
+    return {'accepted':accepted,'duplicates':len(events)-accepted}
+
+
+@app.post('/v1/events')
+def ingest(req:Batch,project=Depends(writer)):
     try:
         with closing(connect()) as c,c:
             c.execute('BEGIN IMMEDIATE')
-            for event,ts in records:
-                if billing.seen(c,project,event.id):continue
-                if event.distinct_id and c.execute('SELECT 1 FROM erased_identities WHERE project=? AND distinct_id=?',(project,event.distinct_id)).fetchone():continue
-                if event.journey and c.execute('SELECT 1 FROM erased_journeys WHERE project=? AND environment=? AND workflow=? AND journey_id=?',(project,event.journey.environment,event.journey.workflow,event.journey.id)).fetchone():continue
-                changed=c.execute('INSERT OR IGNORE INTO events VALUES(?,?,?,?,?,?,?)',
-                    (project,event.id,event.name,event.distinct_id,ts,now,json.dumps(event.properties))).rowcount
-                if changed:
-                    record_journey(c,project,event)
-                    billing.record(c,project,event.id,len(json.dumps(event.model_dump(mode="json"),separators=(",",":"),ensure_ascii=False).encode()),event.name in {"analytics.pipeline","afterspan.setup.checked"},now)
-                    accepted+=1
-                    identify_person(c,project,event.distinct_id,event.attributes,now)
+            return store_events(c,project,req.events)
     except ValueError as exc:raise HTTPException(422,str(exc)) from None
-    return {'accepted':accepted,'duplicates':len(req.events)-accepted}
 
 
 @app.post('/v1/identify')
@@ -985,7 +989,7 @@ Retention(app,products,reader,editor)
 Catalog(app,products,reader,editor)
 
 Audit(app,connect,audit_reader,freeze,evidence_metadata,editor)
-product_loop=ProductLoop(app,connect,reader,editor,owner,RETENTION_DAYS)
+product_loop=ProductLoop(app,connect,reader,editor,owner,RETENTION_DAYS,store_events=store_events)
 
 
 @app.get('/.well-known/afterspan')

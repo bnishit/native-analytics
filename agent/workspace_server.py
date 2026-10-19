@@ -197,4 +197,16 @@ def loop_compare(project:str,goal:str,before:str,after:str,action_id:str|None=No
     """Compare compatible cohorts observationally with explicit release and measurement limits."""
     return project_request(project,'/api/loop/goals/'+quote(goal,safe='')+'/compare',{'before':before,'after':after,**({'action_id':action_id} if action_id else {})},'POST')
 
+@mcp.tool(annotations=WRITE)
+def loop_connect(project:str,goal:str='first-answer')->dict:
+    """Start explicit Codex setup for a project in this workspace. Reconnect keeps the original server clock. No credential is issued."""
+    return project_request(project,'/api/loop/goals/'+quote(goal,safe='')+'/connection',{},'POST')
+
+
+@mcp.tool(annotations=WRITE)
+def loop_deliver(project:str,connection_id:str,answer_id:str,submission:dict,goal:str='first-answer')->dict:
+    """Submit a structured answer for presentation and independent checking. Use the same answer_id for retries; no producer key or client timestamp is accepted. This is not proof of human reading."""
+    return project_request(project,'/api/loop/goals/'+quote(goal,safe='')+'/connections/'+quote(connection_id,safe='')+'/answers/'+quote(answer_id,safe=''),submission,'PUT')
+
+
 if __name__=='__main__':mcp.run(transport='stdio')

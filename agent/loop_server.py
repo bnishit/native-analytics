@@ -78,4 +78,18 @@ def loop_compare(before:UUID,after:UUID,goal:str='first-answer',action_id:UUID|N
     return request('goals/'+quote(goal,safe='')+'/compare',{'before':str(before),'after':str(after),**({'action_id':str(action_id)} if action_id else {})},'POST')
 
 
+@mcp.tool(annotations=WRITE)
+def loop_connect(goal:str='first-answer')->dict:
+    """Start explicit Codex setup for this workspace. Reconnect returns the same start clock; it never records a completion or issues credentials."""
+    from urllib.parse import quote
+    return request('goals/'+quote(goal,safe='')+'/connection',{},'POST')
+
+
+@mcp.tool(annotations=WRITE)
+def loop_deliver(connection_id:UUID,answer_id:UUID,submission:dict,goal:str='first-answer')->dict:
+    """Submit the actual structured answer for presentation. The service records completion time and independently checks stored facts atomically. Reuse answer_id for retries. This does not prove human reading or subjective usefulness."""
+    from urllib.parse import quote
+    return request('goals/'+quote(goal,safe='')+'/connections/'+str(connection_id)+'/answers/'+str(answer_id),submission,'PUT')
+
+
 if __name__=='__main__':mcp.run(transport='stdio')

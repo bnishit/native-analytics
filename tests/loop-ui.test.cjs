@@ -6,7 +6,7 @@ const vm=require('node:vm');
 async function render(observations,extras={}){
   const content={innerHTML:''},elements=new Map();
   const goal={id:'first-answer',question:'Does the workspace get a checked answer?',measurement_revision:'current',mapping_revision:'native-v1',goal_revision:2,source:{repository:'example/product',base:'main',commit:'a'.repeat(40)}};
-  const context=vm.createContext({Date,renderVersion:1,legacyOwner:false,canEdit:()=>false,isOwner:()=>false,
+  const context=vm.createContext({Date,renderVersion:1,legacyOwner:false,canEdit:()=>Boolean(extras.canEdit),isOwner:()=>Boolean(extras.isOwner),
     esc:String,fmt:value=>value===null?'—':String(value),url:value=>value,
     panel:(title,body)=>`<section><h2>${title}</h2>${body}</section>`,act:fn=>fn,
     $:selector=>{if(selector==='#content')return content;if(!content.innerHTML.includes(`id="${selector.slice(1)}"`))return null;if(!elements.has(selector))elements.set(selector,{});return elements.get(selector)},
@@ -54,4 +54,15 @@ test('an environment change blocks the connection in the owner page',async()=>{
   const html=await render([],{connection:{started_at:1700000000,deadline_at:1700086400},connection_status:'environment_changed'});
   assert.match(html,/different service environment/);
   assert.doesNotMatch(html,/Waiting for the agent|Reconnecting keeps/);
+});
+
+
+test('production connection hides unsupported repair and grant buttons',async()=>{
+  for(const policy of [null,{state:'revoked',revision:2},{state:'active',revision:1,operations:['draft-pr']},{state:'paused',revision:2,operations:['draft-pr']}]){
+    const html=await render([],{canEdit:true,isOwner:true,tracking_repair_available:false,stages:{tracking:'service_managed'},policy});
+    assert.match(html,/Built-in connection contract/);
+    assert.match(html,/local pilot repair is unavailable/);
+    assert.doesNotMatch(html,/id="loop-prepare"|id="loop-allow-draft"/);
+    if(policy&&policy.state!=='revoked')assert.match(html,/id="loop-revoke"/);
+  }
 });

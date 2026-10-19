@@ -10,6 +10,6 @@
     "entry_rule": "first_in_entry_window",
     "rubric": "aggregate-answer-v1"
   },
-  "mapping": {"source": "native", "environment": "local", "observation_id_property": "observation_id"},
+  "mapping": {"source": "native", "environment": "production", "observation_id_property": "observation_id"},
   "tracking": {"recipe": "python-answer-v1", "path": "examples/loop_pilot.py", "dependencies": ["examples/loop_pilot.py"]}
 }

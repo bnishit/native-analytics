@@ -196,24 +196,33 @@ class GitHub:
             _fail("The goal tracking recipe is unsupported", 422)
         dependency, blob_sha = self._content(PATH, source["commit"])
         measurement = definition.get("measurement")
-        if (definition.get("mapping") != {"source": "native", "environment": "local", "observation_id_property": "observation_id"}
+        local_mapping = {"source": "native", "environment": "local", "observation_id_property": "observation_id"}
+        production = definition.get("mapping") == local_mapping | {"environment": "production"}
+        if (definition.get("mapping") != local_mapping and not production
                 or not isinstance(measurement, dict) or set(measurement) != {"unit", "entry", "completion", "followup_seconds", "entry_rule", "rubric"}
                 or measurement.get("unit") != "workspace" or measurement.get("followup_seconds") != 86400
                 or measurement.get("entry_rule") != "first_in_entry_window" or measurement.get("rubric") != "aggregate-answer-v1"
                 or not _event_rule(measurement.get("completion"), "codex.answer.ready")):
-            _fail("The goal does not match the supported local tracking recipe", 422)
-        try:
-            started = entry_event(dependency)
-        except ValueError:
-            _fail("The source has no supported local entry event", 422)
-        if not _event_rule(measurement.get("entry"), started):
-            _fail("The goal entry does not match the source event", 422)
+            _fail("The goal does not match the supported first-answer measurement contract", 422)
+        if production:
+            if (not _event_rule(measurement.get("entry"), "codex.connection.started")
+                    or measurement["entry"].get("filters") or measurement["completion"].get("filters")):
+                _fail("Production goals require the unfiltered service Codex connection contract", 422)
+        else:
+            try:
+                started = entry_event(dependency)
+            except ValueError:
+                _fail("The source has no supported local entry event", 422)
+            if not _event_rule(measurement.get("entry"), started):
+                _fail("The goal entry does not match the source event", 422)
         return {key: source[key] for key in ("repository", "base", "commit", "path", "content_sha256")} | {
             "repository_id": repository_id, "definition": definition, "dependencies": [{"path": PATH, "blob_sha": blob_sha,
             "content_sha256": hashlib.sha256(dependency.encode()).hexdigest()}], "workflows": self._workflows(source["commit"])}
 
     def prepare(self, bundle):
         snapshot = self.load_goal(bundle)
+        if snapshot["definition"]["mapping"]["environment"] != "local":
+            _fail("The tracking repair supports local goals only", 422)
         if snapshot != bundle:
             _fail("The source snapshot has changed")
         current = self._head(bundle["base"])["commit"]["sha"]

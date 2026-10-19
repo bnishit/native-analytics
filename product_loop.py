@@ -826,13 +826,14 @@ class ProductLoop:
                                 and item['mapping_revision'] == current['mapping_revision']]
         definition = current['bundle']['definition']
         release = verified_release(latest, {**self.refs(current), 'environment': definition['mapping']['environment']}) if latest else None
+        tracking_repair_available = definition['mapping']['environment'] == 'local'
         bound_observations = [item for item in current_observations if release and item['source'] == 'native'
                               and item['window'].get('release') == release['commit']
                               and datetime.fromisoformat(item['window']['entry_start']) >= datetime.fromisoformat(release['released_at'])]
         completion_observed = any(item['source'] == 'native' and item.get('completion_events_observed') for item in current_observations)
         bound_completion = any(item.get('completion_events_observed') for item in bound_observations)
         receipt = latest['receipt'] or {} if latest else {}
-        tracking = 'healthy' if latest and latest['status'] == 'healthy' else 'prepared' if latest and latest['plan'] else 'not_prepared'
+        tracking = 'service_managed' if not tracking_repair_available else 'healthy' if latest and latest['status'] == 'healthy' else 'prepared' if latest and latest['plan'] else 'not_prepared'
         stages = {'tracking': tracking, 'pr': 'observed' if receipt.get('pr_number') else 'not_observed',
                   'merge': 'merged' if receipt.get('merged') is True else 'not_observed',
                   'release': 'released' if release else 'release_pending' if receipt.get('merged') is True else 'not_observed',
@@ -842,8 +843,12 @@ class ProductLoop:
         following = ('prepare_tracking' if not latest or not latest['plan'] else 'no_change' if latest['status'] == 'healthy' else
                      'review_pr' if not receipt.get('merged') else 'check_release' if stages['release'] != 'released' else
                      current_observations[0]['next_action'] if current_observations else 'collect_evidence')
+        if not tracking_repair_available:
+            following = current_observations[0]['next_action'] if current_observations else 'collect_evidence'
+            if following == 'prepare_tracking':
+                following = 'collect_evidence'
         return {'goal': {'id': goal, 'question': definition['question'], 'source': current['bundle'],
                          **self.refs(current), 'definition': definition},
                 'history': history, 'policy': {key: value for key, value in policy.items() if key != 'issuer'} if policy else None,
                 'actions': actions, 'observations': observations, 'connection': codex_connection, 'connection_status': self.connection_status(c, project, codex_connection), 'latest_answer': latest_answer, 'dependency_status': 'committed_snapshot',
-                'stages': stages, 'next_action': following, 'limitations': list(LIMITATIONS)}
+                'stages': stages, 'next_action': following, 'tracking_repair_available': tracking_repair_available, 'limitations': list(LIMITATIONS)}

@@ -235,6 +235,31 @@ class GitHubTests(unittest.TestCase):
         self.assertEqual(plan["workflows"], {WORKFLOW: blob(self.http.files[BASE][WORKFLOW])})
         self.assertEqual(self.http.writes, [])
 
+    def test_production_connection_goal_loads_without_enabling_local_code_repairs(self):
+        goal = copy.deepcopy(self.http.goal)
+        goal["mapping"]["environment"] = "production"
+        goal["measurement"]["entry"] = {"event": "codex.connection.started", "filters": []}
+        self.http.files[BASE][GOAL_PATH] = json.dumps(goal)
+        source = self.source | {"content_sha256": hashlib.sha256(self.http.files[BASE][GOAL_PATH].encode()).hexdigest()}
+        snapshot = self.github.load_goal(source)
+        self.assertEqual(snapshot["definition"], goal)
+        self.assertBlocked(lambda: self.github.prepare(snapshot), 422)
+        self.assertEqual(self.http.writes, [])
+
+    def test_production_goal_rejects_unsupported_events_filters_and_mapping(self):
+        for field in ("entry", "completion", "environment", "mapping"):
+            with self.subTest(field=field):
+                goal = copy.deepcopy(self.http.goal)
+                goal["mapping"]["environment"] = "production"
+                goal["measurement"]["entry"] = {"event": "codex.connection.started"}
+                if field == "entry":goal["measurement"]["entry"]["event"] = "arbitrary.started"
+                if field == "completion":goal["measurement"]["completion"]["filters"] = [{"property": "environment", "value": "local"}]
+                if field == "environment":goal["mapping"]["environment"] = "untrusted"
+                if field == "mapping":goal["mapping"]["extra"] = True
+                self.http.files[BASE][GOAL_PATH] = json.dumps(goal)
+                source = self.source | {"content_sha256": hashlib.sha256(self.http.files[BASE][GOAL_PATH].encode()).hexdigest()}
+                self.assertBlocked(lambda: self.github.load_goal(source), 422)
+
     def test_draft_is_stable_and_guarded_at_every_write(self):
         plan, receipt = self.drafted()
         self.assertEqual({key: receipt[key] for key in ("status", "pr_number", "pr_url", "head_sha", "base_sha", "draft", "merged")},

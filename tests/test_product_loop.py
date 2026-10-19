@@ -582,6 +582,11 @@ class ProductLoopTests(unittest.TestCase):
             self.assertEqual(self.call('PUT', '/goals/first-answer/sync', self.source).status_code, 200)
             response = self.call('POST', '/goals/first-answer/prepare', {'request_id': str(uuid.uuid4())})
             self.assertEqual(response.status_code, 422, response.text)
+            if change == 'environment':
+                dossier = self.call('GET', '/goals/first-answer').json()
+                self.assertFalse(dossier['tracking_repair_available'])
+                self.assertEqual(dossier['stages']['tracking'], 'service_managed')
+                self.assertEqual(dossier['next_action'], 'collect_evidence')
         self.assertEqual(self.provider.writes, [])
 
     def test_merge_and_release_remain_separate_and_release_authority_is_needed(self):
@@ -650,6 +655,17 @@ class ProductLoopTests(unittest.TestCase):
                          ('externally_attested', None, None, None, 'prepare_tracking'))
         self.assertEqual(receipt['missing_events'], ['codex.connection.started', 'codex.answer.ready'])
         self.assertEqual(receipt['coverage']['complete'], False)
+        self.provider.definition['mapping']['environment'] = 'production'
+        self.source['content_sha256'] = digest(self.provider.definition)
+        self.assertEqual(self.call('PUT', '/goals/first-answer/sync', self.source).status_code, 200)
+        production = self.call('PUT', '/goals/first-answer/external/' + str(uuid.uuid4()), payload)
+        self.assertEqual(production.status_code, 200, production.text)
+        dossier = self.call('GET', '/goals/first-answer').json()
+        self.assertFalse(dossier['tracking_repair_available'])
+        self.assertEqual(dossier['next_action'], 'collect_evidence')
+        self.provider.definition['mapping']['environment'] = 'local'
+        self.source['content_sha256'] = digest(self.provider.definition)
+        self.assertEqual(self.call('PUT', '/goals/first-answer/sync', self.source).status_code, 200)
         self.assertEqual(self.call('PUT', '/goals/first-answer/external/' + id, payload).json(), receipt)
         native = self.observe()
         comparison = self.call('POST', '/goals/first-answer/compare', {'before': id, 'after': native['id']}).json()

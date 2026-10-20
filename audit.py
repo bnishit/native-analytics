@@ -15,12 +15,12 @@ from pydantic import BaseModel,ConfigDict,Field,StrictBool,UUID4,model_validator
 from product_analytics import Window
 
 SCHEMA='slack-request-v1'
-STAGES=('parser','planner','shadow','confirmation','tool','reply')
+STAGES=('parser','planner','shadow','confirmation','tool','reply','quality')
 Digest=Annotated[str,Field(pattern=r'^[a-f0-9]{64}$')]
 class Observation(BaseModel):
     model_config=ConfigDict(extra='forbid')
     schema_version:Literal['slack-request-v1']
-    stage:Literal['parser','planner','shadow','confirmation','tool','reply']
+    stage:Literal['parser','planner','shadow','confirmation','tool','reply','quality']
     environment:Literal['production','staging','development','test','local']
     request_ref:UUID4|Literal['[redacted]']|None=None
     attempt_ref:UUID4|Literal['[redacted]']|None=None
@@ -39,8 +39,26 @@ class Observation(BaseModel):
     reported_outcome:Literal['succeeded','failed','clarification','cancelled','unknown']|None=None
     diagnostic_code:Literal['none','input_mismatch','decision_mismatch','unsafe_proposal','ambiguous_request','rejected','comparison_scope_unavailable','unknown']|None=None
     duration_ms:float|None=Field(default=None,ge=0,le=86400000,allow_inf_nan=False,strict=True)
+    check_version:Literal['growthbook-catalog-v1']|None=None
+    checked_claims:int|None=Field(default=None,ge=0,le=15,strict=True)
+    mismatched_claims:int|None=Field(default=None,ge=0,le=15,strict=True)
+    unknown_claims:int|None=Field(default=None,ge=0,le=15,strict=True)
+    @model_validator(mode='after')
+    def quality_counts(self):
+        counts=(self.checked_claims,self.mismatched_claims,self.unknown_claims)
+        if self.stage!='quality':
+            if self.check_version is not None or any(v is not None for v in counts):raise ValueError('quality fields belong to the quality stage')
+        elif self.check_version is not None:
+            if any(v is None for v in counts) or self.mismatched_claims>self.checked_claims or self.checked_claims+self.unknown_claims>15:raise ValueError('inconsistent quality counts')
+            outcome='unknown' if self.unknown_claims or not self.checked_claims else 'failed' if self.mismatched_claims else 'succeeded'
+            if self.reported_outcome!=outcome:raise ValueError('quality outcome must match counts')
+        return self
 
 MEANINGS={
+ 'check_version':'growthbook-catalog-v1: producer-side deterministic check of the exact rendered catalog answer against a separate uncached GrowthBook read. Not a second model vote or an independent Afterspan source fetch.',
+ 'checked_claims':'Number of displayed catalog rows with a matching source version checked for presence, enabled state and explicit Identity $in list-entry count. Not active users or SDK eligibility.',
+ 'mismatched_claims':'Checked rows which disagreed with the source. Nonzero forces failed; never averaged into a clean pass.',
+ 'unknown_claims':'Rows not checkable, including changed or missing source versions. Missing checks and unsupported answers remain unknown.',
  'schema_version':'Version of this producer diagnostic contract; it is not an inferred event schema.',
  'stage':'One completed stage observation per business attempt. Reuse the event ID for delivery retries.',
  'environment':'Producer-reported environment. A mismatch with the expected environment is reported.',
@@ -81,8 +99,30 @@ class ReplyGoal(BaseModel):
     environment:Literal['production','staging']
     tracking:ReplyTracking
 
+class QualityTracking(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    recipe:Literal['source-answer-check-v1']
+    dependencies:list[Annotated[str,Field(pattern=r'^[A-Za-z0-9_./-]{1,160}$')]]=Field(min_length=1,max_length=16)
+    @model_validator(mode='after')
+    def relative_dependencies(self):
+        if any(p.startswith('/') or '..' in p.split('/') for p in self.dependencies):raise ValueError('use relative dependency paths')
+        return self
+
+class QualityGoal(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    schema_version:Literal['afterspan-audit-goal-v1']=Field(alias='schema')
+    id:Literal['answer-quality']
+    question:str=Field(min_length=1,max_length=2000)
+    source_of_truth:str=Field(min_length=1,max_length=200)
+    criteria:str=Field(min_length=1,max_length=1000)
+    safe_test:str=Field(min_length=1,max_length=1000)
+    metric:Literal['answer-quality-v1']
+    environment:Literal['production','staging']
+    verifier:Literal['growthbook-catalog-v1','unconfigured']
+    tracking:QualityTracking
+
 class GoalQuery(ReviewQuery):
-    goal:ReplyGoal
+    goal:ReplyGoal|QualityGoal
     release:str|None=Field(default=None,pattern=r'^rel_[a-f0-9]{32}$')
     @model_validator(mode='after')
     def same_environment(self):
@@ -137,6 +177,21 @@ class Audit:
         def review(project:str,req:ReviewQuery):return self.review(project,req)
         @app.post('/api/audit/evaluate',dependencies=[Depends(reader)])
         def evaluate(project:str,req:GoalQuery):return self.evaluate(project,req)
+        @app.post('/api/audit/onboarding',dependencies=[Depends(reader)])
+        def onboarding(project:str,req:GoalQuery):
+            if not isinstance(req.goal,QualityGoal):raise HTTPException(422,'provide an answer-quality goal')
+            result=self.evaluate(project,req)
+            observed=any(r['answer_check'] and r['answer_check']['check_version']==req.goal.verifier for r in result['requests'])
+            return {'goal':result['goal'],'verifier_declared':req.goal.verifier!='unconfigured','source_check_observed':observed,
+                    'status':'unconfigured' if req.goal.verifier=='unconfigured' else 'observed' if observed else 'waiting_for_check','observed_reads':result['denominator'],
+                    'passed':result['passed'],'unknown':result['unknown'],'next_action':result['next_action'],
+                    'contract':Observation.model_json_schema(),'source_access':'producer server only; never send source credentials or reply text to Afterspan',
+                    'setup':['Declare the source of truth and exact claim scope in the repo goal.',
+                             'Implement a separate source read and deterministic check bound to the exact sent answer.',
+                             'Keep source changes, unavailable reads, unsupported claims and missing checks unknown.',
+                             'Send bounded quality-stage counts with the same request, attempt, environment and release as delivery.',
+                             'Run one owner-authorized safe test; inspect trace and evaluate the frozen release window.'],
+                    'limits':result['limits'],'query':result['query']}
         @app.post('/api/audit/trace',dependencies=[Depends(reader)])
         def trace(project:str,req:TraceQuery):
             report=self.review(project,ReviewQuery(**req.model_dump(exclude={'request'})))
@@ -199,7 +254,7 @@ class Audit:
             if conflict:issues.append(field+'_conflict')
         stages=[]
         for name in STAGES:
-            required=True if name in ['parser','planner'] else values['comparison_eligible'] if name=='shadow' else values[name+'_required']
+            required=True if name in ['parser','planner'] else values['comparison_eligible'] if name=='shadow' else None if name=='quality' else values[name+'_required']
             seen=by_stage.get(name,[])
             state='unknown' if not observations else 'observed' if len(seen)==1 else 'conflict' if len(seen)>1 else 'missing' if required is True else 'not_required' if required is False else 'unknown'
             if seen and required is False:issues.append('unexpected_'+name)
@@ -227,7 +282,9 @@ class Audit:
             'business_attempts_observed':len(slots),'latest_attempt_number':latest,'missing_attempt_numbers':max(slots)-len(slots) if slots else None,
             'comparison_declared_eligible':declared,'comparison':comparison,'stages':stages,'issues':sorted(set(issues)),
             'producer_reported_unsafe':any(f.get('proposal_safe') is False for f in facts),'business_state':'not_independently_verified',
-            'release_coverage':[self.ref(key,project,'release',r) if available(r) else 'unavailable' for r in sorted(releases,key=str)]}
+            'release_coverage':[self.ref(key,project,'release',r) if available(r) else 'unavailable' for r in sorted(releases,key=str)],
+            'answer_check':({field:by_stage['quality'][0]['facts'].get(field) for field in ['check_version','checked_claims','mismatched_claims','unknown_claims','reported_outcome']}
+                            if len(by_stage.get('quality',[]))==1 else None)}
     def evaluate(self,project,req):
         report=self.review(project,ReviewQuery(**req.model_dump(exclude={'goal','release'})))
         reads=[r for r in report['requests'] if r['request_kind']=='read' and r['environment']==req.goal.environment
@@ -245,6 +302,26 @@ class Audit:
                       or req.release is not None and 'release_unavailable_or_mixed' in r['issues'] for r in report['requests'])
         complete=(coverage['selection_complete_for_correlated_window'] and not coverage['invalid_observations']
                   and not any(coverage['uncorrelated_observations'].values()) and not uncertain)
+        if isinstance(req.goal,QualityGoal):
+            checked=Counter()
+            for row in reads:
+                quality=row['answer_check'];reply=next(s for s in row['stages'] if s['stage']=='reply')
+                valid=quality and req.goal.verifier!='unconfigured' and quality['check_version']==req.goal.verifier
+                valid=valid and not any(i!='comparison_scope_unavailable' for i in row['issues']) and all(s['state']=='observed' for s in row['stages'] if s['required'] is True)
+                valid=valid and reply['required'] is True and reply['reported_outcome']=='succeeded'
+                outcome=quality['reported_outcome'] if valid else 'unknown'
+                checked[outcome if outcome in {'succeeded','failed'} else 'unknown']+=1
+            return {'goal':req.goal.model_dump(by_alias=True),'definition_verification':'caller_supplied_data_not_action_authority',
+                    'metric':'answer-quality-v1','denominator':count,'passed':checked['succeeded'],'failed':checked['failed'],'unknown':checked['unknown'],
+                    'rate':checked['succeeded']/count if count and complete and not checked['unknown'] else None,
+                    'selection_complete':complete,'release':req.release,'release_bound':req.release is not None,
+                    'verification':'producer_source_check_not_independently_fetched_by_afterspan',
+                    'coverage':coverage,'query':report['query'],'snapshot':report['snapshot'],'fingerprint':report['fingerprint'],'requests':reads,
+                    'next_action':'configure_source_check' if req.goal.verifier=='unconfigured' else 'collect_real_requests' if not count else 'inspect_unassessed_answers' if checked['unknown'] else 'inspect_wrong_answers' if checked['failed'] else 'keep_observing',
+                    'limits':['Checks cover displayed catalog names, enabled state and explicit Identity $in list-entry counts only; other answer kinds remain unassessed.',
+                              'Source checks run in the producer with a separate uncached read, not in the answering model. Afterspan validates bounded reports; it does not fetch GrowthBook or certify the producer.',
+                              'Changed source versions, unavailable reads, missing checks and incomplete selection prevent a clean rate.',
+                              'A passed source check is not full feature eligibility, human reading, customer benefit or causal improvement.']}
         return {'goal':req.goal.model_dump(by_alias=True),'definition_verification':'caller_supplied_data_not_action_authority',
                 'metric':'read-reply-delivery-v1','denominator':count,'delivered':outcomes['succeeded'],
                 'failed':outcomes['failed'],'unknown':outcomes['unknown'],

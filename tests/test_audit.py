@@ -67,7 +67,7 @@ class AuditTests(unittest.TestCase):
             ref,attempt=str(uuid.uuid4()),str(uuid.uuid4())
             for j,stage in enumerate(['parser','planner','shadow']):self.observe(self.facts(stage,ref,attempt,duration_ms=float(i)),i*10+j)
         r=self.review();self.assertEqual(r['denominators']['observed_request_chains_in_window'],65);self.assertEqual(r['denominators']['selected_requests'],60);self.assertEqual(r['agreement']['denominator'],60);self.assertEqual(r['coverage']['omitted_request_chains'],5)
-        trace=self.review({**r['query'],'request':r['requests'][0]['request']},path='trace');self.assertEqual(trace['fingerprint'],r['fingerprint']);self.assertEqual(len(trace['request']['stages']),6)
+        trace=self.review({**r['query'],'request':r['requests'][0]['request']},path='trace');self.assertEqual(trace['fingerprint'],r['fingerprint']);self.assertEqual(len(trace['request']['stages']),7)
         self.chain();again=self.review(r['query']);self.assertEqual(again['denominators'],r['denominators']);self.assertEqual(again['fingerprint'],r['fingerprint'])
         payload=json.dumps(r)
         for forbidden in ['private chat sentinel','private-feature-sentinel','private-person@example.test','203.0.113.99','a'*64,'b'*64,self.release]:self.assertNotIn(forbidden,payload)
@@ -117,6 +117,56 @@ class AuditTests(unittest.TestCase):
         return {'schema':'afterspan-audit-goal-v1','id':'read-reply-delivery','question':'Did Slack accept the reply?',
                 'metric':'read-reply-delivery-v1','environment':'production','tracking':{'recipe':'tracker-read-reply-v1',
                 'path':'src/app/api/slack/route.ts','dependencies':['src/app/api/slack/route.ts','src/lib/analytics/request-audit.ts']}}
+
+    def quality_goal(self,verifier='growthbook-catalog-v1'):
+        return {'schema':'afterspan-audit-goal-v1','id':'answer-quality','question':'Do displayed catalog facts match the source?',
+                'metric':'answer-quality-v1','environment':'production','verifier':verifier,'source_of_truth':'GrowthBook','criteria':'Displayed catalog facts match raw source rows','safe_test':'One approved private read',
+                'tracking':{'recipe':'source-answer-check-v1','dependencies':['src/reply.ts']}}
+
+    def quality_chain(self,outcome='succeeded',**counts):
+        ref,attempt=str(uuid.uuid4()),str(uuid.uuid4())
+        for i,stage in enumerate(['parser','planner','reply','quality']):
+            extra={'check_version':'growthbook-catalog-v1','checked_claims':1,'mismatched_claims':int(outcome=='failed'),'unknown_claims':int(outcome=='unknown'),**counts} if stage=='quality' else {}
+            self.observe(self.facts(stage,ref,attempt,comparison_eligible=None,diagnostic_code='comparison_scope_unavailable',
+                         reply_required=True,reported_outcome=outcome if stage=='quality' else 'succeeded',**extra),i)
+        return ref,attempt
+
+    def test_source_check_is_distinct_from_delivery_and_preserves_missing_checks(self):
+        self.quality_chain()
+        query={'goal':self.quality_goal()};r=self.review(query,path='evaluate')
+        self.assertEqual((r['passed'],r['unknown'],r['rate']),(1,0,1))
+        self.assertEqual(r['verification'],'producer_source_check_not_independently_fetched_by_afterspan')
+        self.assertEqual(self.review({'goal':self.goal()},path='evaluate')['delivered'],1)
+        self.chain(comparison_eligible=False)
+        older=self.review(query,path='evaluate');self.assertEqual(older['unknown'],1);self.assertIsNone(older['rate'])
+        self.assertEqual(self.review({'goal':self.quality_goal('unconfigured')},path='evaluate')['passed'],0)
+
+    def test_source_mismatch_and_changed_source_never_become_clean_pass(self):
+        self.quality_chain('failed');bad=self.review({'goal':self.quality_goal()},path='evaluate')
+        self.assertEqual((bad['passed'],bad['failed'],bad['rate']),(0,1,0))
+        self.quality_chain('unknown');changed=self.review({'goal':self.quality_goal()},path='evaluate')
+        self.assertEqual(changed['unknown'],1);self.assertIsNone(changed['rate'])
+        capped=self.review({'goal':self.quality_goal(),'limit':1},path='evaluate');self.assertFalse(capped['selection_complete']);self.assertIsNone(capped['rate'])
+
+    def test_quality_needs_delivery_and_conflicting_reports_never_pass(self):
+        ref,attempt=self.quality_chain();self.observe(self.facts('reply',ref,attempt,reply_required=True,reported_outcome='failed'),10)
+        result=self.review({'goal':self.quality_goal()},path='evaluate');self.assertEqual(result['unknown'],1);self.assertIsNone(result['rate'])
+        query={'goal':self.quality_goal()};self.assertEqual(self.client.post('/api/audit/evaluate?project='+self.p['id'],json=query).status_code,401)
+        query['goal']['tracking']['dependencies']=['../private'];self.assertEqual(self.owner.post('/api/audit/onboarding?project='+self.p['id'],headers=CSRF,json=query).status_code,422)
+
+    def test_quality_contract_rejects_false_success_and_source_contents(self):
+        from audit import Observation
+        from pydantic import ValidationError
+        facts=self.facts('quality',str(uuid.uuid4()),str(uuid.uuid4()),check_version='growthbook-catalog-v1',checked_claims=1,mismatched_claims=1,unknown_claims=0,reported_outcome='succeeded')
+        with self.assertRaises(ValidationError):Observation.model_validate(facts)
+        for extra in [{'checked_claims':True},{'source_response':'private contents'},{'checked_claims':16}]:
+            with self.assertRaises(ValidationError):Observation.model_validate({**facts,**extra})
+
+    def test_new_repo_setup_reports_unconfigured_and_observed_coverage(self):
+        query={'goal':self.quality_goal('unconfigured')};setup=self.review(query,path='onboarding')
+        self.assertFalse(setup['verifier_declared']);self.assertEqual(setup['next_action'],'configure_source_check');self.assertEqual(setup['observed_reads'],0)
+        self.quality_chain();ready=self.review({'goal':self.quality_goal()},path='onboarding')
+        self.assertTrue(ready['verifier_declared']);self.assertEqual(ready['passed'],1);self.assertIn('setup',ready)
 
     def test_reply_goal_empty_unknown_failed_delivered_and_release_scope(self):
         query={'goal':self.goal()}

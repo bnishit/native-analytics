@@ -41,6 +41,15 @@ class LoopCheckoutTests(unittest.TestCase):
         self.git('add','.');self.git('commit','-qm','Symlink fixture')
         with self.assertRaises(ValueError):repo.inspect(self.root,'first-answer','owner/product')
 
+    def test_new_repo_quality_draft_defaults_to_no_verifier_and_never_overwrites(self):
+        created=repo.init_answer_goal(self.root,'Do displayed facts match the source?','unconfigured','production',['examples/loop_pilot.py'],'GrowthBook','Displayed facts match','Approved read only')
+        self.assertEqual(created['status'],'draft_not_instrumented');self.assertEqual(created['definition']['verifier'],'unconfigured')
+        with self.assertRaises(FileExistsError):repo.init_answer_goal(self.root,'Replacement','unconfigured','production',['examples/loop_pilot.py'],'GrowthBook','Displayed facts match','Approved read only')
+        self.git('add','.');self.git('commit','-qm','Quality goal fixture')
+        inspected=repo.inspect(self.root,'answer-quality','owner/product');self.assertFalse(inspected['draft']);self.assertIn('caller-supplied',inspected['authority'])
+        for dependency in ['/private','../private']:
+            with self.assertRaises(ValueError):repo.init_answer_goal(self.root,'Question','unconfigured','production',[dependency],'GrowthBook','Displayed facts match','Approved read only')
+
     def test_repository_fsmonitor_cannot_execute_during_inspection(self):
         hook=self.root/'monitor.py';sentinel=self.root/'executed'
         hook.write_text('#!/usr/bin/env python3\nfrom pathlib import Path\nPath('+repr(str(sentinel))+').touch()\n')

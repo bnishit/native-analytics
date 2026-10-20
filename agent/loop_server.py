@@ -45,10 +45,46 @@ def loop_status(goal:str='first-answer')->dict:
 
 
 @mcp.tool(annotations=WRITE)
-def loop_prepare(request_id:UUID,goal:str='first-answer')->dict:
-    """Prepare the one supported tracking repair. Does not open or merge a PR."""
+def loop_prepare(request_id:UUID,goal:str='first-answer',files:list[dict]|None=None)->dict:
+    """Prepare a legacy repair or exact reviewed v2 files. V2 returns a pollable job. Does not open or merge a PR."""
     from urllib.parse import quote
-    return request('goals/'+quote(goal,safe='')+'/prepare',{'request_id':str(request_id)},'POST')
+    return request('goals/'+quote(goal,safe='')+'/prepare',{'request_id':str(request_id),**({'files':files} if files is not None else {})},'POST')
+
+
+@mcp.tool(annotations=READ)
+def loop_sources()->dict:
+    """Read connected repository, analytics and release providers without credentials. Owner connection and goal adoption use the private CLI or owner UI."""
+    return request('sources')
+
+
+@mcp.tool(annotations=WRITE)
+def loop_scan(scan_id:UUID,connection_id:UUID,commit:str,base:str='main')->dict:
+    """Inspect an immutable connected repo without executing it. Static findings do not prove live collection."""
+    return request('scans/'+str(scan_id),{'connection_id':str(connection_id),'commit':commit,'base':base},'PUT')
+
+
+@mcp.tool(annotations=READ)
+def loop_scan_status(scan_id:UUID)->dict:
+    """Read the original pinned scan receipt and its unsupported cases."""
+    return request('scans/'+str(scan_id))
+
+
+@mcp.tool(annotations=READ)
+def loop_job_status(job_id:UUID)->dict:
+    """Read a scan or artifact preparation job. Pending is not success. After interruption, resend the same original request and ID."""
+    return request('jobs/'+str(job_id))
+
+
+@mcp.tool(annotations=WRITE)
+def loop_propose(proposal_id:UUID,definition:dict)->dict:
+    """Propose an event outcome goal grounded in scanned code. An owner must adopt its exact hash. This grants no action permission."""
+    return request('proposals/'+str(proposal_id),definition,'PUT')
+
+
+@mcp.tool(annotations=WRITE)
+def loop_release(action_id:UUID,connection_id:UUID)->dict:
+    """Read Railway proof for the exact merged artifact. A release does not prove events arrived or users benefited."""
+    return request('actions/'+str(action_id)+'/release',{'connection_id':str(connection_id)},'POST')
 
 
 @mcp.tool(annotations=ACTION)
@@ -59,7 +95,7 @@ def loop_action(action_id:UUID,operation:Literal['draft-pr','reconcile','merge']
 
 @mcp.tool(annotations=WRITE)
 def loop_observe(observation_id:UUID,window:dict,goal:str='first-answer')->dict:
-    """Freeze first-entry cohorts with explicit entry/follow-up bounds and receipt cutoff. Returns aggregates only."""
+    """Save an immutable bounded observation: native workspace cohorts for v1, logged-event outcomes for v2. Preserve source coverage and unknowns."""
     from urllib.parse import quote
     return request('goals/'+quote(goal,safe='')+'/observations/'+str(observation_id),window,'PUT')
 
@@ -73,7 +109,7 @@ def loop_assess(answer_id:UUID,submission:dict,goal:str='first-answer')->dict:
 
 @mcp.tool(annotations=READ)
 def loop_compare(before:UUID,after:UUID,goal:str='first-answer',action_id:UUID|None=None)->dict:
-    """Compare compatible cohorts observationally. Missing release evidence cannot prove a post-release improvement."""
+    """Compare compatible saved observations observationally. Missing release evidence cannot prove a post-release improvement."""
     from urllib.parse import quote
     return request('goals/'+quote(goal,safe='')+'/compare',{'before':str(before),'after':str(after),**({'action_id':str(action_id)} if action_id else {})},'POST')
 

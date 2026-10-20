@@ -18,6 +18,54 @@ Open http://127.0.0.1:8769/app. This loopback preview creates private local emai
 
 `AFTERSPAN_EDITION=self_hosted` is the default. Usage counts remain useful for server capacity; there are no commercial event, payload, project or seat limits. Request rate, query-size, definition-count and retention bounds still protect the service. This is one process on one SQLite volume, not unlimited infrastructure.
 
+### Onboard a repository with existing analytics
+
+Open **Goal loop → Connect a repository**. An owner connects a GitHub repository, scans a branch, reviews an event outcome goal, and adopts its exact proposal. Keep current Native Analytics events or select a connected PostHog project whose event is found in the pinned code. Old PostHog taxonomy does not prove that a current native release sends those events. Unsupported patterns and the 64-file scan cap stay visible.
+
+The versioned `afterspan-repo-goal-v2` contract counts logged events with disjoint success, failure and unclassified outcomes. It does not reuse the original workspace/24-hour answer metric. Missing status, environment or release fields are coverage gaps. Fewer observations than the declared `min_sample_size` leave the rate unavailable. A successful HTTP response describes that logged response, not completion of a customer task.
+
+New local setup generates `AFTERSPAN_CONNECTION_KEY` in its private configuration. On an existing installation, generate and store a URL-safe base64 encoding of 32 random bytes once in the server secret store. Keep it with your encrypted backup keys. Connection writes fail closed without it. Do not replace it on restart or rotate it without a separate credential migration. Provider keys are encrypted with AES-GCM and project/connection/revision context. An owner session can connect, rotate or disconnect; workspace keys cannot issue themselves provider access. Disconnect blocks future Afterspan use and does not revoke the provider key itself. Read probes establish target access and report credential scope as unverified. Use dedicated provider credentials with the least permission needed.
+
+Source connection input comes from the owner UI or a mode-600 file. Never put a credential in a command argument, repo goal, MCP call or browser URL. Exact target configurations are:
+
+| Provider | `kind` and `config` | Read or action boundary |
+|---|---|---|
+| GitHub | `github`, `{ "repository": "OWNER/REPO" }` | Fixed GitHub API host. Scan needs repository reads; draft PRs need contents and pull-request writes. Automatic merge also needs checks, Actions, deployment and branch-protection reads. |
+| PostHog | `posthog`, `{ "region": "us", "project_id": 123 }` | US or EU fixed host, bounded ad-hoc aggregate queries. Supply a dedicated read key. No raw event export, arbitrary SQL or caller host. |
+| Railway | `railway`, `{ "project_id": "UUID", "environment_id": "UUID", "service_id": "UUID" }` | Reads the latest deployment of this exact service and actual named environment. Does not deploy or read service variables. |
+
+A private connection file wraps `kind`, `config` and `credential`. Set `AFTERSPAN_SESSION_FILE` to the owner receipt. `loop-source-connect` returns sanitized target metadata, never the secret. Existing scoped editor keys can scan, propose, prepare, reconcile and observe. They cannot adopt a goal or grant action policy.
+
+```sh
+python cli/native_analytics.py loop-source-connect --project PROJECT_ID --id CONNECTION_UUID --revision 0 --file /private/github-connection.json
+python cli/native_analytics.py loop-sources --project PROJECT_ID
+python cli/native_analytics.py loop-scan --project PROJECT_ID --id SCAN_UUID --file scan.json
+python cli/native_analytics.py loop-job-status --project PROJECT_ID --id SCAN_UUID
+python cli/native_analytics.py loop-scan-status --project PROJECT_ID --id SCAN_UUID
+```
+
+`scan.json` contains `connection_id`, `base` and optional immutable `commit`. Omitting `commit` pins the current branch head once. Scan and V2 artifact preparation return HTTP 202 with a stable job ID while provider reads run. Poll `loop-job-status` or MCP `loop_job_status` until `complete`, then read `result`. Pending is not success. A restart marks unfinished jobs interrupted. Resubmit the same original request and ID to recover; changed input under that ID returns 409. Scans read regular committed text without executing repository code, install steps or hooks. Findings contain source citations and hashes, not raw source files.
+
+Use `loop-propose --project PROJECT_ID --id PROPOSAL_UUID --file goal.json`. The body is the exact V2 goal schema in OpenAPI. The event and declared dependencies must have a matching source citation in the pinned scan. The owner uses `loop-adopt --project PROJECT_ID --goal GOAL_ID --file adoption.json` with the returned `proposal_id` and `proposal_sha256`. Adoption stores a scan-bound proposal. It does not yet claim that a goal is committed or tracking is healthy.
+
+Ask the coding agent to prepare one patch. Its file contains `files`, each with `path`, exact `before_sha` or null for the new goal, and complete UTF-8 `content`. The new `.afterspan/goals/GOAL_ID.json` must equal the approved definition serialized as sorted compact UTF-8 JSON plus one newline. Include one to seven changed scanned source dependencies. Workflows, package manifests, locks, secrets, symlinks, renames and arbitrary new source files are excluded. Limits are eight files, 128 KiB and 4,000 combined review lines. This path verifies exact reviewed bytes, not deterministic repair correctness. Reusing an existing V2 goal file for a later repair is not yet supported; the original Python recipe remains separate.
+
+```sh
+python cli/native_analytics.py loop-prepare --project PROJECT_ID --goal GOAL_ID --request-id REQUEST_UUID --file artifact.json
+python cli/native_analytics.py loop-job-status --project PROJECT_ID --id REQUEST_UUID
+python cli/native_analytics.py loop-policy --project PROJECT_ID --goal GOAL_ID --revision 0 --file policy.json
+python cli/native_analytics.py loop-action --project PROJECT_ID --id ACTION_UUID --operation draft-pr
+python cli/native_analytics.py loop-action --project PROJECT_ID --id ACTION_UUID --operation reconcile
+```
+
+The owner policy pins `artifact_sha256`, the ordered file paths, repository, branch, environment, line/file limits, operations and expiry. The owner page can allow and open that exact draft for one day. Automatic merge retains strict protected-branch checks and exact-head independent approval. An externally merged PR can be reconciled, but is not labelled service-auto-merged. Unknown writes reconcile with the same action ID before retrying.
+
+After merge, use `loop-release --project PROJECT_ID --id ACTION_UUID --file release.json`, with `{ "connection_id": "RAILWAY_CONNECTION_UUID" }`. Afterspan rechecks merged artifact bytes and the latest successful Railway deployment. Commit SHA, project, service, environment ID and actual environment name must match. A newer building, failed or different deployment stays unproved. GitHub deployment proof remains supported for the original contract.
+
+Use the existing `loop-observe` and `loop-compare` commands with explicit frozen windows. V2 observation `release_bound` requires exact deployment proof, a matching release property and a post-release window with observed events. Release, event arrival and enough evidence remain separate. Before/after is observational. Native reads apply the stored receipt cutoff and report retention/erasure gaps. PostHog aggregates are frozen when fetched; ingestion at an earlier requested `as_of` cannot be reconstructed, so release comparisons with that missing cutoff remain unknown. Historical caller imports retain attestation provenance and cannot qualify native checked answers.
+
+The fixed-checkout and workspace MCP bridges expose `loop_sources`, `loop_scan`, `loop_scan_status`, `loop_job_status`, `loop_propose`, `loop_prepare`, `loop_action`, `loop_release`, `loop_observe`, `loop_compare` and `loop_status`. All share the API engine. Credentials, owner adoption and permission grants stay in the owner UI or private CLI session. The source adapter uses the supported bounded [PostHog query API](https://posthog.com/docs/api/queries); it is not a bulk export connector.
+
 ### Follow a repo goal through a tracking PR
 
 The **Goal loop** project page keeps one product question beside its tracking repair, PR, release evidence and qualified outcomes. The first supported goal asks whether an observed workspace gets a correctly grounded Codex answer within 24 hours. Each workspace starts its clock once. Retries cannot restart it. Waiting workspaces stay outside the mature denominator.
@@ -184,10 +232,10 @@ The development script sets `AFTERSPAN_MAIL_MODE=local` only with a loopback ori
 Choose the smallest connection needed:
 
 - **Analytics only:** an expiring project aggregate read key, `AFTERSPAN_READ_KEY`, and `agent/server.py`. Twelve stdio tools: `overview`, `query_metric`, `journey_summary`, `setup_status`, `saved_charts`, `saved_funnels`, `saved_segments`, `analyze_funnel`, `analyze_segment`, `event_catalog`, `retention_report`, `saved_retention`. No write tools or operator fallback.
-- **Request audit only:** an audit-purpose read receipt and `agent/run_audit.py`, exposing only diagnostic_catalog, review_requests and request_trace. Use this when an agent must not see arbitrary event/property names or raw records.
+- **Request audit only:** an audit-purpose read receipt and `agent/run_audit.py`, exposing six scoped tools for catalog, reviews, traces, evaluations and onboarding. Use this when an agent must not see arbitrary event/property names or raw records.
 - **Setup or team operations:** an owner creates a workspace role key in **Workspace & team**, or with `create-agent-key`. Configure `AFTERSPAN_WORKSPACE_KEY` and `AFTERSPAN_WORKSPACE`. Use editor for project setup, owner only for explicitly authorized team management. Keys expire in 1–90 days and are stored hashed. The effective role never exceeds the issuer's current membership. A workspace key cannot sign in as an account, create workspaces, accept invites, or issue further workspace keys. An owner-scoped workspace key can issue project service/read credentials through the API or CLI; store their receipts privately.
 
-The separate `agent/workspace_server.py` exposes twenty-five tools: nine management tools for member/invite/history/delivery reads, invite/resend/revoke, and member role/removal operations, plus ten usage/plan/billing tools four product-definition/analysis tools, explicit property meanings and historical audit attestations. It uses only the selected workspace key and has no operator fallback. Inviting sends email; an agent must have the human's specific recipient and role authorization before using it. Role changes and removals likewise require a specific human request. Tool annotations identify these writes; the server enforces the role regardless of agent instructions.
+The workspace bridge exposes 42 tools for scoped team operations, optional billing, product definitions, explicit meanings, audit attestations and product loops. It uses only the selected workspace key and has no operator fallback. Inviting sends email and requires the human's specific recipient and role authorization. Role changes and removals likewise require a specific human request. The fixed-project loop bridge exposes 16 tools for repo discovery, tracking actions and outcome receipts. Owner credential connection, goal adoption and policy grants stay in the private CLI or owner UI. Tool annotations identify writes; the service enforces roles regardless of agent instructions.
 
 Provisioning is available through the same scoped API and JSON CLI. Secret-producing CLI commands require a mode-600 private receipt file rather than printing keys:
 
@@ -204,7 +252,7 @@ python cli/native_analytics.py members --workspace WORKSPACE_ID
 python cli/native_analytics.py invite --workspace WORKSPACE_ID --file /private/invite.json
 ```
 
-The CLI also supports owner-only `rename-workspace`, `workspaces`, `me`, `invites`, `accept-invite`, `resend-invite`, `revoke-invite`, `change-role`, `remove-member`, `agent-keys`, `revoke-agent-key`, `mail` and `audit`. Read-only project operations accept the aggregate read key. All three bridges use the official MCP Python v1 SDK over local stdio; hosted OAuth/remote MCP remains planned.
+The CLI also supports owner-only `rename-workspace`, `workspaces`, `me`, `invites`, `accept-invite`, `resend-invite`, `revoke-invite`, `change-role`, `remove-member`, `agent-keys`, `revoke-agent-key`, `mail` and `audit`. Read-only project operations accept the aggregate read key. All four bridges use the official MCP Python v1 SDK over local stdio; hosted OAuth/remote MCP remains planned.
 
 Queries accept fixed UTC start/end times and an as_of receipt cutoff. Echo the returned query to repeat the same window, including up to ten typed equality filters. Retention and authorized erasure may remove data; fingerprints identify a query and definition, not an immutable backup.
 

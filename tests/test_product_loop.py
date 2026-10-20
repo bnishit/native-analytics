@@ -643,6 +643,25 @@ class ProductLoopTests(unittest.TestCase):
         self.assertIn('source_changed', result['reasons'])
         self.assertEqual(result['status'], 'unknown')
 
+    def test_external_answer_checks_cannot_qualify_native_completions(self):
+        native = self.observe()
+        payload = {**self.window(), 'measurement_revision': native['measurement_revision'],
+                   'mapping_revision': native['mapping_revision'], 'source_url': 'https://app.example/report',
+                   'query_sha256': 'a' * 64, 'entrants': 1, 'mature': 1, 'waiting': 0,
+                   'qualified': 1, 'failed': 0, 'unassessed': 0, 'timed_out': 0,
+                   'technical_failures': 0, 'rate': 1.0}
+        external = self.call('PUT', '/goals/first-answer/external/' + str(uuid.uuid4()), payload).json()
+        self.send('codex.question.started', 'one', 1)
+        completion = self.send('codex.answer.ready', 'one', 2, {'observation_id': external['id']})
+        self.assertEqual(self.assess(external, completion).status_code, 422)
+        with closing(app.connect()) as c, c:
+            c.execute('INSERT INTO loop_answers VALUES(?,?,?,?,?,?,?,?,?,?)',
+                      (self.p['id'], 'first-answer', str(uuid.uuid4()), 'x', completion,
+                       native['measurement_revision'], native['mapping_revision'], 'qualified',
+                       canonical({'evidence_id': external['id']}), time.time()))
+        measured = self.observe()
+        self.assertEqual((measured['mature'], measured['qualified'], measured['unassessed']), (1, 0, 1))
+
     def test_external_contract_gap_has_no_invented_counts_and_is_not_comparable(self):
         payload = {'kind': 'contract_gap', 'source_url': 'https://us.posthog.com/project/39922',
                    'query_sha256': 'c' * 64, 'checked_at': stamp(time.time()),

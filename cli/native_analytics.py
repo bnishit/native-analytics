@@ -99,9 +99,16 @@ def parser():
         if name in ['loop-policy','loop-observe','loop-assess','loop-external','loop-compare','loop-deliver']:command.add_argument('--file',required=True)
         if name=='loop-policy':command.add_argument('--revision',type=int,required=True)
         if name in ['loop-observe','loop-assess','loop-external','loop-action','loop-deliver']:command.add_argument('--id',required=True,type=uuid.UUID)
-        if name=='loop-prepare':command.add_argument('--request-id',required=True,type=uuid.UUID)
+        if name=='loop-prepare':
+            command.add_argument('--request-id',required=True,type=uuid.UUID);command.add_argument('--file')
         if name=='loop-deliver':command.add_argument('--connection',required=True,type=uuid.UUID)
         if name=='loop-action':command.add_argument('--operation',required=True,choices=['draft-pr','reconcile','merge'])
+    for name in ['loop-sources','loop-source-connect','loop-source-revoke','loop-scan','loop-scan-status','loop-job-status','loop-propose','loop-adopt','loop-release']:
+        command=sub.add_parser(name);command.add_argument('--project',required=True)
+        if name not in ['loop-sources','loop-adopt']:command.add_argument('--id',required=True,type=uuid.UUID)
+        if name in ['loop-source-connect','loop-source-revoke']:command.add_argument('--revision',required=True,type=int)
+        if name in ['loop-source-connect','loop-scan','loop-propose','loop-adopt','loop-release']:command.add_argument('--file',required=True)
+        if name=='loop-adopt':command.add_argument('--goal',required=True)
     return p
 
 
@@ -124,7 +131,7 @@ def main(argv=None):
     body=None;method='GET';params={}
     if hasattr(args,'project'):params['project']=args.project
     if hasattr(args,'days'):params['days']=args.days
-    if command.startswith('loop-'):
+    if command in ['loop-goals','loop-status','loop-policy','loop-prepare','loop-action','loop-observe','loop-assess','loop-external','loop-compare','loop-connect','loop-deliver','loop-sync']:
         path='/api/loop/goals'
         if command not in ['loop-goals','loop-action']:path+='/'+urllib.parse.quote(args.goal,safe='')
         if command=='loop-sync':path+='/sync';body=inspected['source'];method='PUT'
@@ -136,7 +143,21 @@ def main(argv=None):
         if command=='loop-compare':path+='/compare';method='POST'
         if command=='loop-connect':path+='/connection';body={};method='POST'
         if command=='loop-deliver':path+='/connections/'+str(args.connection)+'/answers/'+str(args.id);method='PUT'
-        if hasattr(args,'file'):body=json.loads(Path(args.file).read_text())
+        if getattr(args,'file',None):
+            value=json.loads(Path(args.file).read_text())
+            body={**body,'files':value['files']} if command=='loop-prepare' else value
+    if command in ['loop-sources','loop-source-connect','loop-source-revoke','loop-scan','loop-scan-status','loop-job-status','loop-propose','loop-adopt','loop-release']:
+        if command=='loop-sources':path='/api/loop/sources'
+        elif command in ['loop-source-connect','loop-source-revoke']:
+            path='/api/loop/sources/'+str(args.id);params['revision']=args.revision
+            method='PUT' if command=='loop-source-connect' else 'DELETE'
+        elif command in ['loop-scan','loop-scan-status']:
+            path='/api/loop/scans/'+str(args.id);method='PUT' if command=='loop-scan' else 'GET'
+        elif command=='loop-job-status':path='/api/loop/jobs/'+str(args.id)
+        elif command=='loop-propose':path='/api/loop/proposals/'+str(args.id);method='PUT'
+        elif command=='loop-adopt':path='/api/loop/goals/'+urllib.parse.quote(args.goal,safe='')+'/adopt';method='POST'
+        else:path='/api/loop/actions/'+str(args.id)+'/release';method='POST'
+        if getattr(args,'file',None):body=private_json(args.file) if command=='loop-source-connect' else json.loads(Path(args.file).read_text())
     if command in ['projects','create-project'] and (getattr(args,'workspace',None) or os.environ.get('AFTERSPAN_WORKSPACE')):params['workspace']=getattr(args,'workspace',None) or os.environ['AFTERSPAN_WORKSPACE']
     if command in ['usage','plans','billing','billing-invoices','billing-quote','billing-checkout','billing-portal','billing-refresh','billing-close-checkout','billing-downgrade']:
         path='/api/workspaces/'+urllib.parse.quote(args.workspace,safe='')+'/'+{'billing-invoices':'billing/invoices','billing-quote':'billing/quote','billing-checkout':'billing/checkout','billing-close-checkout':'billing/checkout','billing-portal':'billing/portal','billing-refresh':'billing/refresh','billing-downgrade':'billing/downgrade'}.get(command,command)
@@ -227,7 +248,6 @@ def main(argv=None):
                 if name not in cookies:raise ValueError('no session receipt')
                 result={**({'user':result['user']} if command=='complete-login' else {}),'session':cookies[name].value,'cookie_name':name}
     except urllib.error.HTTPError as exc:
-        # Do not echo a remote error payload that might contain a credential or input.
         print(json.dumps({'ok':False,'http_status':exc.code,'error':'analytics request rejected'}));return 1
     if command=='connect-audit':
         result.update(origin=origin,connection={'command':sys.executable,'args':[str(Path(__file__).resolve().parents[1]/'agent/run_audit.py'),str(Path(args.output).resolve())]})

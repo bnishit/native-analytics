@@ -1,4 +1,5 @@
 import base64
+import difflib
 import hashlib
 import http.client
 import json
@@ -18,6 +19,16 @@ _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./-]{0,150}")
 _ACTION = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}")
 _PLAN_FIELDS = ("repository", "repository_id", "base", "base_sha", "goal_path", "goal_sha256", "files", "workflows")
+_REVIEWED_FIELDS = ("kind", *_PLAN_FIELDS, "scan", "definition")
+_SCAN_FIELDS = ("repository", "repository_id", "commit", "base", "tree_sha", "scanner_version", "files", "findings", "coverage", "workflows")
+_SOURCE_EXTENSIONS = (".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+_MANIFESTS = ("package.json", "pyproject.toml", "requirements.txt")
+_EXCLUDED = {"node_modules", "vendor", "dist", "build", "coverage", "generated", "__pycache__", "venv", "tests", "__tests__"}
+_SECRET = re.compile(r"(?:^|[._-])(?:env|secrets?|credentials?|tokens?|private|id_rsa|id_ed25519)(?:$|[._-])", re.I)
+_SCAN_BYTES = 2 * 1024 * 1024
+_FILE_BYTES = 128 * 1024
+_REVIEW_BYTES = 128 * 1024
+_REVIEW_LINES = 4000
 _LIMIT = 1024 * 1024
 
 
@@ -31,6 +42,96 @@ def _digest(value):
 
 def _blob(content):
     return hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest()
+
+
+def _relative(path):
+    return (isinstance(path, str) and 0 < len(path) <= 240
+            and re.fullmatch(r"[A-Za-z0-9_@()\[\]./-]+", path) is not None
+            and all(part not in ("", ".", "..") and len(part) <= 128 for part in path.split("/")))
+
+
+def _source_path(path):
+    if not _relative(path):
+        return False
+    parts = path.lower().split("/")
+    name = parts[-1]
+    return (not any(part.startswith(".") or part in _EXCLUDED or _SECRET.search(part) for part in parts)
+            and not any(tag in name for tag in (".generated.", ".min.", ".test.", ".spec."))
+            and not name.startswith(("test_", "generated_"))
+            and (name in _MANIFESTS or name.endswith(_SOURCE_EXTENSIONS)))
+
+
+def _text_bytes(content):
+    if not isinstance(content, str):
+        _fail("Artifact files require UTF-8 text", 422)
+    try:
+        raw = content.encode("utf-8")
+    except UnicodeError:
+        _fail("Artifact files require UTF-8 text", 422)
+    if any(ord(char) < 32 and char not in "\n\r\t" for char in content) or "\x7f" in content:
+        _fail("Binary files are unsupported", 422)
+    return raw
+
+
+def _goal_bytes(definition):
+    """Goal files use sorted, compact UTF-8 JSON followed by one newline."""
+    try:
+        content = json.dumps(definition, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False) + "\n"
+    except (TypeError, ValueError, UnicodeError):
+        _fail("The approved goal is not JSON", 422)
+    _text_bytes(content)
+    return content
+
+
+def _line_changes(before, after):
+    added = deleted = 0
+    for kind, start, end, next_start, next_end in difflib.SequenceMatcher(None, before.splitlines(), after.splitlines(), autojunk=False).get_opcodes():
+        if kind in ("insert", "replace"):
+            added += next_end - next_start
+        if kind in ("delete", "replace"):
+            deleted += end - start
+    return added, deleted
+
+
+def _signals(sources):
+    events, packages, frameworks, dynamic = [], set(), set(), []
+    token = re.compile(r"(?P<comment>//[^\n]*|/\*[\s\S]*?\*/|\#[^\n]*)|(?P<string>'(?:\\.|[^'\\\n])*'|\"(?:\\.|[^\"\\\n])*\"|`(?:\\.|[^`\\])*`)|(?P<word>[A-Za-z_$][\w$]*)|(?P<other>\S)")
+    for path, source in sources.items():
+        if path.rsplit("/", 1)[-1] == "package.json":
+            try:
+                manifest = json.loads(source)
+                for group in ("dependencies", "devDependencies", "peerDependencies"):
+                    dependencies = manifest.get(group, {}) if isinstance(manifest, dict) else {}
+                    if isinstance(dependencies, dict):
+                        packages.update(name for name in dependencies if isinstance(name, str))
+            except ValueError:
+                dynamic.append({"path": path, "reason": "invalid_package_manifest"})
+        rows = [match for match in token.finditer(source) if match.lastgroup != "comment"]
+        for index, row in enumerate(rows):
+            value = row.group()
+            if row.lastgroup == "string":
+                literal = value[1:-1]
+                if literal in ("next", "react", "fastapi", "posthog-js", "posthog-node", "posthog", "@afterspan/analytics", "afterspan"):
+                    packages.add(literal)
+            if value not in ("trackEvent", "track", "capture") or index + 1 >= len(rows) or rows[index + 1].group() != "(":
+                continue
+            owner = rows[index - 2].group() if index >= 2 and rows[index - 1].group() == "." else ""
+            if value == "track" and owner not in ("collector", "client", "analytics", "native", "nativeAnalytics"):
+                continue
+            sink = "posthog" if value == "capture" else "native"
+            argument = rows[index + 2] if index + 2 < len(rows) else None
+            if (argument is not None and argument.lastgroup == "string" and index + 3 < len(rows) and rows[index + 3].group() in (",", ")")
+                    and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/ -]{0,119}", argument.group()[1:-1])):
+                events.append({"name": argument.group()[1:-1], "path": path, "line": source.count("\n", 0, row.start()) + 1, "sink": sink})
+            else:
+                dynamic.append({"path": path, "line": source.count("\n", 0, row.start()) + 1, "reason": "dynamic_event_name"})
+    for package, framework in (("next", "next"), ("react", "react"), ("fastapi", "fastapi")):
+        if package in packages:
+            frameworks.add(framework)
+    sinks = sorted({event["sink"] for event in events} | ({"posthog"} if packages & {"posthog-js", "posthog-node", "posthog"} else set())
+                   | ({"native"} if packages & {"@afterspan/analytics", "afterspan"} else set()))
+    return {"frameworks": sorted(frameworks), "packages": sorted(packages)[:128], "sinks": sinks,
+            "events": events[:512], "unsupported": dynamic[:128]}, len(events) > 512 or len(dynamic) > 128 or len(packages) > 128
 
 
 def _event_rule(rule, event):
@@ -56,9 +157,10 @@ class _UncertainWrite(Exception):
 
 
 class GitHub:
-    def __init__(self, repository="", token=""):
+    def __init__(self, repository="", token="", read_guard=None):
         self.repository = repository
         self._token = token
+        self.read_guard = read_guard
 
     @classmethod
     def from_env(cls):
@@ -71,6 +173,8 @@ class GitHub:
             _fail("The repository is outside the operator allowlist", 403)
 
     def _request(self, method, path, body=None, missing=False, guard=None):
+        if self.read_guard:
+            self.read_guard()
         data = None if body is None else json.dumps(body, separators=(",", ":")).encode()
         headers = {"Authorization": "Bearer " + self._token, "Accept": "application/vnd.github+json",
                    "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "afterspan-loop", "Content-Type": "application/json"}
@@ -119,16 +223,19 @@ class GitHub:
             _fail("GitHub evidence is incomplete", 503)
         return value
 
-    def _source(self, source):
-        if not isinstance(source, dict):
-            _fail("A committed source snapshot is required", 422)
-        self._configured(source.get("repository"))
-        base = source.get("base", "")
+    def _pin(self, repository, base, commit):
+        self._configured(repository)
         if (not isinstance(base, str) or not _REF.fullmatch(base) or ".." in base or "//" in base
                 or base.endswith(("/", ".", ".lock")) or "@{" in base):
             _fail("The base branch is invalid", 422)
-        if (not isinstance(source.get("commit"), str) or not _SHA.fullmatch(source["commit"])
-                or not isinstance(source.get("content_sha256"), str) or not _DIGEST.fullmatch(source["content_sha256"])):
+        if not isinstance(commit, str) or not _SHA.fullmatch(commit):
+            _fail("The committed source hashes are invalid", 422)
+
+    def _source(self, source):
+        if not isinstance(source, dict):
+            _fail("A committed source snapshot is required", 422)
+        self._pin(source.get("repository"), source.get("base", ""), source.get("commit"))
+        if not isinstance(source.get("content_sha256"), str) or not _DIGEST.fullmatch(source["content_sha256"]):
             _fail("The committed source hashes are invalid", 422)
         if source.get("path") != ".afterspan/goals/first-answer.json":
             _fail("Only the first-answer goal is supported", 422)
@@ -173,6 +280,221 @@ class GitHub:
         if not isinstance(value.get("commit"), dict) or not _SHA.fullmatch(str(value["commit"].get("sha", ""))):
             _fail("The base branch could not be verified")
         return value
+
+    def _identity(self):
+        self._configured(self.repository)
+        value = self._get("")
+        if (type(value.get("id")) is not int or value["id"] <= 0
+                or value.get("full_name") != self.repository or value.get("archived") is not False):
+            _fail("The active repository identity could not be verified")
+        return value["id"]
+
+    def _tree(self, commit):
+        tree_sha = self._commit(commit)["tree"]["sha"]
+        if not isinstance(tree_sha, str) or not _SHA.fullmatch(tree_sha):
+            _fail("The repository tree hash is invalid")
+        value = self._get("/git/trees/" + tree_sha + "?recursive=1")
+        nodes = value.get("tree")
+        if (value.get("truncated") is not False or value.get("sha", tree_sha) != tree_sha
+                or not isinstance(nodes, list) or len(nodes) > 10000):
+            _fail("The repository tree is incomplete")
+        result = {}
+        for node in nodes:
+            if (not isinstance(node, dict) or not isinstance(node.get("path"), str) or not 0 < len(node["path"]) <= 1024
+                    or any(part in ("", ".", "..") for part in node["path"].split("/"))
+                    or any(ord(char) < 32 for char in node["path"]) or node["path"] in result
+                    or not isinstance(node.get("sha"), str) or not _SHA.fullmatch(node["sha"])
+                    or (node.get("type"), node.get("mode")) not in {
+                        ("tree", "040000"), ("blob", "100644"), ("blob", "100755"), ("blob", "120000"), ("commit", "160000")}):
+                _fail("The repository tree contains unsupported entries")
+            result[node["path"]] = node
+        return tree_sha, result
+
+    def scan(self, commit, base):
+        self._pin(self.repository, base, commit)
+        repository_id = self._identity()
+        tree_sha, tree = self._tree(commit)
+        paths = [path for path in tree if _source_path(path)]
+        paths.sort(key=lambda path: (path.rsplit("/", 1)[-1] not in _MANIFESTS,
+                                    not any(word in path.lower() for word in ("analytics", "telemetry", "tracking", "native")), path))
+        sources, files, reasons, workflows = {}, [], set(), {}
+        total = reads = 0
+        for path, node in tree.items():
+            if path.startswith(".github/workflows/") and path.endswith((".yml", ".yaml")):
+                if node["type"] != "blob" or node["mode"] != "100644":
+                    _fail("A workflow is unsupported")
+                workflows[path] = node["sha"]
+        for path in paths:
+            node = tree[path]
+            if node["type"] != "blob" or node["mode"] not in ("100644", "100755"):
+                reasons.add("unsupported_file_mode")
+                continue
+            if reads >= 64:
+                reasons.add("file_count_limit")
+                break
+            size = node.get("size")
+            if type(size) is not int or not 0 <= size <= _FILE_BYTES:
+                reasons.add("file_size_limit")
+                continue
+            if total + _FILE_BYTES > _SCAN_BYTES:
+                reasons.add("total_byte_limit")
+                continue
+            total += size
+            reads += 1
+            try:
+                content, blob_sha = self._content(path, commit)
+                if len(content.encode()) != size:
+                    _fail("The scanned size differs from the committed tree")
+                raw = _text_bytes(content)
+            except HTTPException as exc:
+                if exc.status_code != 422:
+                    raise
+                total += _FILE_BYTES - size
+                reasons.add("unsupported_text")
+                continue
+            if blob_sha != node["sha"]:
+                _fail("The scanned blob differs from the committed tree")
+            sources[path] = content
+            files.append({"path": path, "blob_sha": blob_sha, "content_sha256": hashlib.sha256(raw).hexdigest()})
+        findings, limited = _signals(sources)
+        if limited:
+            reasons.add("finding_count_limit")
+        if findings["unsupported"]:
+            reasons.add("unsupported_static_patterns")
+        return {"repository": self.repository, "repository_id": repository_id, "commit": commit, "base": base,
+                "tree_sha": tree_sha, "scanner_version": "event-literals-v1", "files": files, "findings": findings,
+                "coverage": {"complete": not reasons, "reasons": sorted(reasons)}, "workflows": workflows}
+
+    def prepare_artifact(self, scan, definition, files):
+        if not isinstance(scan, dict) or any(key not in scan for key in _SCAN_FIELDS):
+            _fail("A complete immutable scan is required", 422)
+        fresh = self.scan(scan["commit"], scan["base"])
+        if any(fresh[key] != scan[key] for key in _SCAN_FIELDS):
+            _fail("The scan no longer matches the committed repository")
+        if not isinstance(definition, dict) or not isinstance(definition.get("id"), str) or not _ACTION.fullmatch(definition["id"]):
+            _fail("The approved goal ID is invalid", 422)
+        if not isinstance(files, list) or not 2 <= len(files) <= 8:
+            _fail("A reviewed artifact requires its goal and one to seven source changes", 422)
+        for file in files:
+            if not isinstance(file, dict) or set(file) != {"path", "before_sha", "content"} or not _relative(file.get("path")):
+                _fail("The reviewed artifact file list is invalid", 422)
+            _text_bytes(file["content"])
+        goal_path = ".afterspan/goals/" + definition["id"] + ".json"
+        plan = {"kind": "reviewed-artifact-v1", "repository": self.repository, "repository_id": scan["repository_id"],
+                "base": scan["base"], "base_sha": scan["commit"], "goal_path": goal_path,
+                "goal_sha256": hashlib.sha256(_goal_bytes(definition).encode()).hexdigest(), "files": files,
+                "workflows": scan["workflows"], "scan": scan, "definition": definition}
+        plan["artifact_sha256"] = _digest(plan)
+        line_counts = self._plan(plan, current=True)
+        return plan | {"status": "prepared", "assurance": "reviewed_bytes_only", "line_counts": line_counts}
+
+    def _reviewed_plan(self, plan, current):
+        if (any(key not in plan for key in (*_REVIEWED_FIELDS, "artifact_sha256"))
+                or _digest({key: plan[key] for key in _REVIEWED_FIELDS}) != plan["artifact_sha256"]):
+            _fail("The plan artifact changed")
+        self._pin(plan["repository"], plan["base"], plan["base_sha"])
+        scan, definition, files = plan["scan"], plan["definition"], plan["files"]
+        if (not isinstance(scan, dict) or any(key not in scan for key in _SCAN_FIELDS)
+                or type(plan["repository_id"]) is not int or plan["repository_id"] <= 0
+                or scan["repository"] != self.repository or scan["repository_id"] != plan["repository_id"]
+                or scan["commit"] != plan["base_sha"] or scan["base"] != plan["base"]
+                or self._identity() != plan["repository_id"] or scan["scanner_version"] != "event-literals-v1"):
+            _fail("The plan scan binding changed")
+        if (not isinstance(definition, dict) or set(definition) != {"schema", "id", "question", "scan_id", "measurement", "mapping", "tracking"}
+                or definition.get("schema") != "afterspan-repo-goal-v2" or not isinstance(definition.get("id"), str)
+                or not _ACTION.fullmatch(definition["id"]) or plan["goal_path"] != ".afterspan/goals/" + definition["id"] + ".json"
+                or definition.get("scan_id") != scan.get("id") or not isinstance(definition.get("scan_id"), str)
+                or not isinstance(definition.get("question"), str) or not 1 <= len(definition["question"]) <= 2000):
+            _fail("The approved goal does not match the scan", 422)
+        tracking = definition.get("tracking")
+        if (not isinstance(tracking, dict) or set(tracking) != {"kind", "dependencies"}
+                or tracking.get("kind") != "reviewed-artifact-v1" or not isinstance(tracking.get("dependencies"), list)
+                or not 1 <= len(tracking["dependencies"]) <= 16
+                or any(not isinstance(path, str) for path in tracking["dependencies"])
+                or len(set(tracking["dependencies"])) != len(tracking["dependencies"])):
+            _fail("The approved tracking dependencies are unsupported", 422)
+        measurement, mapping = definition.get("measurement"), definition.get("mapping")
+        if (not isinstance(measurement, dict) or set(measurement) != {"kind", "unit", "event", "filters", "outcome_property", "success_values", "failure_values", "min_sample_size"}
+                or measurement.get("kind") != "event-outcome-v1" or measurement.get("unit") != "logged_event"
+                or not isinstance(measurement.get("event"), str) or not isinstance(scan["findings"], dict)
+                or measurement["event"] not in {event.get("name") for event in scan["findings"].get("events", []) if isinstance(event, dict)}
+                or not isinstance(mapping, dict) or set(mapping) - {"kind", "environment", "environment_property", "release_property", "connection_id", "connection_revision"}
+                or mapping.get("kind") not in ("native", "posthog")):
+            _fail("The approved measurement is unsupported", 422)
+        goal_content = _goal_bytes(definition)
+        if hashlib.sha256(goal_content.encode()).hexdigest() != plan["goal_sha256"]:
+            _fail("The approved goal bytes changed")
+        tree_sha, tree = self._tree(plan["base_sha"])
+        workflows = {path: node["sha"] for path, node in tree.items()
+                     if path.startswith(".github/workflows/") and path.endswith((".yml", ".yaml"))}
+        if tree_sha != scan["tree_sha"] or workflows != plan["workflows"] or scan["workflows"] != plan["workflows"]:
+            _fail("The plan tree or workflows changed")
+        if not isinstance(scan["files"], list) or len(scan["files"]) > 64:
+            _fail("The scanned file manifest is invalid", 422)
+        scanned = {}
+        for ref in scan["files"]:
+            if (not isinstance(ref, dict) or set(ref) != {"path", "blob_sha", "content_sha256"}
+                    or not _source_path(ref.get("path")) or ref["path"] in scanned
+                    or tree.get(ref["path"], {}).get("sha") != ref["blob_sha"]
+                    or tree[ref["path"]]["mode"] not in ("100644", "100755")
+                    or not isinstance(ref["content_sha256"], str) or not _DIGEST.fullmatch(ref["content_sha256"])):
+                _fail("The scanned file manifest changed")
+            scanned[ref["path"]] = ref
+        dependencies = tracking["dependencies"]
+        if any(path not in scanned for path in dependencies):
+            _fail("The goal depends on files outside the scan", 422)
+        if not any(event.get("name") == measurement["event"] and event.get("path") in dependencies and event.get("sink") == mapping["kind"]
+                   for event in scan["findings"].get("events", []) if isinstance(event, dict)):
+            _fail("The selected event is outside the approved source dependencies", 422)
+        before = {}
+        for path in dependencies:
+            content, blob_sha = self._content(path, plan["base_sha"])
+            if blob_sha != scanned[path]["blob_sha"] or hashlib.sha256(_text_bytes(content)).hexdigest() != scanned[path]["content_sha256"]:
+                _fail("A committed dependency changed")
+            before[path] = content
+        if not isinstance(files, list) or not 2 <= len(files) <= 8:
+            _fail("A reviewed artifact requires its goal and one to seven source changes", 422)
+        paths, total, lines = set(), 0, 0
+        for file in files:
+            if not isinstance(file, dict) or set(file) != {"path", "before_sha", "content"} or not _relative(file.get("path")) or file["path"] in paths:
+                _fail("The reviewed artifact file list is invalid", 422)
+            path = file["path"]
+            paths.add(path)
+            total += len(_text_bytes(file["content"]))
+            lines += len(file["content"].splitlines()) + len(before.get(path, "").splitlines())
+            for index in range(1, len(path.split("/"))):
+                parent = tree.get("/".join(path.split("/")[:index]))
+                if parent and parent["type"] != "tree":
+                    _fail("An artifact parent is not a directory", 422)
+            if path == plan["goal_path"]:
+                if path in tree or file["before_sha"] is not None or file["content"] != goal_content:
+                    _fail("The new goal must contain exactly the approved canonical bytes", 422)
+            elif (path not in dependencies or path.rsplit("/", 1)[-1] in _MANIFESTS
+                    or not _source_path(path) or file["before_sha"] != scanned[path]["blob_sha"]
+                    or file["content"] == before[path]):
+                _fail("Only changed, scanned source dependencies may be edited", 422)
+        if plan["goal_path"] not in paths or total > _REVIEW_BYTES or lines > _REVIEW_LINES:
+            _fail("The reviewed artifact is missing its goal or exceeds 128 KiB or 4000 review lines", 422)
+        if current and self._head(plan["base"])["commit"]["sha"] != plan["base_sha"]:
+            _fail("The base branch moved. Prepare a new plan")
+        counts = {"added": 0, "deleted": 0}
+        for file in files:
+            for line in difflib.ndiff(before.get(file["path"], "").splitlines(), file["content"].splitlines()):
+                if line.startswith("+ "):
+                    counts["added"] += 1
+                elif line.startswith("- "):
+                    counts["deleted"] += 1
+        return counts
+
+    def verify_committed_goal(self, plan, commit):
+        self._plan(plan)
+        if not isinstance(commit, str) or not _SHA.fullmatch(commit):
+            _fail("The goal commit is invalid", 422)
+        content, _ = self._content(plan["goal_path"], commit)
+        if (hashlib.sha256(content.encode()).hexdigest() != plan["goal_sha256"]
+                or plan.get("kind") == "reviewed-artifact-v1" and content != _goal_bytes(plan["definition"])):
+            _fail("The committed goal differs from the approved bytes")
+        return {"commit": commit, "path": plan["goal_path"], "content_sha256": plan["goal_sha256"], "verified": True}
 
     def load_goal(self, source):
         self._source(source)
@@ -240,8 +562,12 @@ class GitHub:
         return plan | {"artifact_sha256": _digest(plan), "status": "prepared"}
 
     def _plan(self, plan, current=False):
+        if isinstance(plan, dict) and plan.get("kind") == "reviewed-artifact-v1":
+            return self._reviewed_plan(plan, current)
         if not isinstance(plan, dict) or any(key not in plan for key in (*_PLAN_FIELDS, "artifact_sha256")):
             _fail("A complete immutable plan is required", 422)
+        if plan.get("kind") is not None:
+            _fail("The plan kind is unsupported", 422)
         self._source({"repository": plan["repository"], "base": plan["base"], "commit": plan["base_sha"],
                       "path": plan["goal_path"], "content_sha256": plan["goal_sha256"]})
         artifact = {key: plan[key] for key in _PLAN_FIELDS}
@@ -272,6 +598,8 @@ class GitHub:
     def _verify_head(self, plan, head):
         if head == plan["base_sha"]:
             return False
+        if plan.get("kind") == "reviewed-artifact-v1":
+            return self._verify_artifact_head(plan, head)
         commit = self._commit(head)
         if [parent.get("sha") for parent in commit.get("parents", [])] != [plan["base_sha"]]:
             _fail("The tracking branch has an unexpected parent")
@@ -289,6 +617,42 @@ class GitHub:
         if (content != plan["files"][0]["content"] or hashlib.sha256(goal.encode()).hexdigest() != plan["goal_sha256"]
                 or self._workflows(head) != plan["workflows"]):
             _fail("The tracking branch files or workflows changed")
+        return True
+
+    def _verify_artifact_head(self, plan, head):
+        commit = self._commit(head)
+        if [parent.get("sha") for parent in commit.get("parents", [])] != [plan["base_sha"]]:
+            _fail("The tracking branch has an unexpected parent")
+        _, base_tree = self._tree(plan["base_sha"])
+        _, head_tree = self._tree(head)
+        expected = {path: (node["type"], node["mode"], node["sha"]) for path, node in base_tree.items() if node["type"] != "tree"}
+        directories = {path for path, node in base_tree.items() if node["type"] == "tree"}
+        for file in plan["files"]:
+            path = file["path"]
+            expected[path] = ("blob", base_tree[path]["mode"] if path in base_tree else "100644", _blob(file["content"].encode()))
+            directories.update("/".join(path.split("/")[:index]) for index in range(1, len(path.split("/"))))
+        if (expected != {path: (node["type"], node["mode"], node["sha"]) for path, node in head_tree.items() if node["type"] != "tree"}
+                or {path for path, node in head_tree.items() if node["type"] == "tree"} != directories):
+            _fail("The branch tree differs from the approved artifact")
+        comparison = self._get("/compare/" + plan["base_sha"] + "..." + head)
+        rows = comparison.get("files")
+        if (comparison.get("status") != "ahead" or comparison.get("ahead_by") != 1 or comparison.get("behind_by") != 0
+                or comparison.get("total_commits") != 1 or not isinstance(rows, list) or len(rows) != len(plan["files"])
+                or any(not isinstance(row, dict) or not isinstance(row.get("filename"), str) for row in rows)
+                or len({row["filename"] for row in rows}) != len(rows)):
+            _fail("The provider diff differs from the approved artifact")
+        actual = {row["filename"]: row for row in rows}
+        if set(actual) != {file["path"] for file in plan["files"]}:
+            _fail("The provider diff changed an unapproved file")
+        for file in plan["files"]:
+            row, path = actual[file["path"]], file["path"]
+            before = self._content(path, plan["base_sha"])[0] if file["before_sha"] is not None else ""
+            additions, deletions = _line_changes(before, file["content"])
+            if (row.get("status") != ("modified" if file["before_sha"] is not None else "added")
+                    or row.get("sha") != expected[path][2] or type(row.get("additions")) is not int or row["additions"] != additions
+                    or type(row.get("deletions")) is not int or row["deletions"] != deletions
+                    or self._content(path, head)[0] != file["content"]):
+                _fail("The branch file or patch counts differ from the approved artifact")
         return True
 
     def _state(self, plan, action_id, receipt=None):
@@ -324,7 +688,7 @@ class GitHub:
             result.update({"status": "merged" if pr.get("merged") is True else "drafted", "head_sha": head,
                            "pr_number": pr["number"], "pr_url": "https://github.com/" + self.repository + "/pull/" + str(pr["number"]),
                            "draft": pr.get("draft"), "merged": pr.get("merged") is True, "merge_sha": pr.get("merge_commit_sha") if pr.get("merged") is True else None,
-                           "files": [{"path": PATH, "sha": _blob(plan["files"][0]["content"].encode())}]})
+                           "files": [{"path": file["path"], "sha": _blob(file["content"].encode())} for file in plan["files"]]})
             if pr.get("merged") is True:
                 if not _SHA.fullmatch(str(result["merge_sha"])):
                     _fail("The merge commit could not be verified")
@@ -353,8 +717,27 @@ class GitHub:
         patched = self._verify_head(plan, head)
         result.update({"head_sha": head, "status": "drafted" if pr else "patched" if patched else "branch_created"})
         if patched:
-            result["files"] = [{"path": PATH, "sha": _blob(plan["files"][0]["content"].encode())}]
+            result["files"] = [{"path": file["path"], "sha": _blob(file["content"].encode())} for file in plan["files"]]
         return result, pr
+
+    def _write_artifact(self, plan, branch, guard):
+        _, tree = self._tree(plan["base_sha"])
+        entries = []
+        for file in plan["files"]:
+            result = self._request("POST", "/git/blobs", {"content": base64.b64encode(file["content"].encode()).decode(), "encoding": "base64"}, guard=guard)
+            sha = _blob(file["content"].encode())
+            if not isinstance(result, dict) or result.get("sha") != sha:
+                raise _UncertainWrite()
+            entries.append({"path": file["path"], "mode": tree[file["path"]]["mode"] if file["path"] in tree else "100644", "type": "blob", "sha": sha})
+        result = self._request("POST", "/git/trees", {"base_tree": plan["scan"]["tree_sha"], "tree": entries}, guard=guard)
+        if not isinstance(result, dict) or not isinstance(result.get("sha"), str) or not _SHA.fullmatch(result["sha"]):
+            raise _UncertainWrite()
+        commit = self._request("POST", "/git/commits", {"message": "Add the reviewed tracking artifact and goal", "tree": result["sha"], "parents": [plan["base_sha"]]}, guard=guard)
+        if not isinstance(commit, dict) or not isinstance(commit.get("sha"), str) or not _SHA.fullmatch(commit["sha"]):
+            raise _UncertainWrite()
+        self._verify_head(plan, commit["sha"])
+        self._plan(plan, current=True)
+        self._request("PATCH", "/git/refs/heads/" + quote(branch, safe="/"), {"sha": commit["sha"], "force": False}, guard=guard)
 
     def draft(self, plan, action_id, guard):
         self._plan(plan, current=True)
@@ -369,13 +752,19 @@ class GitHub:
                 receipt, _ = self._state(plan, action_id)
             if receipt["status"] == "branch_created":
                 self._plan(plan, current=True)
-                self._request("PUT", "/contents/" + PATH, {"message": "Track the first answer completion", "branch": receipt["branch"],
-                              "sha": plan["files"][0]["before_sha"], "content": base64.b64encode(plan["files"][0]["content"].encode()).decode()}, guard=guard)
+                if plan.get("kind") == "reviewed-artifact-v1":
+                    self._write_artifact(plan, receipt["branch"], guard)
+                else:
+                    self._request("PUT", "/contents/" + PATH, {"message": "Track the first answer completion", "branch": receipt["branch"],
+                                  "sha": plan["files"][0]["before_sha"], "content": base64.b64encode(plan["files"][0]["content"].encode()).decode()}, guard=guard)
                 wrote = True
                 receipt, _ = self._state(plan, action_id)
             self._plan(plan, current=True)
-            self._request("POST", "/pulls", {"title": "Track the first answer completion", "head": receipt["branch"], "base": plan["base"], "draft": True,
-                          "body": "Adds the supported local completion event before the existing answer return.\n\n" + self._marker(plan, action_id)}, guard=guard)
+            reviewed = plan.get("kind") == "reviewed-artifact-v1"
+            self._request("POST", "/pulls", {"title": "Add reviewed tracking and its goal" if reviewed else "Track the first answer completion",
+                          "head": receipt["branch"], "base": plan["base"], "draft": True,
+                          "body": ("Contains the exact reviewed source changes and canonical goal. Human review and independent checks must assess the behavior."
+                                   if reviewed else "Adds the supported local completion event before the existing answer return.") + "\n\n" + self._marker(plan, action_id)}, guard=guard)
             wrote = True
             return self._state(plan, action_id)[0]
         except _UncertainWrite:
@@ -426,9 +815,11 @@ class GitHub:
         return pending
 
     def _merge_gate(self, plan, receipt, pr, policy):
+        paths = [file["path"] for file in plan["files"]]
         if (policy.get("state") != "active" or policy.get("repository") != self.repository or policy.get("base") != plan["base"]
                 or not {"merge", "release-on-merge"}.issubset(set(policy.get("operations", [])))
-                or policy.get("paths") != [PATH] or not isinstance(policy.get("environment"), str) or not policy["environment"]):
+                or policy.get("paths") != paths or not isinstance(policy.get("environment"), str) or not policy["environment"]
+                or plan.get("kind") == "reviewed-artifact-v1" and policy.get("artifact_sha256") != plan["artifact_sha256"]):
             _fail("Current merge and release authority is required", 403)
         try:
             expires = datetime.fromisoformat(policy["expires_at"].replace("Z", "+00:00"))

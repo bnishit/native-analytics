@@ -5,6 +5,24 @@ import subprocess
 from pathlib import Path
 
 
+def init_answer_goal(repo,question,verifier,environment,dependencies):
+    root=Path(repo).resolve()
+    if not root.is_dir():raise ValueError('provide an existing repository directory')
+    if not 1<=len(question)<=2000 or not 1<=len(dependencies)<=16:raise ValueError('provide a bounded question and dependencies')
+    if verifier not in ['growthbook-catalog-v1','unconfigured'] or environment not in ['production','staging']:raise ValueError('unsupported verifier or environment')
+    if any(not re.fullmatch(r'[A-Za-z0-9_./-]{1,160}',p) or p.startswith('/') or '..' in Path(p).parts for p in dependencies):raise ValueError('use relative dependency paths')
+    goal={'schema':'afterspan-audit-goal-v1','id':'answer-quality','question':question,
+        'metric':'answer-quality-v1','environment':environment,'verifier':verifier,
+        'tracking':{'recipe':'source-answer-check-v1','dependencies':dependencies}}
+    for folder in [root/'.afterspan',root/'.afterspan/goals']:
+        if folder.is_symlink():raise ValueError('goal directories must not be symlinks')
+        folder.mkdir(exist_ok=True)
+    target=root/'.afterspan/goals/answer-quality.json'
+    with target.open('x') as f:f.write(json.dumps(goal,indent=2)+'\n')
+    return {'path':str(target),'definition':goal,'status':'draft_not_instrumented',
+            'next_action':'Implement and review the declared source check, commit the goal and dependencies, then inspect and run audit-onboarding. No access or tracking PR was granted.'}
+
+
 def inspect(repo,goal,repository=None,base='main'):
     root=Path(repo).resolve()
     if not re.fullmatch(r'[a-z][a-z0-9-]{0,59}',goal):raise ValueError('invalid goal')

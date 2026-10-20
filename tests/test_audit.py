@@ -146,3 +146,25 @@ class AuditTests(unittest.TestCase):
         capped=self.review({**query,'limit':1},path='evaluate');self.assertFalse(capped['selection_complete']);self.assertIsNone(capped['rate'])
         self.observe(self.facts('reply',ref,attempt,comparison_eligible=False,reply_required=False,reported_outcome='succeeded'),30)
         conflict=self.review(query,path='evaluate');self.assertEqual(conflict['unknown'],1);self.assertIsNone(conflict['rate'])
+
+    def test_reply_alone_and_uncorrelated_diagnostics_cannot_prove_complete_delivery(self):
+        ref,attempt=str(uuid.uuid4()),str(uuid.uuid4())
+        self.observe(self.facts('reply',ref,attempt,comparison_eligible=False,reply_required=True,reported_outcome='succeeded'),2)
+        query={'goal':self.goal()}
+        missing=self.review(query,path='evaluate');self.assertEqual(missing['unknown'],1);self.assertIsNone(missing['rate'])
+        for i,stage in enumerate(['parser','planner']):
+            self.observe(self.facts(stage,ref,attempt,comparison_eligible=False,reply_required=True,reported_outcome='succeeded'),i)
+        self.assertEqual(self.review(query,path='evaluate')['rate'],1)
+        self.observe(self.facts('parser',None,str(uuid.uuid4()),comparison_eligible=False),5)
+        gap=self.review(query,path='evaluate');self.assertFalse(gap['selection_complete']);self.assertIsNone(gap['rate'])
+
+    def test_ambiguous_request_kind_cannot_disappear_from_goal_coverage(self):
+        ref,attempt=str(uuid.uuid4()),str(uuid.uuid4())
+        for i,stage in enumerate(['parser','planner','reply']):
+            self.observe(self.facts(stage,ref,attempt,comparison_eligible=False,reply_required=True,reported_outcome='succeeded'),i)
+        self.assertEqual(self.review({'goal':self.goal()},path='evaluate')['rate'],1)
+        other=str(uuid.uuid4());attempt=str(uuid.uuid4())
+        self.observe(self.facts('parser',other,attempt,request_kind='read',comparison_eligible=False),10)
+        self.observe(self.facts('planner',other,attempt,request_kind='write',comparison_eligible=False),11)
+        result=self.review({'goal':self.goal()},path='evaluate')
+        self.assertEqual(result['coverage']['uncertain_request_classifications'],1);self.assertFalse(result['selection_complete']);self.assertIsNone(result['rate'])

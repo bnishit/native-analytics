@@ -235,15 +235,22 @@ class Audit:
         outcomes=Counter()
         for row in reads:
             reply=next(s for s in row['stages'] if s['stage']=='reply')
-            invalid=any(issue!='comparison_scope_unavailable' for issue in row['issues'])
+            invalid=(any(issue!='comparison_scope_unavailable' for issue in row['issues'])
+                     or any(s['required'] is True and s['state']!='observed' for s in row['stages']))
             outcome=reply['reported_outcome'] if reply['state']=='observed' and reply['required'] is True and not invalid else 'unknown'
             outcomes[outcome if outcome in {'succeeded','failed'} else 'unknown']+=1
-        count=len(reads);complete=report['coverage']['selection_complete_for_correlated_window']
+        count=len(reads);coverage=report['coverage']
+        uncertain=sum(r['request_kind']=='unknown' or r['environment']=='conflict'
+                      or 'request_kind_conflict' in r['issues']
+                      or req.release is not None and 'release_unavailable_or_mixed' in r['issues'] for r in report['requests'])
+        complete=(coverage['selection_complete_for_correlated_window'] and not coverage['invalid_observations']
+                  and not any(coverage['uncorrelated_observations'].values()) and not uncertain)
         return {'goal':req.goal.model_dump(by_alias=True),'definition_verification':'caller_supplied_data_not_action_authority',
                 'metric':'read-reply-delivery-v1','denominator':count,'delivered':outcomes['succeeded'],
                 'failed':outcomes['failed'],'unknown':outcomes['unknown'],
                 'rate':outcomes['succeeded']/count if count and complete and not outcomes['unknown'] else None,
                 'selection_complete':complete,'release':req.release,'release_bound':req.release is not None,
+                'coverage':{**coverage,'uncertain_request_classifications':uncertain,'excluded_selected_requests':len(report['requests'])-count},
                 'query':report['query'],'snapshot':report['snapshot'],'fingerprint':report['fingerprint'],
                 'next_action':'collect_real_requests' if not count else 'repair_tracking' if outcomes['unknown'] else 'inspect_failed_replies' if outcomes['failed'] else 'keep_observing',
                 'limits':['Only selected observed read request chains are counted; untracked messages are not a denominator.',

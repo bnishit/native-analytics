@@ -15,12 +15,12 @@ from pydantic import BaseModel,ConfigDict,Field,StrictBool,UUID4,model_validator
 from product_analytics import Window
 
 SCHEMA='slack-request-v1'
-STAGES=('parser','planner','shadow','confirmation','tool')
+STAGES=('parser','planner','shadow','confirmation','tool','reply')
 Digest=Annotated[str,Field(pattern=r'^[a-f0-9]{64}$')]
 class Observation(BaseModel):
     model_config=ConfigDict(extra='forbid')
     schema_version:Literal['slack-request-v1']
-    stage:Literal['parser','planner','shadow','confirmation','tool']
+    stage:Literal['parser','planner','shadow','confirmation','tool','reply']
     environment:Literal['production','staging','development','test','local']
     request_ref:UUID4|Literal['[redacted]']|None=None
     attempt_ref:UUID4|Literal['[redacted]']|None=None
@@ -32,6 +32,7 @@ class Observation(BaseModel):
     independent_proposal:StrictBool|None=None
     confirmation_required:StrictBool|None=None
     tool_required:StrictBool|None=None
+    reply_required:StrictBool|None=None
     context_digest:Digest|Literal['[redacted]']|None=None
     decision_digest:Digest|Literal['[redacted]']|None=None
     proposal_safe:StrictBool|None=None
@@ -53,6 +54,7 @@ MEANINGS={
  'independent_proposal':'Producer asserts the shadow proposal was computed independently, without copying the route. Explicit true is required for a comparable pair; missing/false is unavailable, not independence inferred from a stage name.',
  'confirmation_required':'True requires confirmation evidence, false means not required, absent/null means unknown.',
  'tool_required':'True requires tool evidence, false means not required, absent/null means unknown.',
+ 'reply_required':'True means this attempt intended a user-visible reply. Missing/null in older producers stays unknown. Reply success means the messaging provider accepted the send, not that a person read it.',
  'context_digest':'Project-keyed HMAC-SHA256 over the approved canonical planner input. Never used to join requests; never exported. Different inputs are not comparable.',
  'decision_digest':'Project-keyed HMAC-SHA256 over the approved canonical decision. Never exported. Equal digests report agreement only with matching context/release/schema semantics.',
  'proposal_safe':'Producer-reported proposal check. False is an unsafe proposal. True is not proof of business safety.',
@@ -63,6 +65,29 @@ class ReviewQuery(Window):
     limit:int=Field(default=60,ge=1,le=60,strict=True)
     expected_environment:Literal['production','staging','development','test','local']='production'
 class TraceQuery(ReviewQuery):request:str=Field(pattern=r'^req_[a-f0-9]{32}$')
+
+class ReplyTracking(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    recipe:Literal['tracker-read-reply-v1']
+    path:Literal['src/app/api/slack/route.ts']
+    dependencies:list[Literal['src/app/api/slack/route.ts','src/lib/analytics/request-audit.ts']]=Field(min_length=2,max_length=2)
+
+class ReplyGoal(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    schema_version:Literal['afterspan-audit-goal-v1']=Field(alias='schema')
+    id:Literal['read-reply-delivery']
+    question:str=Field(min_length=1,max_length=2000)
+    metric:Literal['read-reply-delivery-v1']
+    environment:Literal['production','staging']
+    tracking:ReplyTracking
+
+class GoalQuery(ReviewQuery):
+    goal:ReplyGoal
+    release:str|None=Field(default=None,pattern=r'^rel_[a-f0-9]{32}$')
+    @model_validator(mode='after')
+    def same_environment(self):
+        if self.expected_environment!=self.goal.environment:raise ValueError('goal and review environments must match')
+        return self
 
 class HistoricalEvidence(Window):
     source:Literal['posthog']='posthog'
@@ -110,6 +135,8 @@ class Audit:
         def catalog(project:str,req:ReviewQuery):return self.catalog(project,req)
         @app.post('/api/audit/review',dependencies=[Depends(reader)])
         def review(project:str,req:ReviewQuery):return self.review(project,req)
+        @app.post('/api/audit/evaluate',dependencies=[Depends(reader)])
+        def evaluate(project:str,req:GoalQuery):return self.evaluate(project,req)
         @app.post('/api/audit/trace',dependencies=[Depends(reader)])
         def trace(project:str,req:TraceQuery):
             report=self.review(project,ReviewQuery(**req.model_dump(exclude={'request'})))
@@ -167,12 +194,12 @@ class Audit:
         for row in observations:by_stage[row['facts']['stage']].append(row)
         if any(len(v)>1 for v in by_stage.values()):issues.append('duplicate_stage_observations')
         values={}
-        for field in ['request_kind','comparison_eligible','confirmation_required','tool_required']:
+        for field in ['request_kind','comparison_eligible','confirmation_required','tool_required','reply_required']:
             values[field],conflict=agreed_fact(observations,field)
             if conflict:issues.append(field+'_conflict')
         stages=[]
         for name in STAGES:
-            required=True if name in ['parser','planner'] else values['comparison_eligible'] if name=='shadow' else values['confirmation_required'] if name=='confirmation' else values['tool_required']
+            required=True if name in ['parser','planner'] else values['comparison_eligible'] if name=='shadow' else values[name+'_required']
             seen=by_stage.get(name,[])
             state='unknown' if not observations else 'observed' if len(seen)==1 else 'conflict' if len(seen)>1 else 'missing' if required is True else 'not_required' if required is False else 'unknown'
             if seen and required is False:issues.append('unexpected_'+name)
@@ -193,7 +220,7 @@ class Audit:
             elif p['context_digest']!=s['context_digest']:issues.append('planner_input_mismatch')
             else:comparison='agree' if p['decision_digest']==s['decision_digest'] else 'disagree'
         elif declared:issues.append('incomplete_or_conflicting_comparison')
-        ordering=[by_stage[s][0]['ts'] for s in ['parser','planner','confirmation','tool'] if len(by_stage.get(s,[]))==1]
+        ordering=[by_stage[s][0]['ts'] for s in ['parser','planner','confirmation','tool','reply'] if len(by_stage.get(s,[]))==1]
         if ordering!=sorted(ordering):issues.append('stage_time_conflict');comparison='unavailable'
         return {'request':reference,'environment':'conflict' if len(environments)!=1 else next(iter(environments)),
             'environment_mismatch':any(env!=q.expected_environment for env in environments),'request_kind':values['request_kind'] or 'unknown',
@@ -201,6 +228,29 @@ class Audit:
             'comparison_declared_eligible':declared,'comparison':comparison,'stages':stages,'issues':sorted(set(issues)),
             'producer_reported_unsafe':any(f.get('proposal_safe') is False for f in facts),'business_state':'not_independently_verified',
             'release_coverage':[self.ref(key,project,'release',r) if available(r) else 'unavailable' for r in sorted(releases,key=str)]}
+    def evaluate(self,project,req):
+        report=self.review(project,ReviewQuery(**req.model_dump(exclude={'goal','release'})))
+        reads=[r for r in report['requests'] if r['request_kind']=='read' and r['environment']==req.goal.environment
+               and not r['environment_mismatch'] and (req.release is None or r['release_coverage']==[req.release])]
+        outcomes=Counter()
+        for row in reads:
+            reply=next(s for s in row['stages'] if s['stage']=='reply')
+            invalid=any(issue!='comparison_scope_unavailable' for issue in row['issues'])
+            outcome=reply['reported_outcome'] if reply['state']=='observed' and reply['required'] is True and not invalid else 'unknown'
+            outcomes[outcome if outcome in {'succeeded','failed'} else 'unknown']+=1
+        count=len(reads);complete=report['coverage']['selection_complete_for_correlated_window']
+        return {'goal':req.goal.model_dump(by_alias=True),'definition_verification':'caller_supplied_data_not_action_authority',
+                'metric':'read-reply-delivery-v1','denominator':count,'delivered':outcomes['succeeded'],
+                'failed':outcomes['failed'],'unknown':outcomes['unknown'],
+                'rate':outcomes['succeeded']/count if count and complete and not outcomes['unknown'] else None,
+                'selection_complete':complete,'release':req.release,'release_bound':req.release is not None,
+                'query':report['query'],'snapshot':report['snapshot'],'fingerprint':report['fingerprint'],
+                'next_action':'collect_real_requests' if not count else 'repair_tracking' if outcomes['unknown'] else 'inspect_failed_replies' if outcomes['failed'] else 'keep_observing',
+                'limits':['Only selected observed read request chains are counted; untracked messages are not a denominator.',
+                          'A delivery report is not proof of human reading, answer correctness or business success.',
+                          'Unknown or omitted requests keep the rate unavailable. Older producers have no reply evidence.',
+                          'Before/after is observational. A PR or merge is not deployment evidence.'],
+                'requests':reads}
     def review(self,project,req):
         q,rows,coverage,key=self.load(project,req);history=self.history(project,q.as_of.timestamp());groups=defaultdict(list);uncorrelated=Counter()
         for row in rows:

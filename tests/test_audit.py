@@ -67,7 +67,7 @@ class AuditTests(unittest.TestCase):
             ref,attempt=str(uuid.uuid4()),str(uuid.uuid4())
             for j,stage in enumerate(['parser','planner','shadow']):self.observe(self.facts(stage,ref,attempt,duration_ms=float(i)),i*10+j)
         r=self.review();self.assertEqual(r['denominators']['observed_request_chains_in_window'],65);self.assertEqual(r['denominators']['selected_requests'],60);self.assertEqual(r['agreement']['denominator'],60);self.assertEqual(r['coverage']['omitted_request_chains'],5)
-        trace=self.review({**r['query'],'request':r['requests'][0]['request']},path='trace');self.assertEqual(trace['fingerprint'],r['fingerprint']);self.assertEqual(len(trace['request']['stages']),5)
+        trace=self.review({**r['query'],'request':r['requests'][0]['request']},path='trace');self.assertEqual(trace['fingerprint'],r['fingerprint']);self.assertEqual(len(trace['request']['stages']),6)
         self.chain();again=self.review(r['query']);self.assertEqual(again['denominators'],r['denominators']);self.assertEqual(again['fingerprint'],r['fingerprint'])
         payload=json.dumps(r)
         for forbidden in ['private chat sentinel','private-feature-sentinel','private-person@example.test','203.0.113.99','a'*64,'b'*64,self.release]:self.assertNotIn(forbidden,payload)
@@ -112,3 +112,37 @@ class AuditTests(unittest.TestCase):
             receipt.chmod(0o600);receipt.write_text('{"purpose":"analytics"}')
             r=subprocess.run([sys.executable,str(launcher),str(receipt)],capture_output=True,text=True)
             self.assertNotEqual(r.returncode,0);self.assertIn('audit-purpose',r.stderr)
+
+    def goal(self):
+        return {'schema':'afterspan-audit-goal-v1','id':'read-reply-delivery','question':'Did Slack accept the reply?',
+                'metric':'read-reply-delivery-v1','environment':'production','tracking':{'recipe':'tracker-read-reply-v1',
+                'path':'src/app/api/slack/route.ts','dependencies':['src/app/api/slack/route.ts','src/lib/analytics/request-audit.ts']}}
+
+    def test_reply_goal_empty_unknown_failed_delivered_and_release_scope(self):
+        query={'goal':self.goal()}
+        empty=self.review(query,path='evaluate');self.assertEqual(empty['denominator'],0);self.assertIsNone(empty['rate'])
+        self.chain(comparison_eligible=False)
+        older=self.review(query,path='evaluate');self.assertEqual(older['unknown'],1);self.assertIsNone(older['rate'])
+        for n,outcome in enumerate(['succeeded','failed']):
+            ref,attempt=str(uuid.uuid4()),str(uuid.uuid4())
+            for i,stage in enumerate(['parser','planner','reply']):
+                self.observe(self.facts(stage,ref,attempt,comparison_eligible=False,reply_required=True,
+                             reported_outcome=outcome if stage=='reply' else 'succeeded'),20+n*10+i)
+        result=self.review(query,path='evaluate')
+        self.assertEqual((result['denominator'],result['delivered'],result['failed'],result['unknown']),(3,1,1,1));self.assertIsNone(result['rate'])
+        release=self.review()['requests'][0]['release_coverage'][0]
+        self.assertEqual(self.review({**query,'release':release},path='evaluate')['denominator'],3)
+        self.assertEqual(self.review({**query,'release':'rel_'+'0'*32},path='evaluate')['denominator'],0)
+        self.assertEqual(self.owner.post('/api/audit/evaluate?project='+self.p['id'],headers=CSRF,json={**query,'expected_environment':'staging'}).status_code,422)
+        self.assertEqual(self.client.post('/api/audit/evaluate?project='+self.p['id'],json=query).status_code,401)
+
+    def test_reply_goal_requires_complete_selection_and_preserves_false_and_conflict(self):
+        for n in range(2):
+            ref,attempt=str(uuid.uuid4()),str(uuid.uuid4())
+            for i,stage in enumerate(['parser','planner','reply']):
+                self.observe(self.facts(stage,ref,attempt,comparison_eligible=False,reply_required=True,reported_outcome='succeeded'),n*10+i)
+        query={'goal':self.goal()}
+        good=self.review(query,path='evaluate');self.assertEqual(good['rate'],1);self.assertEqual(good['denominator'],2)
+        capped=self.review({**query,'limit':1},path='evaluate');self.assertFalse(capped['selection_complete']);self.assertIsNone(capped['rate'])
+        self.observe(self.facts('reply',ref,attempt,comparison_eligible=False,reply_required=False,reported_outcome='succeeded'),30)
+        conflict=self.review(query,path='evaluate');self.assertEqual(conflict['unknown'],1);self.assertIsNone(conflict['rate'])

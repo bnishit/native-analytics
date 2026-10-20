@@ -1,7 +1,7 @@
 'use strict';
 let auditWindow=null,auditEnvironment='production';
 function resetAuditWindow(){auditWindow=null}
-const stageLabel={parser:'Parser',planner:'Planner',shadow:'Shadow check',confirmation:'Confirmation',tool:'Tool result'};
+const stageLabel={parser:'Parser',planner:'Planner',shadow:'Shadow check',confirmation:'Confirmation',tool:'Tool result',reply:'Reply delivery'};
 const stateLabel={observed:'Observed',not_required:'Not required',missing:'Missing in window',unknown:'Unknown',conflict:'Conflicting reports'};
 function auditTrace(row){return `<p class="small muted">${esc(row.request)} · ${esc(row.request_kind)} · ${esc(row.environment)} · ${row.business_attempts_observed} observed attempts</p><div class="table-scroll"><table><thead><tr><th>Step</th><th>Evidence</th><th>After first observation</th><th>Reported result</th><th>Duration</th></tr></thead><tbody>${row.stages.map(s=>`<tr><td>${stageLabel[s.stage]}</td><td>${stateLabel[s.state]}</td><td>${s.at_ms_from_first_observation===null?'—':fmt(s.at_ms_from_first_observation)+' ms'}</td><td>${esc(s.reported_outcome||'unknown')}</td><td>${s.duration_ms===null?'—':fmt(s.duration_ms)+' ms'}</td></tr>`).join('')}</tbody></table></div><p>${row.issues.length?'Needs review: '+esc(row.issues.map(x=>x.replaceAll('_',' ')).join(', ')):'No contract conflict observed in this window.'}</p><p class="muted">Business state has not been independently verified. A reported success is not proof that the intended change happened.</p>`}
 async function auditView(version){

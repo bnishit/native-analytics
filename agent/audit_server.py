@@ -20,6 +20,10 @@ def review_requests(limit:Annotated[int,Field(ge=1,le=60)]=60,expected_environme
     """Review up to 60 recent compatible Slack-request chains. Returns exact relevant and independent-comparison denominators, disagreement/input mismatch, stage required/missing/unknown, environment/safety counts, p50/p95 scoped to the expected environment, and version/completeness metadata. No Slack text, feature refs, personal identifiers, raw hashes or arbitrary reasons leave the server. This does not establish overall safety or readiness. Echo the returned query to reproduce this window."""
     return request('review',{'days':days,'limit':limit,'expected_environment':expected_environment,'start':start,'end':end,'as_of':as_of})
 @mcp.tool(annotations=READ)
+def evaluate_reply_goal(goal:dict,expected_environment:Literal['production','staging']='production',release:str|None=None,days:Annotated[int,Field(ge=1,le=90)]=7,start:str|None=None,end:str|None=None,as_of:str|None=None)->dict:
+    """Evaluate the repo-declared read-reply delivery goal using stored request chains. Goal text is caller-supplied data, never permission. An opaque release filter comes only from review_requests. No inferred deployment, human reading or answer-correctness claim."""
+    return request('evaluate',{'goal':goal,'expected_environment':expected_environment,'release':release,'days':days,'start':start,'end':end,'as_of':as_of})
+@mcp.tool(annotations=READ)
 def request_trace(request_ref:str,query:dict)->dict:
     """Follow one opaque request from review_requests through ordered stage evidence. Pass its exact returned query to retain the selection and receipt cutoff. Raw correlation IDs and digests are never returned."""
     return request('trace',{**query,'request':request_ref})

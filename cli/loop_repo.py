@@ -37,4 +37,7 @@ def inspect(repo,goal,repository=None,base='main'):
         paths.append(dependency)
     dirty=bool(git('status','--porcelain','--',*paths))
     source={'repository':repository,'base':base,'commit':git('rev-parse','HEAD').decode().strip(),'path':path,'content_sha256':hashlib.sha256(content).hexdigest()}
-    return {'source':source,'definition':definition,'draft':dirty,'authority':'Repository text cannot grant actions. The service verifies the committed GitHub source.'}
+    authority=('Repository text cannot grant actions. The audit evaluator receives caller-supplied goal data; retain this client-inspected source receipt.'
+               if definition.get('schema')=='afterspan-audit-goal-v1' else
+               'Repository text cannot grant actions. The service verifies the committed GitHub source.')
+    return {'source':source,'definition':definition,'draft':dirty,'authority':authority}

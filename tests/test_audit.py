@@ -120,7 +120,7 @@ class AuditTests(unittest.TestCase):
 
     def quality_goal(self,verifier='growthbook-catalog-v1'):
         return {'schema':'afterspan-audit-goal-v1','id':'answer-quality','question':'Do displayed catalog facts match the source?',
-                'metric':'answer-quality-v1','environment':'production','verifier':verifier,
+                'metric':'answer-quality-v1','environment':'production','verifier':verifier,'source_of_truth':'GrowthBook','criteria':'Displayed catalog facts match raw source rows','safe_test':'One approved private read',
                 'tracking':{'recipe':'source-answer-check-v1','dependencies':['src/reply.ts']}}
 
     def quality_chain(self,outcome='succeeded',**counts):
@@ -164,9 +164,9 @@ class AuditTests(unittest.TestCase):
 
     def test_new_repo_setup_reports_unconfigured_and_observed_coverage(self):
         query={'goal':self.quality_goal('unconfigured')};setup=self.review(query,path='onboarding')
-        self.assertFalse(setup['configured']);self.assertEqual(setup['next_action'],'configure_source_check');self.assertEqual(setup['observed_reads'],0)
+        self.assertFalse(setup['verifier_declared']);self.assertEqual(setup['next_action'],'configure_source_check');self.assertEqual(setup['observed_reads'],0)
         self.quality_chain();ready=self.review({'goal':self.quality_goal()},path='onboarding')
-        self.assertTrue(ready['configured']);self.assertEqual(ready['passed'],1);self.assertIn('setup',ready)
+        self.assertTrue(ready['verifier_declared']);self.assertEqual(ready['passed'],1);self.assertIn('setup',ready)
 
     def test_reply_goal_empty_unknown_failed_delivered_and_release_scope(self):
         query={'goal':self.goal()}

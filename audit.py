@@ -113,6 +113,9 @@ class QualityGoal(BaseModel):
     schema_version:Literal['afterspan-audit-goal-v1']=Field(alias='schema')
     id:Literal['answer-quality']
     question:str=Field(min_length=1,max_length=2000)
+    source_of_truth:str=Field(min_length=1,max_length=200)
+    criteria:str=Field(min_length=1,max_length=1000)
+    safe_test:str=Field(min_length=1,max_length=1000)
     metric:Literal['answer-quality-v1']
     environment:Literal['production','staging']
     verifier:Literal['growthbook-catalog-v1','unconfigured']
@@ -178,7 +181,9 @@ class Audit:
         def onboarding(project:str,req:GoalQuery):
             if not isinstance(req.goal,QualityGoal):raise HTTPException(422,'provide an answer-quality goal')
             result=self.evaluate(project,req)
-            return {'goal':result['goal'],'configured':req.goal.verifier!='unconfigured','observed_reads':result['denominator'],
+            observed=any(r['answer_check'] and r['answer_check']['check_version']==req.goal.verifier for r in result['requests'])
+            return {'goal':result['goal'],'verifier_declared':req.goal.verifier!='unconfigured','source_check_observed':observed,
+                    'status':'unconfigured' if req.goal.verifier=='unconfigured' else 'observed' if observed else 'waiting_for_check','observed_reads':result['denominator'],
                     'passed':result['passed'],'unknown':result['unknown'],'next_action':result['next_action'],
                     'contract':Observation.model_json_schema(),'source_access':'producer server only; never send source credentials or reply text to Afterspan',
                     'setup':['Declare the source of truth and exact claim scope in the repo goal.',

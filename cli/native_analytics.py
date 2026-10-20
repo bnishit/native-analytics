@@ -89,7 +89,7 @@ def parser():
     key=sub.add_parser('create-read-key');key.add_argument('--purpose',choices=['analytics','audit'],default='analytics');key.add_argument('--project',required=True);key.add_argument('--label',required=True);key.add_argument('--days',type=int,default=30);key.add_argument('--output',required=True)
     key=sub.add_parser('read-keys');key.add_argument('--project',required=True)
     key=sub.add_parser('revoke-read-key');key.add_argument('--project',required=True);key.add_argument('--id',required=True)
-    init=sub.add_parser('init-answer-goal');init.add_argument('--repo',required=True);init.add_argument('--question',required=True);init.add_argument('--verifier',choices=['growthbook-catalog-v1','unconfigured'],default='unconfigured');init.add_argument('--environment',choices=['production','staging'],default='production');init.add_argument('--dependency',action='append',required=True)
+    init=sub.add_parser('init-answer-goal');init.add_argument('--repo',required=True);init.add_argument('--question',required=True);init.add_argument('--source-of-truth',required=True);init.add_argument('--criteria',required=True);init.add_argument('--safe-test',required=True);init.add_argument('--verifier',choices=['growthbook-catalog-v1','unconfigured'],default='unconfigured');init.add_argument('--environment',choices=['production','staging'],default='production');init.add_argument('--dependency',action='append',required=True)
     for name in ['loop-inspect','loop-sync']:
         command=sub.add_parser(name);command.add_argument('--repo',default='.');command.add_argument('--goal',default='first-answer');command.add_argument('--repository');command.add_argument('--base',default='main')
         if name=='loop-sync':command.add_argument('--project',required=True)
@@ -109,7 +109,7 @@ def main(argv=None):
     args=parser().parse_args(argv);command=args.command
     if command=='init-answer-goal':
         from loop_repo import init_answer_goal
-        print(json.dumps(init_answer_goal(args.repo,args.question,args.verifier,args.environment,args.dependency),indent=2));return 0
+        print(json.dumps(init_answer_goal(args.repo,args.question,args.verifier,args.environment,args.dependency,args.source_of_truth,args.criteria,args.safe_test),indent=2));return 0
     if command in ['loop-inspect','loop-sync']:
         from loop_repo import inspect
         inspected=inspect(args.repo,args.goal,args.repository,args.base)

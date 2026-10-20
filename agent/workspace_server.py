@@ -116,7 +116,6 @@ def billing_downgrade(request_id:str,confirm_plan:Literal['builder'])->dict:
 def project_request(project,path,body=None,method=None,**params):
     workspace=os.environ.get('AFTERSPAN_WORKSPACE','');key=os.environ.get('AFTERSPAN_WORKSPACE_KEY','');origin=os.environ.get('NATIVE_ANALYTICS_URL','').rstrip('/')
     if not workspace or not key.startswith('as_workspace_'):raise ValueError('Configure the scoped workspace key; no operator fallback.')
-    # The API checks the key's workspace, current membership and role for this project.
     return http_request(origin,key,path,body,method,timeout=60 if path.startswith('/api/loop/') else 15,project=project,**params)
 
 @mcp.tool(annotations=READ)
@@ -168,9 +167,39 @@ def loop_sync(project:str,goal:str,source:dict)->dict:
     return project_request(project,'/api/loop/goals/'+quote(goal,safe='')+'/sync',source,'PUT')
 
 @mcp.tool(annotations=WRITE)
-def loop_prepare(project:str,goal:str,request_id:str)->dict:
-    """Prepare the supported minimal tracking repair using a stable UUID. Does not open a PR."""
-    return project_request(project,'/api/loop/goals/'+quote(goal,safe='')+'/prepare',{'request_id':request_id},'POST')
+def loop_prepare(project:str,goal:str,request_id:str,files:list[dict]|None=None)->dict:
+    """Prepare a legacy repair or exact reviewed v2 files using a stable UUID. V2 returns a pollable job. Does not open a PR."""
+    return project_request(project,'/api/loop/goals/'+quote(goal,safe='')+'/prepare',{'request_id':request_id,**({'files':files} if files is not None else {})},'POST')
+
+@mcp.tool(annotations=READ)
+def loop_sources(project:str)->dict:
+    """Read sanitized connection metadata. Provider credentials and owner authority are never returned."""
+    return project_request(project,'/api/loop/sources')
+
+@mcp.tool(annotations=WRITE)
+def loop_scan(project:str,scan_id:str,connection_id:str,commit:str,base:str='main')->dict:
+    """Scan one immutable connected repository without running its code. Keep static findings separate from runtime evidence."""
+    return project_request(project,'/api/loop/scans/'+quote(scan_id,safe=''),{'connection_id':connection_id,'commit':commit,'base':base},'PUT')
+
+@mcp.tool(annotations=READ)
+def loop_scan_status(project:str,scan_id:str)->dict:
+    """Read the saved scan, source citations and coverage limits."""
+    return project_request(project,'/api/loop/scans/'+quote(scan_id,safe=''))
+
+@mcp.tool(annotations=READ)
+def loop_job_status(project:str,job_id:str)->dict:
+    """Read a long repo scan or preparation result. Pending does not prove completion. Retry interrupted operations with the same original request and ID."""
+    return project_request(project,'/api/loop/jobs/'+quote(job_id,safe=''))
+
+@mcp.tool(annotations=WRITE)
+def loop_propose(project:str,proposal_id:str,definition:dict)->dict:
+    """Propose a scanned event outcome goal. Owner adoption of the exact hash is required before tracking actions."""
+    return project_request(project,'/api/loop/proposals/'+quote(proposal_id,safe=''),definition,'PUT')
+
+@mcp.tool(annotations=WRITE)
+def loop_release(project:str,action_id:str,connection_id:str)->dict:
+    """Read exact Railway deployment proof for a reconciled merged tracking artifact. No deployment is triggered."""
+    return project_request(project,'/api/loop/actions/'+quote(action_id,safe='')+'/release',{'connection_id':connection_id},'POST')
 
 @mcp.tool(annotations=ACCESS)
 def loop_action(project:str,action_id:str,operation:Literal['draft-pr','reconcile','merge'])->dict:
@@ -179,7 +208,7 @@ def loop_action(project:str,action_id:str,operation:Literal['draft-pr','reconcil
 
 @mcp.tool(annotations=WRITE)
 def loop_observe(project:str,goal:str,observation_id:str,window:dict)->dict:
-    """Freeze first-entry and mature outcome counts. Setup and producer quality flags do not prove usefulness."""
+    """Save bounded v1 workspace cohorts or v2 logged-event outcomes. Setup and producer flags do not prove usefulness."""
     return project_request(project,'/api/loop/goals/'+quote(goal,safe='')+'/observations/'+quote(observation_id,safe=''),window,'PUT')
 
 @mcp.tool(annotations=WRITE)
@@ -194,7 +223,7 @@ def loop_external(project:str,goal:str,evidence_id:str,evidence:dict)->dict:
 
 @mcp.tool(annotations=READ)
 def loop_compare(project:str,goal:str,before:str,after:str,action_id:str|None=None)->dict:
-    """Compare compatible cohorts observationally with explicit release and measurement limits."""
+    """Compare compatible saved observations observationally with explicit release and measurement limits."""
     return project_request(project,'/api/loop/goals/'+quote(goal,safe='')+'/compare',{'before':before,'after':after,**({'action_id':action_id} if action_id else {})},'POST')
 
 @mcp.tool(annotations=WRITE)

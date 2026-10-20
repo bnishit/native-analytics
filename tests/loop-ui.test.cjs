@@ -66,3 +66,19 @@ test('production connection hides unsupported repair and grant buttons',async()=
     if(policy&&policy.state!=='revoked')assert.match(html,/id="loop-revoke"/);
   }
 });
+
+test('repo scan retries keep their ID and a completed scan permits a fresh head',async()=>{
+  const content={innerHTML:''},elements=new Map(),calls=[],errors=[];
+  const context=vm.createContext({project:'pilot',renderVersion:1,Date,JSON,Number,String,Error,crypto:require('node:crypto').webcrypto,
+    esc:String,isOwner:()=>false,loopView:async()=>{},loopLimits:()=>'',url:value=>value,showError:e=>errors.push(e.message),
+    panel:(title,body)=>`<section><h2>${title}</h2>${body}</section>`,
+    $:selector=>{if(selector==='#content')return content;if(selector==='#repo-scan button')return {isConnected:false};if(!content.innerHTML.includes(`id="${selector.slice(1)}"`))return null;if(!elements.has(selector))elements.set(selector,{value:selector==='#repo-repository'?'connection':'main'});return elements.get(selector)},
+    api:async(path,body)=>{if(path==='/api/loop/sources')return {connections:[{id:'connection',kind:'github',status:'configured',revision:1,target:{repository:'owner/product'}}]};calls.push({path,body});if(calls.length===1)throw Error('read failed');return {id:'scan',commit:'a'.repeat(40),files:[],findings:{events:[]},coverage:{complete:false,reasons:[]}}}});
+  vm.runInContext(readFileSync('static/loop-onboarding.js','utf8'),context);
+  await vm.runInContext('repoOnboardingView(1)',context);
+  for(let i=0;i<3;i++)await elements.get('#repo-scan').onsubmit({preventDefault(){}});
+  assert.deepEqual(errors,['read failed']);
+  assert.equal(calls[0].path,calls[1].path);
+  assert.deepEqual(calls[0].body,calls[1].body);
+  assert.notEqual(calls[1].path,calls[2].path);
+});

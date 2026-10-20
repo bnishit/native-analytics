@@ -1,5 +1,6 @@
 """Run an isolated loopback preview, with local simulation or a real Stripe test sandbox."""
 import argparse
+import base64
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,7 @@ state.mkdir(mode=0o700,parents=True,exist_ok=True);private=state/'dev-access.jso
 if private.exists():values=json.loads(private.read_text())
 else:values={key:secrets.token_urlsafe(36) for key in ['ANALYTICS_ADMIN_TOKEN','ANALYTICS_PASSWORD','ANALYTICS_SESSION_SECRET']}
 if 'AFTERSPAN_LOCAL_WEBHOOK_SECRET' not in values:values['AFTERSPAN_LOCAL_WEBHOOK_SECRET']=secrets.token_urlsafe(36)
+if 'AFTERSPAN_CONNECTION_KEY' not in values:values['AFTERSPAN_CONNECTION_KEY']=base64.urlsafe_b64encode(secrets.token_bytes(32)).decode()
 fd=os.open(private,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
 with os.fdopen(fd,'w') as handle:json.dump(values,handle)
 private.chmod(0o600);os.environ.update(values)

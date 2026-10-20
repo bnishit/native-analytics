@@ -157,9 +157,10 @@ class _UncertainWrite(Exception):
 
 
 class GitHub:
-    def __init__(self, repository="", token=""):
+    def __init__(self, repository="", token="", read_guard=None):
         self.repository = repository
         self._token = token
+        self.read_guard = read_guard
 
     @classmethod
     def from_env(cls):
@@ -172,6 +173,8 @@ class GitHub:
             _fail("The repository is outside the operator allowlist", 403)
 
     def _request(self, method, path, body=None, missing=False, guard=None):
+        if self.read_guard:
+            self.read_guard()
         data = None if body is None else json.dumps(body, separators=(",", ":")).encode()
         headers = {"Authorization": "Bearer " + self._token, "Accept": "application/vnd.github+json",
                    "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "afterspan-loop", "Content-Type": "application/json"}
@@ -382,8 +385,8 @@ class GitHub:
                 "goal_sha256": hashlib.sha256(_goal_bytes(definition).encode()).hexdigest(), "files": files,
                 "workflows": scan["workflows"], "scan": scan, "definition": definition}
         plan["artifact_sha256"] = _digest(plan)
-        self._plan(plan, current=True)
-        return plan | {"status": "prepared", "assurance": "reviewed_bytes_only"}
+        line_counts = self._plan(plan, current=True)
+        return plan | {"status": "prepared", "assurance": "reviewed_bytes_only", "line_counts": line_counts}
 
     def _reviewed_plan(self, plan, current):
         if (any(key not in plan for key in (*_REVIEWED_FIELDS, "artifact_sha256"))
@@ -474,6 +477,14 @@ class GitHub:
             _fail("The reviewed artifact is missing its goal or exceeds 128 KiB or 4000 review lines", 422)
         if current and self._head(plan["base"])["commit"]["sha"] != plan["base_sha"]:
             _fail("The base branch moved. Prepare a new plan")
+        counts = {"added": 0, "deleted": 0}
+        for file in files:
+            for line in difflib.ndiff(before.get(file["path"], "").splitlines(), file["content"].splitlines()):
+                if line.startswith("+ "):
+                    counts["added"] += 1
+                elif line.startswith("- "):
+                    counts["deleted"] += 1
+        return counts
 
     def verify_committed_goal(self, plan, commit):
         self._plan(plan)

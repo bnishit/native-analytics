@@ -207,13 +207,13 @@ class PostHogTests(unittest.TestCase):
     def observe(self, data, definition=None, window=None, source=None, status=200):
         transport = Transport(data, status)
         with patch('loop_sources.http.client.HTTPSConnection', transport.connection):
-            receipt = posthog_observe(source or connection(), definition or DEFINITION, window or WINDOW)
+            receipt = posthog_observe(source or connection(), definition or DEFINITION, window or WINDOW, guard=lambda: None)
         return receipt, transport
 
     def test_returns_only_disjoint_aggregates_with_full_universe_coverage(self):
         receipt, transport = self.observe(aggregate(private_rows=[TOKEN], hogql=TOKEN))
         self.assertEqual(receipt['counts'], {'total': 8, 'success': 5, 'failure': 2, 'unclassified': 1})
-        self.assertEqual(receipt['coverage'], {'source_total': 12, 'environment_missing': 2, 'release_missing': 3, 'status': 'unknown'})
+        self.assertEqual(receipt['coverage'], {'source_total': 12, 'environment_missing': 2, 'release_missing': 3, 'status': 'unknown', 'received_cutoff_supported': False})
         self.assertEqual(receipt['provenance'], 'provider_aggregate')
         self.assertIs(receipt['source_verified'], True)
         self.assertNotIn(TOKEN, json.dumps(receipt))
@@ -313,7 +313,7 @@ class RailwayTests(unittest.TestCase):
     def release(self, data, environment='production'):
         transport = Transport(data)
         with patch('loop_sources.http.client.HTTPSConnection', transport.connection):
-            receipt = railway_release(connection('railway'), COMMIT, environment)
+            receipt = railway_release(connection('railway'), COMMIT, environment, guard=lambda: None)
         self.assertNotIn(TOKEN, json.dumps(receipt))
         self.assertEqual(transport.requests[0]['host'], 'backboard.railway.app')
         self.assertNotIn('mutation', transport.requests[0]['body']['query'])

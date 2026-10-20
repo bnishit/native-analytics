@@ -2,13 +2,14 @@ import base64
 import hashlib
 import http.client
 import json
-import math
 import os
 import re
 import time
 from contextlib import closing
 from datetime import datetime, timezone
 from typing import Annotated, Literal
+
+from loop_onboarding import EventOutcome
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -57,52 +58,7 @@ class RailwayConfig(_Model):
 
 
 _CONFIGS = {'github': GitHubConfig, 'posthog': PostHogConfig, 'railway': RailwayConfig}
-Scalar = str | int | float | bool
 Property = Annotated[str, Field(pattern=_PROPERTY)]
-
-
-def _scalar(value):
-    if (type(value) not in (str, int, float, bool)
-            or isinstance(value, str) and (len(value) > 256 or any(ord(c) < 32 for c in value))
-            or type(value) in (int, float) and (abs(value) > _MAX_COUNT or not math.isfinite(value))):
-        raise ValueError('unsupported scalar')
-    return value
-
-
-class OutcomeFilter(_Model):
-    property: Property
-    op: Literal['eq', 'in']
-    value: Scalar | list[Scalar]
-
-    @model_validator(mode='after')
-    def scalar_values(self):
-        if self.op == 'in':
-            if not isinstance(self.value, list) or not 1 <= len(self.value) <= 20:
-                raise ValueError('in requires bounded scalar values')
-            for value in self.value:
-                _scalar(value)
-        else:
-            _scalar(self.value)
-        return self
-
-
-class EventOutcome(_Model):
-    kind: Literal['event-outcome-v1']
-    unit: Literal['logged_event']
-    event: str = Field(min_length=1, max_length=160, pattern=r'^[^\x00-\x1f]+$')
-    filters: list[OutcomeFilter] = Field(max_length=10)
-    outcome_property: Property
-    success_values: list[Scalar] = Field(min_length=1, max_length=20)
-    failure_values: list[Scalar] = Field(min_length=1, max_length=20)
-    min_sample_size: int = Field(ge=1, le=10000000)
-
-    @model_validator(mode='after')
-    def disjoint_outcomes(self):
-        for value in self.success_values + self.failure_values:
-            _scalar(value)
-        if any(_equal(a, b) for a in self.success_values for b in self.failure_values):
-            raise ValueError('outcome values must be disjoint')
-        return self
 
 
 class PostHogMapping(_Model):
@@ -136,10 +92,6 @@ class SourceWindow(_Model):
                 or self.as_of.timestamp() > time.time() + 5):
             raise ValueError('invalid bounded source window')
         return self
-
-
-def _equal(a, b):
-    return a == b and (type(a) is type(b) or type(a) in (int, float) and type(b) in (int, float))
 
 
 def _json(value):
@@ -353,7 +305,7 @@ def _aggregate(data, columns):
     return dict(zip(columns, results[0]))
 
 
-def posthog_observe(connection, definition, window):
+def posthog_observe(connection, definition, window, *, guard):
     try:
         measurement = EventOutcome.model_validate(definition['measurement'])
         mapping = PostHogMapping.model_validate(definition['mapping'])
@@ -369,6 +321,7 @@ def posthog_observe(connection, definition, window):
                'query_sha256': hashlib.sha256(query.encode()).hexdigest(), 'query_template_version': 'posthog-event-outcome-v1',
                'fetched_at': datetime.now(timezone.utc).isoformat(), 'release': window.release}
     try:
+        guard()
         data = _request(_HOSTS[config['region']], 'POST', f"/api/projects/{config['project_id']}/query/", connection['secret'],
                         {'query': {'kind': 'HogQLQuery', 'query': query}, 'async': False, 'refresh': 'force_blocking', 'name': 'afterspan:event-outcome-v1'})
         values = _aggregate(data, _COLUMNS)
@@ -382,14 +335,16 @@ def posthog_observe(connection, definition, window):
                           'counts': None, 'coverage': {'status': 'unknown', 'source_total': None,
                                                       'environment_missing': None, 'release_missing': None}}
     coverage = {key: values[key] for key in ('environment_missing', 'release_missing')}
-    coverage.update(source_total=universe, status='unknown' if any(coverage.values()) else 'complete')
+    coverage.update(source_total=universe, status='unknown' if any(coverage.values()) else 'complete',
+                    received_cutoff_supported=False)
     return receipt | {'provenance': 'provider_aggregate', 'source_verified': True,
                       'counts': {key: values[key] for key in _COLUMNS[:4]}, 'coverage': coverage,
                       'limitations': ['Counts describe logged events, not all real activity.',
-                                      'Provider retention, sampling and collector delivery are not independently verified.']}
+                                      'Provider retention, sampling and collector delivery are not independently verified.',
+                                      'Counts are read at fetched_at. PostHog ingestion cannot be reconstructed at the requested as_of cutoff.']}
 
 
-def railway_release(connection, commit, environment):
+def railway_release(connection, commit, environment, *, guard):
     if connection['kind'] != 'railway' or not isinstance(commit, str) or not _SHA.fullmatch(commit):
         raise HTTPException(422, 'Invalid release target')
     if not isinstance(environment, str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,80}', environment):
@@ -398,6 +353,7 @@ def railway_release(connection, commit, environment):
     receipt = {'provider': 'railway', 'status': 'pending', 'verified': False, 'commit': commit, 'environment': environment,
                **config, 'connection_id': connection['id'], 'connection_revision': connection['revision']}
     try:
+        guard()
         data = _request('backboard.railway.app', 'POST', '/graphql/v2', connection['secret'],
                         {'query': _RELEASE_QUERY, 'variables': {'serviceId': config['service_id'], 'environmentId': config['environment_id']}})
         if data.get('errors'):

@@ -10,11 +10,12 @@ from datetime import datetime, timezone
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, HTTPException, Request
 from pydantic import Field, ValidationError, field_validator, model_validator
 
 from product_analytics import EventMatch, Model
 from loop_measurement import LIMITATIONS, check_answer, compare, eligible, count_first_entry_outcomes, event_matches, next_action
+from loop_onboarding import RepoOnboarding, repo_goal
 
 
 Digest = Annotated[str, Field(pattern=r'^[0-9a-f]{64}$')]
@@ -107,7 +108,11 @@ class LoopPolicy(Model):
     repository: str = Field(pattern=r'^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$')
     base: str = Field(min_length=1, max_length=160)
     operations: list[Literal['draft-pr', 'merge', 'release-on-merge']] = Field(max_length=3)
-    paths: list[Literal['examples/loop_pilot.py']] = Field(min_length=1, max_length=1)
+    paths: list[str] = Field(min_length=1, max_length=8)
+    artifact_sha256: Digest | None = None
+    max_files: int = Field(default=8, ge=1, le=8, strict=True)
+    max_added_lines: int = Field(default=200, ge=1, le=2000, strict=True)
+    max_deleted_lines: int = Field(default=100, ge=0, le=2000, strict=True)
     environment: Environment
     required_checks: list[RequiredCheck] = Field(default_factory=list, max_length=10)
     expires_at: datetime
@@ -130,6 +135,19 @@ class LoopPolicy(Model):
 
 class Prepare(Model):
     request_id: uuid.UUID
+    files: list['ArtifactFile'] | None = Field(default=None, min_length=1, max_length=8)
+
+    @model_validator(mode='after')
+    def byte_bound(self):
+        if self.files and sum(len(file.content.encode()) for file in self.files) > 131072:
+            raise ValueError('artifact exceeds 128 KiB')
+        return self
+
+
+class ArtifactFile(Model):
+    path: str = Field(min_length=1, max_length=160)
+    before_sha: Commit | None
+    content: str = Field(max_length=131072)
 
 
 class Empty(Model):
@@ -253,6 +271,9 @@ class Comparison(Model):
 class ProductLoop:
     @staticmethod
     def init_db(c):
+        from loop_sources import Connections
+        Connections.init_db(c)
+        RepoOnboarding.init_db(c)
         c.executescript('''
         CREATE TABLE IF NOT EXISTS loop_goals(
           project TEXT NOT NULL REFERENCES projects(id),goal TEXT NOT NULL,revision INTEGER NOT NULL,
@@ -287,6 +308,7 @@ class ProductLoop:
         self.retention_days, self.github = retention_days, github
         self.store_events = store_events
         self.action_locks = defaultdict(threading.Lock)
+        self.onboarding = RepoOnboarding(self, app, reader, editor, verified_release)
 
         @app.get('/api/loop/goals', dependencies=[Depends(reader)])
         def goals(project: str):
@@ -308,16 +330,25 @@ class ProductLoop:
             return self.set_policy(project, goal, revision, req, request)
 
         @app.post('/api/loop/goals/{goal}/prepare', dependencies=[Depends(editor)])
-        def prepare(project: str, goal: GoalID, req: Prepare):
-            return self.prepare(project, goal, str(req.request_id))
+        def prepare(project: str, goal: GoalID, req: Prepare, background: BackgroundTasks, request: Request):
+            files = [item.model_dump(mode='json') for item in req.files] if req.files else None
+            with closing(self.connect()) as c:
+                current = self.goal(c, project, goal)
+            if repo_goal(current):
+                return self.onboarding.queue(project, str(req.request_id), 'prepare', {'goal': goal, **req.model_dump(mode='json')}, background,
+                                             lambda: self.prepare(project, goal, str(req.request_id), files),
+                                             lambda: self.editor(request, project))
+            return self.prepare(project, goal, str(req.request_id), files)
 
         @app.post('/api/loop/actions/{id}/{operation}', dependencies=[Depends(editor)])
         def action(project: str, id: uuid.UUID, operation: Literal['draft-pr', 'reconcile', 'merge'], req: Empty, request: Request):
-            return self.act(project, str(id), operation, request)
+            with self.onboarding.authorized(lambda: self.editor(request, project)):
+                return self.act(project, str(id), operation, request)
 
         @app.put('/api/loop/goals/{goal}/observations/{id}', dependencies=[Depends(reader)])
-        def observe(project: str, goal: GoalID, id: uuid.UUID, req: ObservationWindow):
-            return self.observe(project, goal, str(id), req)
+        def observe(project: str, goal: GoalID, id: uuid.UUID, req: ObservationWindow, request: Request):
+            with self.onboarding.authorized(lambda: self.reader(request, project)):
+                return self.observe(project, goal, str(id), req)
 
         @app.put('/api/loop/goals/{goal}/answers/{id}', dependencies=[Depends(editor)])
         def assess(project: str, goal: GoalID, id: uuid.UUID, req: AnswerCheck):
@@ -339,7 +370,9 @@ class ProductLoop:
         def comparison(project: str, goal: GoalID, req: Comparison):
             return self.comparison(project, goal, req)
 
-    def provider(self):
+    def provider(self, project=None, bundle=None):
+        if bundle and bundle['definition'].get('schema') == 'afterspan-repo-goal-v2':
+            return self.onboarding.provider(project, bundle)
         if self.github is None:
             from loop_github import GitHub
             self.github = GitHub.from_env()
@@ -377,6 +410,8 @@ class ProductLoop:
         with closing(self.connect()) as c, c:
             c.execute('BEGIN IMMEDIATE')
             old = c.execute('SELECT * FROM loop_goals WHERE project=? AND goal=? ORDER BY revision DESC LIMIT 1', (project, goal)).fetchone()
+            if old and json.loads(old['bundle'])['definition'].get('schema') == 'afterspan-repo-goal-v2':
+                raise HTTPException(409, 'a repository goal requires owner adoption and cannot be replaced by native goal sync')
             if old and json.loads(old['bundle']) == snapshot:
                 return self.view(project, goal, c)
             if not old and c.execute('SELECT count(DISTINCT goal) FROM loop_goals WHERE project=?', (project,)).fetchone()[0] >= 100:
@@ -408,13 +443,24 @@ class ProductLoop:
             if revision != (old['revision'] if old else 0):
                 raise HTTPException(409, 'loop policy changed; reload before saving')
             source, definition = current['bundle'], current['bundle']['definition']
+            if repo_goal(current):
+                artifact = c.execute('''SELECT plan FROM loop_actions WHERE project=? AND goal=? AND goal_revision=?
+                    AND json_extract(plan,'$.artifact_sha256')=? LIMIT 1''',
+                    (project, goal, current['revision'], req.artifact_sha256)).fetchone()
+                if not artifact or req.paths != [file['path'] for file in json.loads(artifact['plan'])['files']]:
+                    raise HTTPException(422, 'repository policy requires the exact prepared artifact digest and ordered paths')
+                self.onboarding.provider(project, source)
+            elif req.paths != ['examples/loop_pilot.py'] or req.artifact_sha256 is not None:
+                raise HTTPException(422, 'the native first-answer recipe permits only its original path')
             if (req.repository != source['repository'] or req.base != source['base']
                     or req.environment != definition['mapping']['environment']):
                 raise HTTPException(422, 'policy must match the current committed goal source and environment')
             if req.state == 'active' and req.expires_at.timestamp() <= time.time():
                 raise HTTPException(422, 'active policy must expire in the future')
             policy = req.model_dump(mode='json')
-            policy.update(max_files=1, max_added_lines=1, max_deleted_lines=0,
+            policy.update(max_files=req.max_files if repo_goal(current) else 1,
+                          max_added_lines=req.max_added_lines if repo_goal(current) else 1,
+                          max_deleted_lines=req.max_deleted_lines if repo_goal(current) else 0,
                           approved_goal_digest=current['goal_digest'], measurement_revision=current['measurement_revision'],
                           mapping_revision=current['mapping_revision'], tracking_sha256=digest(definition['tracking']),
                           source_repository_id=source.get('repository_id'))
@@ -430,7 +476,12 @@ class ProductLoop:
             result[key] = json.loads(result[key]) if result[key] else None
         return result
 
-    def prepare(self, project, goal, request_id):
+    def prepare(self, project, goal, request_id, files=None):
+        with closing(self.connect()) as c:
+            if repo_goal(self.goal(c, project, goal)):
+                return self.onboarding.prepare(project, goal, request_id, files)
+        if files is not None:
+            raise HTTPException(422, 'the native recipe does not accept caller-supplied tracking bytes')
         with self.action_locks[(project, 'prepare', goal, request_id)]:
             with closing(self.connect()) as c, c:
                 c.execute('BEGIN IMMEDIATE')
@@ -490,8 +541,18 @@ class ProductLoop:
                     or plan['base'] != policy['base'] or current['bundle']['definition']['mapping']['environment'] != policy['environment']):
                 raise HTTPException(403, 'current owner policy does not permit this operation')
             files = plan.get('files', [])
-            if len(files) != 1 or files[0].get('path') not in policy['paths']:
+            if not files or len(files) > policy['max_files'] or any(file.get('path') not in policy['paths'] for file in files):
                 raise HTTPException(403, 'plan is outside the owner path and file bounds')
+            if repo_goal(current):
+                self.onboarding.provider(project, current['bundle'])
+                if policy.get('artifact_sha256') != plan.get('artifact_sha256'):
+                    raise HTTPException(403, 'the owner policy approved a different artifact')
+                counts = plan.get('line_counts') or {}
+                if (counts.get('added', 2001) > policy['max_added_lines']
+                        or counts.get('deleted', 2001) > policy['max_deleted_lines']):
+                    raise HTTPException(403, 'the tracking patch exceeds the owner line bounds')
+            elif len(files) != 1:
+                raise HTTPException(403, 'the native recipe permits one file')
             return {key: value for key, value in policy.items() if key != 'issuer'}
 
     def act(self, project, id, operation, request):
@@ -530,7 +591,9 @@ class ProductLoop:
                 raise HTTPException(409, 'owner policy changed during the action; reconcile before retrying')
             return current
         try:
-            provider = self.provider()
+            with closing(self.connect()) as c:
+                bundle = self.goal(c, project, action['goal'], action['goal_revision'])['bundle']
+            provider = self.provider(project, bundle)
             if operation == 'draft-pr':
                 receipt = provider.draft(action['plan'], id, guard)
             elif operation == 'merge':
@@ -571,6 +634,9 @@ class ProductLoop:
         return json.loads(row['receipt'])
 
     def observe(self, project, goal, id, req):
+        with closing(self.connect()) as c:
+            if repo_goal(self.goal(c, project, goal)):
+                return self.onboarding.observe(project, goal, id, req)
         window = req.model_dump(mode='json')
         fingerprint = digest(window)
         with closing(self.connect()) as c, c:
@@ -589,8 +655,11 @@ class ProductLoop:
                 raise HTTPException(422, 'observation exceeds 200,000 events; shorten the entry window')
             events = [{**dict(row), 'properties': json.loads(row['properties'])} for row in rows]
             assessments = defaultdict(list)
-            for row in c.execute('''SELECT completion_event_id,verdict FROM loop_answers WHERE project=? AND goal=?
-                    AND measurement_revision=? AND mapping_revision=? AND created<=?''',
+            for row in c.execute('''SELECT a.completion_event_id,a.verdict FROM loop_answers a
+                    JOIN loop_observations o ON o.project=a.project AND o.goal=a.goal
+                      AND o.id=json_extract(a.receipt,'$.evidence_id')
+                    WHERE a.project=? AND a.goal=? AND a.measurement_revision=?
+                    AND a.mapping_revision=? AND a.created<=? AND json_extract(o.receipt,'$.source')='native' ''',
                     (project, goal, current['measurement_revision'], current['mapping_revision'], stamps['as_of'])):
                 assessments[row['completion_event_id']].append(row['verdict'])
             result = count_first_entry_outcomes(events, definition['measurement'], stamps, assessments, definition['mapping']['environment'])
@@ -629,6 +698,8 @@ class ProductLoop:
             current = self.goal(c, project, goal)
             definition = current['bundle']['definition']
             configured = self.service_environment()
+            if repo_goal(current):
+                raise HTTPException(422, 'repository goals do not use the native Codex connection lifecycle')
             if definition['mapping']['environment'] != configured:
                 raise HTTPException(409, 'goal environment differs from this service')
             measurement = definition['measurement']
@@ -729,7 +800,11 @@ class ProductLoop:
 
     def check_completion(self, c, project, goal, id, req, fingerprint):
         evidence = self.evidence(c, project, goal, str(req.evidence_id))
+        if evidence['source'] != 'native':
+            raise HTTPException(422, 'native completion checks require native service evidence')
         current = self.goal(c, project, goal, evidence['goal_revision'])
+        if repo_goal(current):
+            raise HTTPException(422, 'logged-event observations cannot qualify native checked-answer completions')
         definition = current['bundle']['definition']
         row = c.execute('SELECT * FROM events WHERE project=? AND id=?', (project, req.completion_event_id)).fetchone()
         if row is None:
@@ -761,6 +836,8 @@ class ProductLoop:
             if old:
                 return old
             current = self.goal(c, project, goal)
+            if repo_goal(current):
+                raise HTTPException(422, 'repository goals use source-read observations; caller attestations cannot replace them')
             if isinstance(req, ExternalContractGap):
                 receipt = {'id': id, 'goal_id': goal, **self.refs(current), **payload, 'source': 'externally_attested',
                            'provenance': 'caller_attestation_not_provider_verified',
@@ -799,6 +876,8 @@ class ProductLoop:
                 if action['goal'] != goal:
                     raise HTTPException(404, 'action not found for this goal')
                 release = verified_release(action, after)
+        if before.get('schema') == 'afterspan-observation-v2' or after.get('schema') == 'afterspan-observation-v2':
+            return self.onboarding.compare(before, after, release, req.action_id)
         result = compare(before, after, release)
         result['action_id'] = str(req.action_id) if req.action_id else None
         return result
@@ -814,6 +893,8 @@ class ProductLoop:
         observations = [json.loads(row['receipt']) for row in c.execute('SELECT receipt FROM loop_observations WHERE project=? AND goal=? ORDER BY created DESC LIMIT 100', (project, goal))]
         history = [{'goal_revision': row['revision'], 'source': json.loads(row['bundle']), 'measurement_revision': row['measurement_revision'],
                     'mapping_revision': row['mapping_revision'], 'goal_digest': row['goal_digest']} for row in c.execute('SELECT * FROM loop_goals WHERE project=? AND goal=? ORDER BY revision', (project, goal))]
+        if repo_goal(current):
+            return self.onboarding.view(current, policy, actions, observations, history)
         row = c.execute('SELECT receipt FROM loop_connections WHERE project=? AND goal=? AND measurement_revision=? AND mapping_revision=?',
                         (project, goal, current['measurement_revision'], current['mapping_revision'])).fetchone()
         codex_connection = json.loads(row['receipt']) if row else None

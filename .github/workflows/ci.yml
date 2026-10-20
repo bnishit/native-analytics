@@ -37,7 +37,7 @@ jobs:
           docker run --detach --name afterspan-release-check
           --publish 127.0.0.1:8080:8080
           --env ANALYTICS_PUBLIC_URL=http://127.0.0.1:8080
-          --env ANALYTICS_PASSWORD=local-container-check
+          --env ANALYTICS_PASSWORD=local-container-check-password
           --env ANALYTICS_ADMIN_TOKEN=local-container-check-admin
           --env ANALYTICS_SESSION_SECRET=local-container-check-session
           --env COOKIE_SECURE=false

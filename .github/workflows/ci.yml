@@ -27,3 +27,36 @@ jobs:
       - run: node --check static/landing.js
       - run: node --experimental-strip-types --test sdk/typescript/native-analytics.test.ts
       - run: python cli/native_analytics.py --help
+
+  container-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t afterspan-release-check .
+      - run: >-
+          docker run --detach --name afterspan-release-check
+          --publish 127.0.0.1:8080:8080
+          --env ANALYTICS_PUBLIC_URL=http://127.0.0.1:8080
+          --env ANALYTICS_PASSWORD=local-container-check
+          --env ANALYTICS_ADMIN_TOKEN=local-container-check-admin
+          --env ANALYTICS_SESSION_SECRET=local-container-check-session
+          --env COOKIE_SECURE=false
+          afterspan-release-check
+      - run: |
+          python - <<'PYTHON'
+          import json,time,urllib.error,urllib.request
+          for attempt in range(30):
+              try:
+                  with urllib.request.urlopen('http://127.0.0.1:8080/.well-known/afterspan',timeout=2) as response:
+                      result=json.load(response)
+                  assert result['product_loop']['repo_onboarding']['contract']=='afterspan-repo-goal-v2'
+                  break
+              except (urllib.error.URLError,TimeoutError):
+                  time.sleep(1)
+          else:
+              raise SystemExit('Container did not expose the new repository loop')
+          PYTHON
+      - if: failure()
+        run: docker logs afterspan-release-check
+      - if: always()
+        run: docker rm --force afterspan-release-check

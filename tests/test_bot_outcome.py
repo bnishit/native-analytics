@@ -127,6 +127,39 @@ class BotOutcomeTests(unittest.TestCase):
         self.assertEqual(result['counts'], {'total': 1, 'success': 0, 'failure': 1, 'unclassified': 0})
         self.assertEqual(self.observe(start=40)['counts']['total'], 0)
 
+    def test_request_spanning_releases_cannot_qualify_for_the_new_release(self):
+        ref = str(uuid.uuid4())
+        self.send_request(ref=ref, missing=('reply', 'quality'))
+        self.send_request(ref=ref, number=2, at=20, changes={'request_started_at_ms': self.t * 1000, 'release_sha': 'b' * 40})
+        result = self.observe(release='b' * 40)
+        self.assertEqual(result['counts']['success'], 0)
+        self.assertEqual(result['coverage']['release_missing'], 1)
+        self.assertIsNone(result['rate'])
+
+    def test_one_known_wrong_fact_fails_even_when_another_claim_is_unknown(self):
+        from contextlib import closing
+        import json
+        events = self.send_request(quality='unknown')
+        facts = events[-1]['properties']['afterspan_audit']
+        facts.update(checked_claims=2, mismatched_claims=1, unknown_claims=1)
+        with closing(self.loop.connect()) as c, c:
+            c.execute('UPDATE events SET properties=? WHERE project=? AND id=?', (json.dumps({'afterspan_audit': facts}), self.p['id'], events[-1]['id']))
+        self.assertEqual(self.observe()['counts']['failure'], 1)
+
+    def test_missing_stage_requirements_and_failed_parser_cannot_qualify(self):
+        from contextlib import closing
+        import json
+        self.send_request(changes={'tool_required': None})
+        self.send_request(at=30, changes={'confirmation_required': None})
+        events = self.send_request(at=60)
+        facts = events[0]['properties']['afterspan_audit']
+        facts['reported_outcome'] = 'failed'
+        with closing(self.loop.connect()) as c, c:
+            c.execute('UPDATE events SET properties=? WHERE project=? AND id=?', (json.dumps({'afterspan_audit': facts}), self.p['id'], events[0]['id']))
+        result = self.observe()
+        self.assertEqual(result['counts'], {'total': 3, 'success': 0, 'failure': 0, 'unclassified': 3})
+        self.assertIsNone(result['rate'])
+
     def test_quality_arriving_after_the_receipt_cutoff_cannot_backfill_a_pass(self):
         from contextlib import closing
         events = self.send_request()

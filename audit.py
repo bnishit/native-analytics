@@ -379,9 +379,10 @@ class Audit:
             entered/=1000
             if not start<=entered<end:continue
             if window.get('release'):
-                if not row['release_sha'] or 'release_sha_conflict' in row['issues']:
+                release,conflict=agreed_fact(group,'release_sha')
+                if not release or conflict or any(not r['facts'].get('release_sha') for r in group):
                     coverage['release_missing']+=1;continue
-                if row['release_sha']!=window['release']:continue
+                if release!=window['release']:continue
             coverage['eligible_started']+=1
             if entered+metric['deadline_seconds']>through:
                 coverage['waiting']+=1;continue
@@ -390,7 +391,8 @@ class Audit:
             reply=next(s for s in row['stages'] if s['stage']=='reply')
             quality=row['answer_check']
             usable=not issues and all(s['state']=='observed' for s in row['stages'] if s['required'] is True)
-            usable=usable and not any(s['stage']=='tool' and s['reported_outcome']=='failed' for s in row['stages'])
+            usable=usable and all(next(s for s in row['stages'] if s['stage']==stage)['required'] in (True,False) for stage in ['confirmation','tool'])
+            usable=usable and not any(s['stage'] in ['parser','planner','tool'] and s['reported_outcome']=='failed' for s in row['stages'])
             if issues:coverage['conflicting_requests']+=1
             reply_rows=[r for r in group if r['facts']['stage']=='reply' and r['facts'].get('attempt_number')==row['latest_attempt_number']]
             delivered=usable and reply['required'] is True and reply['state']=='observed' and reply['reported_outcome']=='succeeded'
@@ -398,7 +400,7 @@ class Audit:
             late=bool(delivered and len(reply_rows)==1 and reply_rows[0]['ts']>entered+metric['deadline_seconds'])
             coverage['delivered']+=bool(delivered);coverage['source_passed']+=bool(delivered and passed);coverage['late_replies']+=late
             failed=usable and reply['required'] is True and reply['state']=='observed' and (reply['reported_outcome']=='failed'
-                    or delivered and (late or quality and quality['check_version']==metric['verifier'] and quality['reported_outcome']=='failed'))
+                    or delivered and (late or quality and quality['check_version']==metric['verifier'] and (quality['reported_outcome']=='failed' or (quality.get('mismatched_claims') or 0)>0)))
             outcome='failure' if failed else 'success' if delivered and passed else 'unclassified'
             counts[outcome]+=1
         with closing(self.connect()) as c:

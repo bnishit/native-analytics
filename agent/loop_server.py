@@ -77,7 +77,7 @@ def loop_job_status(job_id:UUID)->dict:
 
 @mcp.tool(annotations=WRITE)
 def loop_propose(proposal_id:UUID,definition:dict)->dict:
-    """Propose an event outcome goal grounded in scanned code. An owner must adopt its exact hash. This grants no action permission."""
+    """Propose a logged-event or native Slack read-outcome goal grounded in scanned code. An owner must adopt its exact hash. This grants no action permission."""
     return request('proposals/'+str(proposal_id),definition,'PUT')
 
 
@@ -95,7 +95,7 @@ def loop_action(action_id:UUID,operation:Literal['draft-pr','reconcile','merge']
 
 @mcp.tool(annotations=WRITE)
 def loop_observe(observation_id:UUID,window:dict,goal:str='first-answer')->dict:
-    """Save an immutable bounded observation: native workspace cohorts for v1, logged-event outcomes for v2. Preserve source coverage and unknowns."""
+    """Save an immutable bounded observation: native workspace cohorts for v1, logged-event or native Slack request outcomes for v2. Preserve source coverage and unknowns."""
     from urllib.parse import quote
     return request('goals/'+quote(goal,safe='')+'/observations/'+str(observation_id),window,'PUT')
 

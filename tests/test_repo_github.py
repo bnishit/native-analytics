@@ -157,6 +157,28 @@ class RepoGitHubTests(unittest.TestCase):
         self.assertEqual(scan["coverage"], {"complete": False, "reasons": ["unsupported_static_patterns"]})
         self.assertEqual(scan["findings"]["unsupported"], [{"path": SOURCE, "line": 3, "reason": "dynamic_event_name"}])
 
+    def test_reviewed_patch_can_carry_the_existing_adjacent_regression_test(self):
+        path = SOURCE.removesuffix('.ts') + '.test.ts'
+        self.http.files[BASE][path] = 'test("original", () => {});\n'
+        scan, definition, files = self.proposal()
+        files.append({'path': path, 'before_sha': blob(self.http.files[BASE][path]), 'content': 'test("original and missing reply", () => {});\n'})
+        plan = self.github.prepare_artifact(scan, definition, files)
+        self.assertEqual([file['path'] for file in plan['files']], [SOURCE, GOAL, path])
+        self.assertNotIn(path, [row['path'] for row in scan['files']])
+        files[-1]['before_sha'] = '0' * 40
+        with self.assertRaises(HTTPException): self.github.prepare_artifact(scan, definition, files)
+
+    def test_companion_tests_cannot_be_new_symlinks_or_unrelated_test_files(self):
+        path = SOURCE.removesuffix('.ts') + '.test.ts'
+        for candidate, mode, exists in [(path, '100644', False), (path, '120000', True), ('src/unrelated.test.ts', '100644', True)]:
+            with self.subTest(path=candidate, mode=mode, exists=exists):
+                self.http.files[BASE].pop(path, None)
+                if exists: self.http.files[BASE][candidate] = 'test("original", () => {});\n'
+                self.http.modes[candidate] = mode
+                scan, definition, files = self.proposal()
+                files.append({'path': candidate, 'before_sha': blob('test("original", () => {});\n') if exists else None, 'content': 'test("changed", () => {});\n'})
+                with self.assertRaises(HTTPException): self.github.prepare_artifact(scan, definition, files)
+
     def test_dynamic_prefix_and_template_events_are_not_literal_evidence(self):
         self.http.files[BASE][SOURCE] = 'trackEvent("prefix." + action, id);\ncollector.track(`action.${name}`, id);\n'
         scan = self.github.scan(BASE, "main")

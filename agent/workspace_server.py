@@ -193,7 +193,7 @@ def loop_job_status(project:str,job_id:str)->dict:
 
 @mcp.tool(annotations=WRITE)
 def loop_propose(project:str,proposal_id:str,definition:dict)->dict:
-    """Propose a scanned event outcome goal. Owner adoption of the exact hash is required before tracking actions."""
+    """Propose a scanned logged-event or native Slack read-outcome goal. Owner adoption of the exact hash is required before tracking actions."""
     return project_request(project,'/api/loop/proposals/'+quote(proposal_id,safe=''),definition,'PUT')
 
 @mcp.tool(annotations=WRITE)
@@ -208,7 +208,7 @@ def loop_action(project:str,action_id:str,operation:Literal['draft-pr','reconcil
 
 @mcp.tool(annotations=WRITE)
 def loop_observe(project:str,goal:str,observation_id:str,window:dict)->dict:
-    """Save bounded v1 workspace cohorts or v2 logged-event outcomes. Setup and producer flags do not prove usefulness."""
+    """Save bounded v1 workspace cohorts or v2 logged-event or native Slack request outcomes. Setup and producer flags do not prove usefulness."""
     return project_request(project,'/api/loop/goals/'+quote(goal,safe='')+'/observations/'+quote(observation_id,safe=''),window,'PUT')
 
 @mcp.tool(annotations=WRITE)

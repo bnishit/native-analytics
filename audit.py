@@ -5,7 +5,7 @@ import json
 import math
 import uuid
 import time
-from datetime import datetime
+from datetime import datetime,timezone
 from urllib.parse import urlsplit
 from collections import Counter,defaultdict
 from contextlib import closing
@@ -28,6 +28,9 @@ class Observation(BaseModel):
     release_ref:UUID4|Literal['[redacted]']|None=None
     comparison_version:Literal['canonical-plan-v1']|None=None
     request_kind:Literal['read','write','unknown']|None=None
+    command_kind:Literal['list_experiments','list_users','check_user','list_exp_parameters','other']|None=None
+    release_sha:Annotated[str,Field(pattern=r'^[a-f0-9]{40}$')]|None=None
+    request_started_at_ms:int|None=Field(default=None,ge=0,le=2**53-1,strict=True)
     comparison_eligible:StrictBool|None=None
     independent_proposal:StrictBool|None=None
     confirmation_required:StrictBool|None=None
@@ -55,6 +58,9 @@ class Observation(BaseModel):
         return self
 
 MEANINGS={
+ 'command_kind':'Bounded parsed read-command category. Missing in older producers; never infer it from reply text or a source check.',
+ 'release_sha':'Exact producer Git revision. Missing or conflicting revisions cannot qualify a release-bound request outcome.',
+ 'request_started_at_ms':'Original request handling start, Unix milliseconds. It survives business retries; a reply cannot restart the goal clock.',
  'check_version':'growthbook-catalog-v1: producer-side deterministic check of the exact rendered catalog answer against a separate uncached GrowthBook read. Not a second model vote or an independent Afterspan source fetch.',
  'checked_claims':'Number of displayed catalog rows with a matching source version checked for presence, enabled state and explicit Identity $in list-entry count. Not active users or SDK eligibility.',
  'mismatched_claims':'Checked rows which disagreed with the source. Nonzero forces failed; never averaged into a clean pass.',
@@ -155,6 +161,14 @@ def agreed_fact(observations,field):
     values={json.dumps(r['facts'][field],sort_keys=True) for r in observations if field in r['facts'] and r['facts'][field] is not None}
     return (json.loads(next(iter(values))) if len(values)==1 else None,len(values)>1)
 
+def request_groups(rows):
+    groups=defaultdict(list);uncorrelated=Counter()
+    for row in rows:
+        value=row['facts'].get('request_ref')
+        if not available(value):uncorrelated['missing' if 'request_ref' not in row['facts'] else 'null' if value is None else 'redacted']+=1
+        else:groups[value].append(row)
+    return groups,uncorrelated
+
 class Audit:
     @staticmethod
     def init_db(c):c.execute('CREATE TABLE IF NOT EXISTS audit_evidence(project TEXT NOT NULL REFERENCES projects(id),id TEXT NOT NULL,payload TEXT NOT NULL,created REAL NOT NULL,PRIMARY KEY(project,id))')
@@ -249,7 +263,7 @@ class Audit:
         for row in observations:by_stage[row['facts']['stage']].append(row)
         if any(len(v)>1 for v in by_stage.values()):issues.append('duplicate_stage_observations')
         values={}
-        for field in ['request_kind','comparison_eligible','confirmation_required','tool_required','reply_required']:
+        for field in ['request_kind','command_kind','release_sha','request_started_at_ms','comparison_eligible','confirmation_required','tool_required','reply_required']:
             values[field],conflict=agreed_fact(observations,field)
             if conflict:issues.append(field+'_conflict')
         stages=[]
@@ -275,10 +289,11 @@ class Audit:
             elif p['context_digest']!=s['context_digest']:issues.append('planner_input_mismatch')
             else:comparison='agree' if p['decision_digest']==s['decision_digest'] else 'disagree'
         elif declared:issues.append('incomplete_or_conflicting_comparison')
-        ordering=[by_stage[s][0]['ts'] for s in ['parser','planner','confirmation','tool','reply'] if len(by_stage.get(s,[]))==1]
+        ordering=[by_stage[s][0]['ts'] for s in ['parser','planner','confirmation','tool','reply','quality'] if len(by_stage.get(s,[]))==1]
         if ordering!=sorted(ordering):issues.append('stage_time_conflict');comparison='unavailable'
         return {'request':reference,'environment':'conflict' if len(environments)!=1 else next(iter(environments)),
             'environment_mismatch':any(env!=q.expected_environment for env in environments),'request_kind':values['request_kind'] or 'unknown',
+            'command_kind':values['command_kind'],'release_sha':values['release_sha'],'request_started_at_ms':values['request_started_at_ms'],
             'business_attempts_observed':len(slots),'latest_attempt_number':latest,'missing_attempt_numbers':max(slots)-len(slots) if slots else None,
             'comparison_declared_eligible':declared,'comparison':comparison,'stages':stages,'issues':sorted(set(issues)),
             'producer_reported_unsafe':any(f.get('proposal_safe') is False for f in facts),'business_state':'not_independently_verified',
@@ -335,12 +350,72 @@ class Audit:
                           'Unknown or omitted requests keep the rate unavailable. Older producers have no reply evidence.',
                           'Before/after is observational. A PR or merge is not deployment evidence.'],
                 'requests':reads}
+    def repo_outcome(self,project,definition,window):
+        from loop_onboarding import digest
+        metric,mapping=definition['measurement'],definition['mapping']
+        start,end,through=[datetime.fromisoformat(window[k]).timestamp() for k in ['entry_start','entry_end','observed_through']]
+        try:
+            query=ReviewQuery(start=window['entry_start'],end=window['observed_through'],as_of=window['as_of'],expected_environment=mapping['environment'])
+        except ValueError:
+            raise HTTPException(422,'request observation span must fit the audit window') from None
+        q,rows,loaded,key=self.load(project,query)
+        groups,uncorrelated=request_groups(rows)
+        counts=dict.fromkeys(['total','success','failure','unclassified'],0)
+        coverage={'source_total':len(groups),'environment_missing':0,'release_missing':0,'command_missing':0,
+                  'start_missing':0,'conflicting_requests':0,'uncorrelated_observations':sum(uncorrelated.values()),
+                  'invalid_observations':loaded['invalid_observations'],'waiting':0,'other_reads':0,'eligible_started':0,
+                  'delivered':0,'source_passed':0,'late_replies':0,'status':'bounded_request_read'}
+        for group in groups.values():
+            row=self.chain(project,key,group,q)
+            if row['environment']=='conflict':coverage['environment_missing']+=1;continue
+            if row['environment']!=mapping['environment'] or row['request_kind']=='write':continue
+            if row['request_kind']!='read' or row['command_kind'] is None:
+                coverage['command_missing']+=1;continue
+            if row['command_kind']!=metric['command_kind']:
+                coverage['other_reads']+=1;continue
+            entered,conflict=agreed_fact(group,'request_started_at_ms')
+            if entered is None or conflict or any(r['ts']<entered/1000 for r in group):
+                coverage['start_missing']+=1;continue
+            entered/=1000
+            if not start<=entered<end:continue
+            if window.get('release'):
+                if not row['release_sha'] or 'release_sha_conflict' in row['issues']:
+                    coverage['release_missing']+=1;continue
+                if row['release_sha']!=window['release']:continue
+            coverage['eligible_started']+=1
+            if entered+metric['deadline_seconds']>through:
+                coverage['waiting']+=1;continue
+            counts['total']+=1
+            issues=[i for i in row['issues'] if i!='comparison_scope_unavailable']
+            reply=next(s for s in row['stages'] if s['stage']=='reply')
+            quality=row['answer_check']
+            usable=not issues and all(s['state']=='observed' for s in row['stages'] if s['required'] is True)
+            usable=usable and not any(s['stage']=='tool' and s['reported_outcome']=='failed' for s in row['stages'])
+            if issues:coverage['conflicting_requests']+=1
+            reply_rows=[r for r in group if r['facts']['stage']=='reply' and r['facts'].get('attempt_number')==row['latest_attempt_number']]
+            delivered=usable and reply['required'] is True and reply['state']=='observed' and reply['reported_outcome']=='succeeded'
+            passed=bool(quality and quality['check_version']==metric['verifier'] and quality['reported_outcome']=='succeeded')
+            late=bool(delivered and len(reply_rows)==1 and reply_rows[0]['ts']>entered+metric['deadline_seconds'])
+            coverage['delivered']+=bool(delivered);coverage['source_passed']+=bool(delivered and passed);coverage['late_replies']+=late
+            failed=usable and reply['required'] is True and reply['state']=='observed' and (reply['reported_outcome']=='failed'
+                    or delivered and (late or quality and quality['check_version']==metric['verifier'] and quality['reported_outcome']=='failed'))
+            outcome='failure' if failed else 'success' if delivered and passed else 'unclassified'
+            counts[outcome]+=1
+        with closing(self.connect()) as c:
+            erasure=c.execute('SELECT 1 FROM erased_identities WHERE project=? AND erased>=? LIMIT 1',(project,start)).fetchone()
+        coverage.update(request_coverage_gap=any(coverage[k] for k in ['environment_missing','release_missing','command_missing','start_missing',
+                         'conflicting_requests','uncorrelated_observations','invalid_observations']),erasure_observed=bool(erasure))
+        result={'provenance':'native_request_audit_read','source_verified':True,'counts':counts,'coverage':coverage,
+                'query_sha256':digest({'contract':metric['kind'],'definition':definition,'window':window}),
+                'response_sha256':digest({'counts':counts,'coverage':coverage}),'fetched_at':datetime.now(timezone.utc).isoformat(),'window':window,
+                'limitations':['Pass requires accepted Slack delivery within the deadline and a producer-side source check of displayed catalog facts.',
+                               'Afterspan validates stored reports; it does not fetch GrowthBook or establish answer completeness or human usefulness.',
+                               'Missing starts, unsupported command classification, conflicting evidence and missing source checks cannot qualify.',
+                               'Requests still within their follow-up window are waiting, outside the mature denominator.']}
+        return result
+
     def review(self,project,req):
-        q,rows,coverage,key=self.load(project,req);history=self.history(project,q.as_of.timestamp());groups=defaultdict(list);uncorrelated=Counter()
-        for row in rows:
-            value=row['facts'].get('request_ref')
-            if not available(value):uncorrelated['missing' if 'request_ref' not in row['facts'] else 'null' if value is None else 'redacted']+=1
-            else:groups[value].append(row)
+        q,rows,coverage,key=self.load(project,req);history=self.history(project,q.as_of.timestamp());groups,uncorrelated=request_groups(rows)
         selected=sorted(groups.values(),key=lambda g:(-max(r['ts'] for r in g),g[0]['facts']['request_ref']))[:q.limit]
         requests=[self.chain(project,key,g,q) for g in selected]
         denominator=sum(r['comparison'] in ['agree','disagree'] for r in requests);numerator=sum(r['comparison']=='agree' for r in requests)

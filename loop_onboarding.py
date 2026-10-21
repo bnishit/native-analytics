@@ -101,6 +101,16 @@ class EventOutcome(Model):
         return self
 
 
+class SlackReadOutcome(Model):
+    kind: Literal['slack-read-outcome-v1']
+    unit: Literal['observed_read_request']
+    event: Literal['slack_message_received']
+    command_kind: Literal['list_experiments']
+    verifier: Literal['growthbook-catalog-v1']
+    deadline_seconds: int = Field(default=60, ge=1, le=300, strict=True)
+    min_sample_size: int = Field(default=25, ge=1, le=100000, strict=True)
+
+
 class NativeSource(Model):
     kind: Literal['native']
     environment: Literal['production', 'staging', 'development', 'test', 'local']
@@ -131,9 +141,16 @@ class RepoGoal(Model):
     id: str = Field(pattern=r'^[a-z][a-z0-9-]{0,63}$')
     question: str = Field(min_length=1, max_length=2000)
     scan_id: uuid.UUID
-    measurement: EventOutcome
+    measurement: Annotated[EventOutcome | SlackReadOutcome, Field(discriminator='kind')]
     mapping: Annotated[NativeSource | PostHogSource, Field(discriminator='kind')]
     tracking: ReviewedTracking
+
+    @model_validator(mode='after')
+    def request_source(self):
+        if isinstance(self.measurement, SlackReadOutcome) and (self.mapping.kind != 'native'
+                or self.mapping.environment_property != 'environment' or self.mapping.release_property != 'release_sha'):
+            raise ValueError('Slack request outcomes require native audit environment and release_sha fields')
+        return self
 
 
 class AdoptInput(Model):
@@ -451,6 +468,14 @@ class RepoOnboarding:
                 return self.loop.action(c, project, id)
 
     def native_observe(self, project, definition, window):
+        if definition['measurement']['kind'] == 'slack-read-outcome-v1':
+            if self.loop.audit is None:
+                raise HTTPException(503, 'request audit source is unavailable')
+            result = self.loop.audit.repo_outcome(project, definition, window)
+            result['coverage']['retention_gap'] = (datetime.fromisoformat(window['entry_start']).timestamp()
+                                                   < time.time() - self.loop.retention_days * 86400)
+            result['response_sha256'] = digest({'counts': result['counts'], 'coverage': result['coverage']})
+            return result
         mapping, metric = definition['mapping'], definition['measurement']
         start, end, cutoff = [datetime.fromisoformat(window[key]).timestamp() for key in ['entry_start', 'entry_end', 'as_of']]
         with closing(self.loop.connect()) as c:
@@ -516,7 +541,7 @@ class RepoOnboarding:
                 source = 'provider_verified' if result.get('source_verified') else 'source_gap'
             counts = result.get('counts')
             coverage = result.get('coverage', {})
-            gap = (not counts or not result.get('source_verified') or counts['unclassified'] > 0
+            gap = (not counts or not result.get('source_verified') or counts['unclassified'] > 0 or coverage.get('request_coverage_gap', False)
                    or coverage.get('environment_missing', 0) > 0 or coverage.get('release_missing', 0) > 0
                    or coverage.get('retention_gap') or coverage.get('erasure_observed'))
             enough = bool(counts and counts['total'] >= definition['measurement']['min_sample_size'])
@@ -526,7 +551,10 @@ class RepoOnboarding:
                        'window': window, 'verdict': verdict,
                        'rate': counts['success'] / counts['total'] if counts and counts['total'] and not gap and enough else None,
                        'release_bound': False, 'next_action': 'collect_evidence' if not enough or gap else 'no_change',
-                       'limitations': [*result.get('limitations', []), 'The unit is logged events, not distinct people or completed customer journeys.',
+                       'limitations': [*result.get('limitations', []),
+                                       ('The unit is observed classified read requests, not distinct people or all Slack messages.'
+                                        if definition['measurement']['kind'] == 'slack-read-outcome-v1' else
+                                        'The unit is logged events, not distinct people or completed customer journeys.'),
                                        'Before/after is observational and cannot prove causal benefit.',
                                        'A source read proves retained observations, not complete collection or human usefulness.']}
             with closing(self.loop.connect()) as c, c:

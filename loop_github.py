@@ -414,9 +414,12 @@ class GitHub:
                 or len(set(tracking["dependencies"])) != len(tracking["dependencies"])):
             _fail("The approved tracking dependencies are unsupported", 422)
         measurement, mapping = definition.get("measurement"), definition.get("mapping")
-        if (not isinstance(measurement, dict) or set(measurement) != {"kind", "unit", "event", "filters", "outcome_property", "success_values", "failure_values", "min_sample_size"}
-                or measurement.get("kind") != "event-outcome-v1" or measurement.get("unit") != "logged_event"
-                or not isinstance(measurement.get("event"), str) or not isinstance(scan["findings"], dict)
+        from loop_onboarding import RepoGoal
+        try:
+            RepoGoal.model_validate(definition)
+        except ValueError:
+            _fail("The approved measurement is unsupported", 422)
+        if (not isinstance(scan["findings"], dict)
                 or measurement["event"] not in {event.get("name") for event in scan["findings"].get("events", []) if isinstance(event, dict)}
                 or not isinstance(mapping, dict) or set(mapping) - {"kind", "environment", "environment_property", "release_property", "connection_id", "connection_revision"}
                 or mapping.get("kind") not in ("native", "posthog")):
@@ -454,6 +457,17 @@ class GitHub:
             before[path] = content
         if not isinstance(files, list) or not 2 <= len(files) <= 8:
             _fail("A reviewed artifact requires its goal and one to seven source changes", 422)
+        changed = {file.get('path') for file in files if isinstance(file, dict) and isinstance(file.get('path'), str)}
+        companions = {path.rsplit('.', 1)[0] + '.test.' + path.rsplit('.', 1)[1]
+                      for path in dependencies if path in changed and path.endswith(('.ts', '.tsx', '.js', '.jsx'))}
+        for path in companions & changed:
+            node = tree.get(path)
+            if not node or node['type'] != 'blob' or node['mode'] != '100644':
+                _fail("Companion tests must be existing regular files beside a changed source dependency", 422)
+            content, sha = self._content(path, plan['base_sha'])
+            if sha != node['sha']:
+                _fail("A companion test changed since the pinned tree")
+            before[path] = content
         paths, total, lines = set(), 0, 0
         for file in files:
             if not isinstance(file, dict) or set(file) != {"path", "before_sha", "content"} or not _relative(file.get("path")) or file["path"] in paths:
@@ -469,6 +483,9 @@ class GitHub:
             if path == plan["goal_path"]:
                 if path in tree or file["before_sha"] is not None or file["content"] != goal_content:
                     _fail("The new goal must contain exactly the approved canonical bytes", 422)
+            elif path in companions:
+                if file['before_sha'] != tree[path]['sha'] or file['content'] == before[path]:
+                    _fail("Companion tests must change from their exact pinned bytes", 422)
             elif (path not in dependencies or path.rsplit("/", 1)[-1] in _MANIFESTS
                     or not _source_path(path) or file["before_sha"] != scanned[path]["blob_sha"]
                     or file["content"] == before[path]):

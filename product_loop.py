@@ -303,10 +303,11 @@ class ProductLoop:
         CREATE INDEX IF NOT EXISTS loop_answer_completion ON loop_answers(project,goal,completion_event_id);
         ''')
 
-    def __init__(self, app, connect, reader, editor, owner, retention_days, github=None, store_events=None):
+    def __init__(self, app, connect, reader, editor, owner, retention_days, github=None, store_events=None, audit=None):
         self.connect, self.reader, self.editor, self.owner = connect, reader, editor, owner
         self.retention_days, self.github = retention_days, github
         self.store_events = store_events
+        self.audit = audit
         self.action_locks = defaultdict(threading.Lock)
         self.onboarding = RepoOnboarding(self, app, reader, editor, verified_release)
 

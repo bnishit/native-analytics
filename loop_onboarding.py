@@ -422,6 +422,7 @@ class RepoOnboarding:
             check = self.access_check.get()
             if check:
                 check()
+            self.provider(project, scan)
             old = c.execute('SELECT * FROM loop_goals WHERE project=? AND goal=? ORDER BY revision DESC LIMIT 1', (project, goal)).fetchone()
             same = old and json.loads(old['bundle']) == bundle
             if old and json.loads(old['bundle'])['definition'].get('schema') != 'afterspan-repo-goal-v2':

@@ -182,6 +182,29 @@ class OnboardingTests(unittest.TestCase):
         with closing(self.loop.connect()) as c:
             self.assertIsNone(c.execute('SELECT id FROM loop_actions WHERE id=?', (proposed['id'],)).fetchone())
 
+    def test_connection_rotation_during_final_provider_read_cannot_save_adoption(self):
+        proposed = self.merged_proposal()
+        self.provider_patch.stop()
+        onboarding = self.loop.onboarding
+
+        def checked_provider(project, binding):
+            type(onboarding).provider(onboarding, project, binding)
+            return self.provider
+
+        def rotate_during_response(*args):
+            onboarding.connections.put(self.p['id'], self.connection['id'], 1, 'github',
+                                       {'repository': 'owner/application'}, SecretStr('replacement-credential'))
+            return proposed['merged_receipt']
+
+        self.provider.verify_adopted.side_effect = rotate_during_response
+        with patch.object(onboarding, 'provider', side_effect=checked_provider):
+            response = self.call('POST', '/goals/api-read-outcomes/adopt',
+                                 {'proposal_id': proposed['id'], 'proposal_sha256': proposed['proposal_sha256']})
+        self.assertEqual(response.status_code, 409)
+        with closing(self.loop.connect()) as c:
+            self.assertEqual(c.execute('SELECT count(*) FROM loop_goals').fetchone()[0], 1)
+            self.assertIsNone(c.execute('SELECT id FROM loop_actions WHERE id=?', (proposed['id'],)).fetchone())
+
     def test_native_logged_counts_preserve_unknown_and_small_samples(self):
         empty, _ = self.observe()
         self.assertEqual((empty['verdict'], empty['counts']['total'], empty['rate']), ('insufficient_evidence', 0, None))

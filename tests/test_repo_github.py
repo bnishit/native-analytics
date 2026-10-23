@@ -127,6 +127,75 @@ class RepoGitHubTests(unittest.TestCase):
     def guard(self):
         return None
 
+    def merged_fixture(self, extra_dependency=False):
+        scan, definition, files = self.proposal()
+        if extra_dependency:
+            definition['tracking']['dependencies'].append(WRAPPER)
+            files[1]['content'] = json.dumps(definition, sort_keys=True, separators=(',', ':')) + '\n'
+        plan = self.github.prepare_artifact(scan, definition, files)
+        self.github.draft(plan, ACTION, self.guard)
+        self.http.pr.update(merged=True, state='closed', merge_commit_sha=MERGE)
+        self.http.files[MERGE] = copy.deepcopy(self.http.files[HEAD])
+        self.http.parents[MERGE] = [BASE, HEAD]
+        self.http.branches['main'] = MERGE
+        self.http.branches.pop(BRANCH)
+        self.http.read_overrides['/pulls/7/files'] = (200, [{'filename': f['path']} for f in plan['files']])
+        self.http.writes.clear()
+        self.http.requests.clear()
+        return {'pr_number': 7, 'base': 'main', 'base_sha': BASE, 'head_sha': HEAD,
+                'merge_sha': MERGE, 'goal_sha256': plan['goal_sha256']}
+
+    def test_merged_proposal_rebuilds_provider_evidence_without_old_action_or_branch(self):
+        pins = self.merged_fixture()
+        result = self.github.merged_proposal('public-read', pins, {'connection_id': 'current', 'connection_revision': 3})
+        self.assertEqual(result['scan']['connection_revision'], 3)
+        self.assertEqual(result['scan']['provenance'], 'server_recomputed_at_pinned_base')
+        self.assertEqual(result['scan']['id'], SCAN_ID)
+        self.assertEqual(result['merged_receipt']['merge_sha'], MERGE)
+        self.assertTrue(result['merged_receipt']['merged'])
+        self.assertEqual(self.github.reconcile(result['plan'], result['merged_receipt']), result['merged_receipt'])
+        self.assertEqual(self.http.writes, [])
+        self.assertTrue(all(method == 'GET' for method, _, _ in self.http.requests))
+
+    def test_merged_proposal_rejects_wrong_bytes_pins_repository_and_extra_paths(self):
+        pins = self.merged_fixture()
+        self.http.read_overrides['/git/commits/' + 'd' * 40] = (404, {})
+        for key in ['base_sha', 'head_sha', 'merge_sha', 'goal_sha256']:
+            with self.subTest(key=key), self.assertRaises(HTTPException):
+                self.github.merged_proposal('public-read', pins | {key: 'd' * (64 if key == 'goal_sha256' else 40)}, {})
+        self.http.pr['head']['repo'] = {'id': 123, 'full_name': 'other/application'}
+        with self.assertRaises(HTTPException):
+            self.github.merged_proposal('public-read', pins, {})
+        self.http.read_overrides['/pulls/7/files'] = (200, [{'filename': GOAL}, {'filename': '.env.local'}])
+        self.http.requests.clear()
+        with self.assertRaises(HTTPException):
+            self.github.merged_proposal('public-read', pins, {})
+        self.assertFalse(any(path.startswith('/contents/.env') for _, path, _ in self.http.requests))
+        self.assertEqual(self.http.writes, [])
+
+    def test_descendant_release_requires_ancestry_and_identical_goal_artifact_dependencies(self):
+        pins = self.merged_fixture(extra_dependency=True)
+        result = self.github.merged_proposal('public-read', pins, {})
+        plan = result['plan']
+        descendant = 'd' * 40
+        self.http.files[descendant] = copy.deepcopy(self.http.files[MERGE]) | {'README.md': 'Reviewed elsewhere'}
+        self.http.parents[descendant] = [MERGE]
+        endpoint = '/compare/' + MERGE + '...' + descendant
+        self.http.read_overrides[endpoint] = (200, {'status': 'ahead', 'base_commit': {'sha': MERGE}, 'merge_base_commit': {'sha': MERGE}})
+        binding = self.github.artifact_release_binding(plan, MERGE, descendant)
+        self.assertEqual(binding['commit'], descendant)
+        self.assertFalse(binding['other_source_reviewed'])
+        self.assertEqual({x['path'] for x in binding['files']}, {GOAL, SOURCE, WRAPPER})
+        for path in [GOAL, SOURCE, WRAPPER]:
+            self.http.files[descendant][path] += '\n'
+            with self.assertRaises(HTTPException):
+                self.github.artifact_release_binding(plan, MERGE, descendant)
+            self.http.files[descendant][path] = self.http.files[MERGE][path]
+        self.http.read_overrides[endpoint] = (200, {'status': 'diverged', 'base_commit': {'sha': MERGE}, 'merge_base_commit': {'sha': BASE}})
+        with self.assertRaises(HTTPException):
+            self.github.artifact_release_binding(plan, MERGE, descendant)
+        self.assertEqual(self.http.writes, [])
+
     def policy(self, plan):
         return {"state": "active", "repository": REPO, "base": "main", "operations": ["merge", "release-on-merge"],
                 "paths": [file["path"] for file in plan["files"]], "artifact_sha256": plan["artifact_sha256"], "environment": "production",

@@ -132,6 +132,56 @@ class OnboardingTests(unittest.TestCase):
         self.assertEqual(status['dependency_status'], 'scan_bound_proposal')
         self.assertEqual(self.adopt()['goal']['goal_revision'], 1)
 
+    def merged_proposal(self):
+        scan = self.scan | {'connection_id': self.connection['id'], 'connection_revision': 1}
+        plan = self.provider.prepare_artifact(scan, self.definition, [{'path': 'src/analytics.ts'}]) | {'status': 'prepared'}
+        merged = {'adoption': 'merged-pr-v1', 'merged': True, 'status': 'merged',
+                  'pr_number': 156, 'head_sha': 'b' * 40, 'merge_sha': 'c' * 40,
+                  'artifact_sha256': plan['artifact_sha256']}
+        value = {'definition': self.definition, 'scan': scan, 'plan': plan, 'merged_receipt': merged}
+        first = patch.object(self.provider, 'merged_proposal', return_value=value, create=True)
+        second = patch.object(self.provider, 'verify_adopted', return_value=merged, create=True)
+        first.start(); second.start()
+        self.addCleanup(first.stop); self.addCleanup(second.stop)
+        id = str(uuid.uuid4())
+        payload = {'connection_id': self.connection['id'], 'goal': self.definition['id'], 'pr_number': 156,
+                   'base_sha': 'a' * 40, 'head_sha': 'b' * 40, 'merge_sha': 'c' * 40, 'goal_sha256': 'd' * 64}
+        proposed = self.call('PUT', '/merged-artifacts/' + id, payload)
+        self.assertEqual(proposed.status_code, 200, proposed.text)
+        self.assertEqual(self.call('PUT', '/merged-artifacts/' + id, payload).json(), proposed.json())
+        self.assertEqual(self.call('PUT', '/merged-artifacts/' + id, payload | {'pr_number': 157}).status_code, 409)
+        return proposed.json()
+
+    def test_merged_adoption_requires_owner_and_cannot_create_or_merge_a_pr(self):
+        proposed = self.merged_proposal()
+        editor = TestClient(app.app)
+        editor.headers['Authorization'] = 'Bearer ' + self.key(self.owner, self.w, 'editor')['key']
+        path = '/goals/api-read-outcomes/adopt'
+        adopt = {'proposal_id': proposed['id'], 'proposal_sha256': proposed['proposal_sha256']}
+        self.assertEqual(self.call('POST', path, adopt, editor).status_code, 403)
+        self.assertEqual(self.call('POST', path, adopt | {'proposal_sha256': '0' * 64}).status_code, 409)
+        owned = self.call('POST', path, adopt)
+        self.assertEqual(owned.status_code, 200, owned.text)
+        self.assertEqual(owned.json()['adopted_action_id'], proposed['id'])
+        self.assertEqual(owned.json()['dependency_status'], 'verified_merged_artifact')
+        self.assertEqual(owned.json()['actions'][0]['plan']['measurement_revision'], owned.json()['goal']['measurement_revision'])
+        self.assertEqual(self.call('POST', path, adopt).json(), owned.json())
+        for operation in ['draft-pr', 'merge']:
+            response = self.call('POST', '/actions/' + proposed['id'] + '/' + operation, {}, editor)
+            self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(self.call('POST', '/actions/' + proposed['id'] + '/reconcile', {}, editor).status_code, 200)
+
+    def test_connection_rotation_invalidates_a_pending_merged_adoption(self):
+        proposed = self.merged_proposal()
+        self.loop.onboarding.connections.put(self.p['id'], self.connection['id'], 1, 'github',
+                                            {'repository': 'owner/application'}, SecretStr('replacement-credential'))
+        self.provider_patch.stop()
+        response = self.call('POST', '/goals/api-read-outcomes/adopt',
+                             {'proposal_id': proposed['id'], 'proposal_sha256': proposed['proposal_sha256']})
+        self.assertEqual(response.status_code, 409)
+        with closing(self.loop.connect()) as c:
+            self.assertIsNone(c.execute('SELECT id FROM loop_actions WHERE id=?', (proposed['id'],)).fetchone())
+
     def test_native_logged_counts_preserve_unknown_and_small_samples(self):
         empty, _ = self.observe()
         self.assertEqual((empty['verdict'], empty['counts']['total'], empty['rate']), ('insufficient_evidence', 0, None))
@@ -309,3 +359,31 @@ class OnboardingTests(unittest.TestCase):
         self.assertEqual(checked.status_code, 200, checked.text)
         self.assertEqual(checked.json()['receipt']['release']['commit'], 'e' * 40)
         self.assertEqual(self.call('GET', '/goals/api-read-outcomes').json()['stages']['release'], 'released')
+        descendant = 'd' * 40
+        binding = {'commit': descendant, 'merge_commit': 'e' * 40, 'scope': 'unchanged_artifact_and_declared_dependencies',
+                   'files': [{'path': f['path']} for f in action['plan']['files']]}
+        with patch.object(self.provider, 'artifact_release_binding', return_value=binding, create=True) as artifact:
+            with patch('loop_sources.railway_release', return_value=proof | {'commit': descendant}) as railway:
+                checked = self.call('POST', '/actions/' + action['id'] + '/release',
+                                    {'connection_id': connection['id'], 'commit': descendant})
+                self.assertEqual(checked.status_code, 200, checked.text)
+                self.assertEqual(railway.call_args.args[1], descendant)
+                self.assertEqual(artifact.call_args.args[1:], ('e' * 40, descendant))
+                self.assertEqual(checked.json()['receipt']['release']['artifact_binding'], binding)
+                view = self.call('GET', '/goals/api-read-outcomes').json()
+                self.assertEqual(view['stages']['release'], 'released')
+                evidence = {k: view['goal'][k] for k in ['goal_revision', 'measurement_revision', 'mapping_revision', 'goal_digest']}
+                evidence['environment'] = 'production'
+                for missing in ['artifact_binding', 'commit', 'environment']:
+                    tampered = copy.deepcopy(checked.json())
+                    tampered['receipt']['release'].pop(missing)
+                    self.assertIsNone(self.loop.onboarding.verify_release(tampered, evidence))
+                tampered = copy.deepcopy(checked.json())
+                tampered['receipt']['release']['artifact_binding']['files'] = []
+                self.assertIsNone(self.loop.onboarding.verify_release(tampered, evidence))
+        with patch.object(self.provider, 'artifact_release_binding', side_effect=HTTPException(409, 'changed bytes'), create=True):
+            with patch('loop_sources.railway_release') as railway:
+                changed = self.call('POST', '/actions/' + action['id'] + '/release',
+                                    {'connection_id': connection['id'], 'commit': descendant})
+                self.assertEqual(changed.status_code, 409)
+                railway.assert_not_called()

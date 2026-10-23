@@ -82,9 +82,15 @@ def loop_propose(proposal_id:UUID,definition:dict)->dict:
 
 
 @mcp.tool(annotations=WRITE)
-def loop_release(action_id:UUID,connection_id:UUID)->dict:
+def loop_merged_propose(proposal_id:UUID,source:dict)->dict:
+    """Verify a pinned merged PR without importing another service's rows or creating a PR. Owner adoption of the returned hash stays required."""
+    return request('merged-artifacts/'+str(proposal_id),source,'PUT')
+
+
+@mcp.tool(annotations=WRITE)
+def loop_release(action_id:UUID,connection_id:UUID,commit:str|None=None)->dict:
     """Read Railway proof for the exact merged artifact. A release does not prove events arrived or users benefited."""
-    return request('actions/'+str(action_id)+'/release',{'connection_id':str(connection_id)},'POST')
+    return request('actions/'+str(action_id)+'/release',{'connection_id':str(connection_id),**({'commit':commit} if commit else {})},'POST')
 
 
 @mcp.tool(annotations=ACTION)

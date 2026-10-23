@@ -365,7 +365,7 @@ class GitHub:
                 "tree_sha": tree_sha, "scanner_version": "event-literals-v1", "files": files, "findings": findings,
                 "coverage": {"complete": not reasons, "reasons": sorted(reasons)}, "workflows": workflows}
 
-    def prepare_artifact(self, scan, definition, files):
+    def prepare_artifact(self, scan, definition, files, *, current=True):
         if not isinstance(scan, dict) or any(key not in scan for key in _SCAN_FIELDS):
             _fail("A complete immutable scan is required", 422)
         fresh = self.scan(scan["commit"], scan["base"])
@@ -385,8 +385,102 @@ class GitHub:
                 "goal_sha256": hashlib.sha256(_goal_bytes(definition).encode()).hexdigest(), "files": files,
                 "workflows": scan["workflows"], "scan": scan, "definition": definition}
         plan["artifact_sha256"] = _digest(plan)
-        line_counts = self._plan(plan, current=True)
+        line_counts = self._plan(plan, current=current)
         return plan | {"status": "prepared", "assurance": "reviewed_bytes_only", "line_counts": line_counts}
+
+    def merged_proposal(self, goal, pins, binding):
+        path = ".afterspan/goals/" + goal + ".json"
+        content, _ = self._content(path, pins["merge_sha"])
+        if hashlib.sha256(content.encode()).hexdigest() != pins["goal_sha256"]:
+            _fail("The merged goal differs from the requested bytes")
+        from loop_onboarding import RepoGoal
+        try:
+            definition = RepoGoal.model_validate_json(content).model_dump(mode="json", by_alias=True)
+        except ValueError:
+            _fail("The merged goal is unsupported", 422)
+        if definition["id"] != goal or content != _goal_bytes(definition):
+            _fail("The merged goal must have its exact canonical bytes", 422)
+        scan = self.scan(pins["base_sha"], pins["base"]) | binding | {
+            "id": definition["scan_id"], "provenance": "server_recomputed_at_pinned_base"}
+        # The committed scan ID is descriptive; no foreign database receipt is imported.
+        changed = self._list("/pulls/" + str(pins["pr_number"]) + "/files")
+        if not 2 <= len(changed) <= 8 or any(not isinstance(f.get("filename"), str) for f in changed):
+            _fail("The merged artifact exceeds the reviewed file bounds", 422)
+        files = []
+        dependencies = set(definition["tracking"]["dependencies"])
+        if not dependencies.issubset({ref['path'] for ref in scan['files']}):
+            _fail("The merged goal depends on files outside the bounded scan", 422)
+        companions = {p.rsplit('.', 1)[0] + '.test.' + p.rsplit('.', 1)[1]
+                      for p in dependencies if p.endswith(('.ts', '.tsx', '.js', '.jsx'))}
+        for file in sorted(changed, key=lambda f: f["filename"]):
+            name = file["filename"]
+            if not _relative(name) or name not in dependencies | companions | {path}:
+                _fail("The merged PR changes an unapproved artifact path", 422)
+            text, _ = self._content(name, pins["head_sha"])
+            before = None if name == path else self._content(name, pins["base_sha"])[1]
+            files.append({"path": name, "before_sha": before, "content": text})
+        plan = self.prepare_artifact(scan, definition, files, current=False)
+        receipt = self.verify_adopted(plan, pins | {"adoption": "merged-pr-v1", "artifact_sha256": plan['artifact_sha256']})
+        return {"definition": definition, "scan": scan, "plan": plan, "merged_receipt": receipt}
+
+    def verify_adopted(self, plan, receipt):
+        self._plan(plan)
+        number = receipt.get("pr_number")
+        if (receipt.get("adoption") != "merged-pr-v1" or type(number) is not int or number <= 0
+                or receipt.get('base_sha') != plan['base_sha'] or receipt.get('artifact_sha256') != plan['artifact_sha256']):
+            _fail("The merged adoption receipt is invalid")
+        pr = self._get("/pulls/" + str(number))
+        for side, sha in (("base", plan["base_sha"]), ("head", receipt.get("head_sha"))):
+            ref = pr.get(side, {})
+            if (not isinstance(ref, dict) or not isinstance(ref.get("repo"), dict)
+                    or ref.get("sha") != sha or ref.get("repo", {}).get("id") != plan["repository_id"]
+                    or ref.get("repo", {}).get("full_name") != self.repository):
+                _fail("The merged PR repository or lineage changed")
+        head, merge = receipt.get("head_sha"), receipt.get("merge_sha")
+        if (pr.get("number") != number or pr.get("merged") is not True
+                or pr.get("base", {}).get("ref") != plan["base"]
+                or pr.get("merge_commit_sha") != merge
+                or any(not isinstance(sha, str) or not _SHA.fullmatch(sha) for sha in (head, merge))):
+            _fail("The exact merged PR could not be verified")
+        self._verify_artifact_head(plan, head)
+        merged = self._commit(merge)
+        if ([p.get("sha") for p in merged.get("parents", [])] != [plan["base_sha"], head]
+                or merged.get("tree", {}).get("sha") != self._commit(head).get("tree", {}).get("sha")):
+            _fail("The merge changed the reviewed tree or parent lineage")
+        self.verify_committed_goal(plan, merge)
+        return {"adoption": "merged-pr-v1", "status": "merged", "merged": True,
+                "repository": self.repository, "repository_id": plan["repository_id"],
+                "base_sha": plan["base_sha"], "head_sha": head, "merge_sha": merge,
+                "pr_number": number, "pr_url": "https://github.com/" + self.repository + "/pull/" + str(number),
+                "artifact_sha256": plan["artifact_sha256"],
+                "action_id": receipt.get("action_id"), "release_status": "release_pending"}
+
+    def artifact_release_binding(self, plan, merge, commit):
+        self._plan(plan)
+        if any(not isinstance(sha, str) or not _SHA.fullmatch(sha) for sha in (merge, commit)):
+            _fail("The release commits are invalid", 422)
+        if commit != merge:
+            comparison = self._get("/compare/" + merge + "..." + commit)
+            if (comparison.get("status") != "ahead" or comparison.get("base_commit", {}).get("sha") != merge
+                    or comparison.get("merge_base_commit", {}).get("sha") != merge):
+                _fail("The release does not descend from the verified merge")
+        paths = sorted({file["path"] for file in plan["files"]} | set(plan["definition"]["tracking"]["dependencies"]))
+        _, source_tree = self._tree(merge)
+        _, target_tree = self._tree(commit)
+        manifest = []
+        for path in paths:
+            source_node, target_node = source_tree.get(path), target_tree.get(path)
+            if (not source_node or not target_node or source_node['type'] != 'blob'
+                    or source_node['mode'] not in ('100644', '100755')
+                    or any(source_node[key] != target_node[key] for key in ('type', 'mode', 'sha'))):
+                _fail("The release changed an artifact or dependency file type, mode or blob")
+            source, _ = self._content(path, merge)
+            target, blob = self._content(path, commit)
+            if source != target:
+                _fail("The release changed an artifact or measurement dependency")
+            manifest.append({"path": path, "blob_sha": blob, "content_sha256": hashlib.sha256(target.encode()).hexdigest()})
+        return {"merge_commit": merge, "commit": commit, "files": manifest,
+                "scope": "unchanged_artifact_and_declared_dependencies", "other_source_reviewed": False}
 
     def _reviewed_plan(self, plan, current):
         if (any(key not in plan for key in (*_REVIEWED_FIELDS, "artifact_sha256"))
@@ -793,6 +887,8 @@ class GitHub:
 
     def reconcile(self, plan, receipt):
         self._plan(plan)
+        if receipt and receipt.get("adoption") == "merged-pr-v1":
+            return self.verify_adopted(plan, receipt)
         action_id = receipt.get("action_id") if receipt else plan.get("action_id", plan.get("id"))
         state, _ = self._state(plan, action_id, receipt)
         if state["merged"]:

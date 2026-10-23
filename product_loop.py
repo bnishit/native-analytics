@@ -39,13 +39,23 @@ def digest(value):
 def verified_release(action, evidence):
     receipt, plan = action['receipt'] or {}, action['plan'] or {}
     release = receipt.get('release') or {}
+    binding = release.get('artifact_binding') or {}
+    bound_descendant = (plan.get('kind') == 'reviewed-artifact-v1' and release.get('provider') == 'railway'
+                        and binding.get('merge_commit') == receipt.get('merge_sha')
+                        and binding.get('commit') == release.get('commit')
+                        and binding.get('scope') == 'unchanged_artifact_and_declared_dependencies'
+                        and isinstance(binding.get('files'), list) and bool(binding['files'])
+                        and all(isinstance(f, dict) and isinstance(f.get('path'), str) for f in binding['files'])
+                        and {f['path'] for f in binding['files']} == (
+                            {f['path'] for f in plan.get('files', [])}
+                            | set(plan.get('definition', {}).get('tracking', {}).get('dependencies', []))))
     if (receipt.get('merged') is True and receipt.get('release_status') == 'released'
             and release.get('verified') is True and release.get('released_at') is not None
             and plan.get('artifact_sha256') and receipt.get('merge_sha')
             and plan.get('measurement_revision') == evidence['measurement_revision']
             and plan.get('mapping_revision') == evidence['mapping_revision']
             and receipt.get('artifact_sha256') == plan.get('artifact_sha256')
-            and release.get('commit') == receipt.get('merge_sha')
+            and (release.get('commit') == receipt.get('merge_sha') or bound_descendant)
             and release.get('artifact_sha256') == plan.get('artifact_sha256')
             and release.get('environment') == evidence['environment']):
         return {**release, 'base_commit': plan['base_sha']}
@@ -570,6 +580,8 @@ class ProductLoop:
             action = self.action(c, project, id)
         if not action['plan'] or action['plan']['status'] != 'prepared':
             raise HTTPException(409, 'action has no prepared tracking repair')
+        if operation != 'reconcile' and (action['receipt'] or {}).get('adoption') == 'merged-pr-v1':
+            raise HTTPException(409, 'an adopted merged artifact is read-only; no PR or merge may be created')
         policy = self.guard(project, action, operation, request) if operation != 'reconcile' else None
         with closing(self.connect()) as c, c:
             c.execute('BEGIN IMMEDIATE')

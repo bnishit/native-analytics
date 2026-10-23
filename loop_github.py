@@ -465,8 +465,15 @@ class GitHub:
                     or comparison.get("merge_base_commit", {}).get("sha") != merge):
                 _fail("The release does not descend from the verified merge")
         paths = sorted({file["path"] for file in plan["files"]} | set(plan["definition"]["tracking"]["dependencies"]))
+        _, source_tree = self._tree(merge)
+        _, target_tree = self._tree(commit)
         manifest = []
         for path in paths:
+            source_node, target_node = source_tree.get(path), target_tree.get(path)
+            if (not source_node or not target_node or source_node['type'] != 'blob'
+                    or source_node['mode'] not in ('100644', '100755')
+                    or any(source_node[key] != target_node[key] for key in ('type', 'mode', 'sha'))):
+                _fail("The release changed an artifact or dependency file type, mode or blob")
             source, _ = self._content(path, merge)
             target, blob = self._content(path, commit)
             if source != target:

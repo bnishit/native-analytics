@@ -191,6 +191,12 @@ class RepoGitHubTests(unittest.TestCase):
             with self.assertRaises(HTTPException):
                 self.github.artifact_release_binding(plan, MERGE, descendant)
             self.http.files[descendant][path] = self.http.files[MERGE][path]
+        _, tree = self.http.read('/git/trees/' + self.http.tree(descendant), {})
+        tree = copy.deepcopy(tree)
+        next(node for node in tree['tree'] if node['path'] == SOURCE)['mode'] = '120000'
+        self.http.read_overrides['/git/trees/' + self.http.tree(descendant)] = (200, tree)
+        with self.assertRaisesRegex(HTTPException, 'file type, mode or blob'):
+            self.github.artifact_release_binding(plan, MERGE, descendant)
         self.http.read_overrides[endpoint] = (200, {'status': 'diverged', 'base_commit': {'sha': MERGE}, 'merge_base_commit': {'sha': BASE}})
         with self.assertRaises(HTTPException):
             self.github.artifact_release_binding(plan, MERGE, descendant)

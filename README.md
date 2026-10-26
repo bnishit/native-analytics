@@ -199,6 +199,41 @@ Producers must emit the explicit `properties.afterspan_audit` contract in OpenAP
 
 A comparable read requires one unambiguous parser/planner/shadow observation in the latest attempt, the expected environment, one release, matching `canonical-plan-v1` semantics and context digests, plus explicit `independent_proposal: true` on the shadow. Digests are project-keyed HMAC-SHA256 of the approved canonical inputs/decision, never raw content hashes; this server cannot verify that the producer implemented that canonicalization honestly. Digests are compared server-side and never exported. Agreement does not prove correctness: two proposals can be wrong together. Producer success does not prove a business change happened. Readiness, semantic correctness and business safety remain unestablished without independent evidence.
 
+### Slack request timing
+
+The existing `properties.afterspan_audit` / `slack-request-v1` contract accepts
+`stage: trace`. Each operation uses a fresh UUIDv4 `span_ref`, shared by a
+`started` observation and exactly one `succeeded` or `failed` observation.
+Delivery retries reuse stable event IDs (`span_ref:state`); repeated operations
+use new spans. Every observation retains the opaque request/attempt references,
+attempt number, environment and original `request_started_at_ms`. Terminal spans
+require `duration_ms`; starts omit it. Optional `parent_span_ref` links operations.
+
+`trace_step` is one of preparation, feature_list, feature_lookup, policy,
+mutation, readback, slack_delivery, webhook_ack, background or total. Total spans
+require `completion_kind: processing` or `delivered` on both observations.
+Processing completion, webhook response readiness and Slack API acceptance remain
+separate. Response readiness does not prove network acknowledgement. The delivery
+summary uses `slack_delivery` without a completion kind; multiple sends within the
+latest observed attempt make that summary conflicting and remain separately visible.
+An accepted message may be intermediate or a confirmation, not a finished answer.
+Processing uses the latest unambiguous phase by start time within the latest
+observed processing attempt; prompt and confirmed-action phases stay in the timeline.
+Later observed work without a closing total makes processing incomplete. No human reading or independent business-state verification is implied.
+No raw Slack text, errors, feature references, user or customer identifiers belong
+in this contract. Unknown fields are rejected. Raw span/request references and
+comparison digests never leave audit endpoints.
+
+Request review and trace show ordered operations across attempts, repeated and
+failed operations, missing starts/terminals/parents, and unobserved categories.
+Unobserved does not mean skipped or required. Older requests explicitly show
+tracing unavailable. Timing evidence does not change the existing seven-stage
+comparison or reply/quality goal semantics. The selected time/receipt window,
+retention, bounded selection, producer outages and incomplete event delivery can
+still leave gaps. Timings overlap and must not be summed. Use the existing scoped
+audit reader, API, CLI or MCP; no additional data-access permission is introduced.
+
+
 Editors may retain a historical sanitized PostHog aggregate with `PUT /api/audit/evidence/UUID`, CLI `attach-audit-evidence`, or workspace MCP `attach_audit_evidence`. A stable UUID makes identical retries idempotent; a changed body returns 409. Supply the plain source project URL, exact window, schema, counts and exact query SHA-256. The receipt is an **agent-imported attestation**, not an independently fetched source result. It preserves older evidence separately; it does not add to the native denominator or silently reset a quality gate. Source receipt cutoff and release coverage are explicitly unavailable. No raw rows/text/private identifiers are accepted.
 
 ## Run the local preview

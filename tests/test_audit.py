@@ -26,6 +26,68 @@ class AuditTests(unittest.TestCase):
         return ref,attempt
     def review(self,body=None,client=None,path='review'):
         r=(client or self.owner).post('/api/audit/'+path+'?project='+self.p['id'],headers=CSRF,json=body or {});self.assertEqual(r.status_code,200,r.text);return r.json()
+    def trace_facts(self,ref,attempt,span,step,state,**kw):
+        return {'schema_version':'slack-request-v1','stage':'trace','environment':'production',
+                'request_ref':ref,'attempt_ref':attempt,'attempt_number':1,'request_started_at_ms':0,
+                'span_ref':span,'trace_step':step,'span_state':state,
+                **({} if state=='started' else {'duration_ms':10.0}),**kw}
+
+    def test_trace_repeats_failures_missing_terminals_and_private_refs(self):
+        ref,attempt=self.chain();spans=[str(uuid.uuid4()) for _ in range(6)]
+        for number,(step,states,kind) in enumerate([
+            ('feature_list',['started','succeeded'],None),('feature_list',['started','failed'],None),
+            ('readback',['started'],None),('webhook_ack',['started','succeeded'],None),
+            ('total',['started','succeeded'],'processing'),('total',['started','failed'],'delivered')]):
+            for offset,state in enumerate(states):
+                self.observe(self.trace_facts(ref,attempt,spans[number],step,state,
+                             **({'completion_kind':kind} if kind else {})),10+number*2+offset)
+        report=self.review();row=report['requests'][0];trace=row['trace']
+        self.assertEqual(report['agreement']['denominator'],1)
+        self.assertEqual([s['state'] for s in trace['spans']],['succeeded','failed','unclosed','succeeded','succeeded','failed'])
+        self.assertEqual(trace['completion']['webhook_ack']['state'],'succeeded')
+        self.assertEqual(trace['completion']['processing']['state'],'succeeded')
+        self.assertEqual(trace['completion']['delivery']['state'],'failed')
+        self.assertIn('policy',trace['missing_steps'])
+        frozen=self.review({**report['query'],'request':row['request']},path='trace')
+        for private in [ref,attempt,*spans,'private chat sentinel','a'*64,'b'*64]:self.assertNotIn(private,json.dumps(frozen))
+        self.assertEqual(self.review(path='catalog')['contract'],'slack-request-v1')
+
+    def test_trace_old_requests_missing_start_parent_and_business_retry(self):
+        ref,attempt=self.chain();self.assertEqual(self.review()['requests'][0]['trace']['availability'],'unavailable')
+        span,parent=str(uuid.uuid4()),str(uuid.uuid4())
+        self.observe(self.trace_facts(ref,attempt,span,'mutation','failed',parent_span_ref=parent),10)
+        next_attempt=str(uuid.uuid4());total=str(uuid.uuid4())
+        for offset,state in enumerate(['started','succeeded']):
+            self.observe(self.trace_facts(ref,next_attempt,total,'total',state,attempt_number=2,completion_kind='processing'),20+offset)
+        trace=self.review()['requests'][0]['trace']
+        self.assertEqual(trace['spans'][0]['state'],'missing_start');self.assertTrue(trace['spans'][0]['parent_missing'])
+        self.assertEqual(trace['completion']['processing']['attempt_number'],2)
+        self.assertEqual(trace['completion']['delivery']['state'],'missing')
+
+    def test_trace_conflicts_do_not_change_comparison_or_authoritative_environment(self):
+        ref,attempt=self.chain(environment='staging');span=str(uuid.uuid4())
+        for offset,state in enumerate(['started','succeeded','failed']):
+            self.observe(self.trace_facts(ref,attempt,span,'feature_lookup',state),10+offset)
+        report=self.review({'expected_environment':'staging'});row=report['requests'][0]
+        self.assertEqual(row['environment'],'staging');self.assertFalse(row['environment_mismatch'])
+        self.assertEqual(report['agreement']['denominator'],1)
+        self.assertEqual(row['trace']['spans'][0]['state'],'conflict')
+        self.assertIsNone(row['trace']['spans'][0]['duration_ms'])
+        self.assertEqual(self.client.post('/api/audit/trace?project='+self.p['id'],json={**report['query'],'request':row['request']}).status_code,401)
+
+    def test_trace_strict_contract_rejects_private_fields_and_wrong_state_shapes(self):
+        from audit import Observation
+        facts=self.trace_facts(str(uuid.uuid4()),str(uuid.uuid4()),str(uuid.uuid4()),'policy','started')
+        for change in [{'message':'private'}, {'user_id':'private'}, {'error':'private'}, {'span_ref':str(uuid.uuid1())},
+                       {'request_ref':None},{'attempt_ref':'[redacted]'},{'trace_step':'private'}, {'span_state':'unknown'},
+                       {'duration_ms':5.0},{'completion_kind':'processing'}, {'request_started_at_ms':True}]:
+            with self.assertRaises(ValueError):Observation.model_validate({**facts,**change})
+        terminal={**facts,'span_state':'failed'}
+        with self.assertRaises(ValueError):Observation.model_validate(terminal)
+        with self.assertRaises(ValueError):Observation.model_validate({**facts,'stage':'parser'})
+        response=self.client.post('/v1/events',headers={'Authorization':'Bearer '+self.p['write_key']},json={'events':[{'name':'trace','properties':{'afterspan_audit':{**facts,'error':'private'}}}]})
+        self.assertEqual(response.status_code,422)
+
     def test_misleading_183_events_two_writes_zero_comparisons(self):
         for i in range(177):self.send('http.request',None,i)
         for i in range(2):

@@ -15,12 +15,13 @@ from pydantic import BaseModel,ConfigDict,Field,StrictBool,UUID4,model_validator
 from product_analytics import Window
 
 SCHEMA='slack-request-v1'
+TRACE_STEPS=('preparation','feature_list','feature_lookup','policy','mutation','readback','slack_delivery','webhook_ack','background','total')
 STAGES=('parser','planner','shadow','confirmation','tool','reply','quality')
 Digest=Annotated[str,Field(pattern=r'^[a-f0-9]{64}$')]
 class Observation(BaseModel):
     model_config=ConfigDict(extra='forbid')
     schema_version:Literal['slack-request-v1']
-    stage:Literal['parser','planner','shadow','confirmation','tool','reply','quality']
+    stage:Literal['parser','planner','shadow','confirmation','tool','reply','quality','trace']
     environment:Literal['production','staging','development','test','local']
     request_ref:UUID4|Literal['[redacted]']|None=None
     attempt_ref:UUID4|Literal['[redacted]']|None=None
@@ -42,12 +43,26 @@ class Observation(BaseModel):
     reported_outcome:Literal['succeeded','failed','clarification','cancelled','unknown']|None=None
     diagnostic_code:Literal['none','input_mismatch','decision_mismatch','unsafe_proposal','ambiguous_request','rejected','comparison_scope_unavailable','unknown']|None=None
     duration_ms:float|None=Field(default=None,ge=0,le=86400000,allow_inf_nan=False,strict=True)
+    span_ref:UUID4|None=None
+    parent_span_ref:UUID4|None=None
+    trace_step:Literal['preparation','feature_list','feature_lookup','policy','mutation','readback','slack_delivery','webhook_ack','background','total']|None=None
+    span_state:Literal['started','succeeded','failed']|None=None
+    completion_kind:Literal['processing','delivered']|None=None
     check_version:Literal['growthbook-catalog-v1']|None=None
     checked_claims:int|None=Field(default=None,ge=0,le=15,strict=True)
     mismatched_claims:int|None=Field(default=None,ge=0,le=15,strict=True)
     unknown_claims:int|None=Field(default=None,ge=0,le=15,strict=True)
     @model_validator(mode='after')
     def quality_counts(self):
+        trace_fields=(self.span_ref,self.parent_span_ref,self.trace_step,self.span_state,self.completion_kind)
+        if self.stage=='trace':
+            if any(v is None or v=='[redacted]' for v in (self.request_ref,self.attempt_ref,self.attempt_number,self.request_started_at_ms,self.span_ref,self.trace_step,self.span_state)):
+                raise ValueError('trace observations require opaque request, attempt, span and clock')
+            if (self.span_state=='started')!=(self.duration_ms is None):raise ValueError('only terminal spans have a required duration')
+            if self.parent_span_ref==self.span_ref:raise ValueError('span cannot parent itself')
+            if self.completion_kind is not None and self.trace_step!='total':raise ValueError('completion kind belongs to total')
+            if self.trace_step=='total' and self.completion_kind is None:raise ValueError('total requires completion kind')
+        elif any(v is not None for v in trace_fields):raise ValueError('trace fields belong to the trace stage')
         counts=(self.checked_claims,self.mismatched_claims,self.unknown_claims)
         if self.stage!='quality':
             if self.check_version is not None or any(v is not None for v in counts):raise ValueError('quality fields belong to the quality stage')
@@ -58,6 +73,11 @@ class Observation(BaseModel):
         return self
 
 MEANINGS={
+ 'span_ref':'Fresh random UUIDv4 per operation. Start and terminal events share this span; delivery retries reuse their event IDs. Never exported.',
+ 'parent_span_ref':'Optional opaque parent span, never exported. An absent parent stays explicitly unobserved.',
+ 'trace_step':'Allowlisted operation category. Repeated operations get separate spans; no feature, user or message values.',
+ 'span_state':'Started, succeeded or failed. A missing terminal is unclosed in the selected window, not proof of continued execution.',
+ 'completion_kind':'Total processing and provider-accepted delivery are distinct. Neither establishes human reading or independent business success.',
  'command_kind':'Bounded parsed read-command category. Missing in older producers; never infer it from reply text or a source check.',
  'release_sha':'Exact producer Git revision. Missing or conflicting revisions cannot qualify a release-bound request outcome.',
  'request_started_at_ms':'Original request handling start, Unix milliseconds. It survives business retries; a reply cannot restart the goal clock.',
@@ -66,7 +86,7 @@ MEANINGS={
  'mismatched_claims':'Checked rows which disagreed with the source. Nonzero forces failed; never averaged into a clean pass.',
  'unknown_claims':'Rows not checkable, including changed or missing source versions. Missing checks and unsupported answers remain unknown.',
  'schema_version':'Version of this producer diagnostic contract; it is not an inferred event schema.',
- 'stage':'One completed stage observation per business attempt. Reuse the event ID for delivery retries.',
+ 'stage':'One completed comparison-stage observation per business attempt, or trace start/terminal observations. Reuse the event ID for delivery retries.',
  'environment':'Producer-reported environment. A mismatch with the expected environment is reported.',
  'request_ref':'Fresh random UUIDv4 per request, shared across stages/retries. Never a Slack/message/user ID. Returned only as a project-scoped opaque server reference.',
  'attempt_ref':'Fresh random UUIDv4 per business attempt; one attempt number maps to one reference. Missing/redacted refs are never joined.',
@@ -244,8 +264,48 @@ class Audit:
             for alternative in definition.get('anyOf',[definition]):enums.extend(alternative.get('enum',[]))
             fields.append({'property':name,'meaning':MEANINGS[name],'schema':definition,'presence':len(rows)-counts['missing'],'missing':counts['missing'],'null':counts['null'],'redacted':counts['redacted'],'types':dict(counts),'safe_enum_values':[v for v in enums if v!='[redacted]']})
         return {'contract':SCHEMA,'namespace':'properties.afterspan_audit','fields':fields,'coverage':coverage,'versions':self.coverage(rows,key,project),'raw_value_examples':False,'policy':'Only this approved contract is exposed. Arbitrary event/property names, contents, identifiers and digests are not returned.',**self.metadata(project,q,'request-audit-v2')}
+    def timeline(self,group):
+        rows=[r for r in group if r['facts']['stage']=='trace']
+        if not rows:return {'availability':'unavailable','spans':[],'missing_steps':list(TRACE_STEPS),'completion':{},'issues':[]}
+        grouped=defaultdict(list)
+        for row in rows:grouped[row['facts']['span_ref']].append(row)
+        ordered=sorted(grouped,key=lambda ref:(min(r['ts'] for r in grouped[ref]),ref))
+        labels={ref:i+1 for i,ref in enumerate(ordered)};spans=[];issues=[]
+        clock,clock_conflict=agreed_fact(group,'request_started_at_ms')
+        if clock_conflict:issues.append('request_start_clock_conflict')
+        for ref in ordered:
+            seen=grouped[ref];facts=[r['facts'] for r in seen];first=facts[0]
+            starts=[r for r in seen if r['facts']['span_state']=='started'];ends=[r for r in seen if r['facts']['span_state']!='started']
+            fields=('trace_step','attempt_ref','attempt_number','request_started_at_ms','parent_span_ref','completion_kind','environment','release_sha')
+            conflict=any(len({json.dumps(f.get(k)) for f in facts})>1 for k in fields)
+            conflict=conflict or len(starts)>1 or len(ends)>1 or bool(starts and ends and starts[0]['ts']>ends[0]['ts'])
+            state='conflict' if conflict else 'unclosed' if not ends else 'missing_start' if not starts else ends[0]['facts']['span_state']
+            parent=first.get('parent_span_ref');parent_missing=bool(parent and parent not in labels)
+            if conflict:issues.append('conflicting_span_reports')
+            if parent_missing:issues.append('parent_span_missing_in_window')
+            if any(r['ts']*1000<first['request_started_at_ms'] for r in seen):issues.append('trace_before_request_start')
+            spans.append({'operation':labels[ref],'parent_operation':labels.get(parent),'parent_missing':parent_missing,
+                          'step':first['trace_step'],'attempt_number':first['attempt_number'],'state':state,
+                          'at_ms_from_request_start':round((min(r['ts'] for r in seen)*1000)-first['request_started_at_ms'],3),
+                          'duration_ms':ends[0]['facts']['duration_ms'] if len(ends)==1 and not conflict else None,
+                          'finished_at_ms_from_request_start':round(ends[0]['ts']*1000-clock,3) if len(ends)==1 and not conflict and clock is not None and not clock_conflict else None,
+                          'completion_kind':first.get('completion_kind')})
+        completion={}
+        for name,step,kind in [('webhook_ack','webhook_ack',None),('processing','total','processing'),('delivery','total','delivered')]:
+            selected=[s for s in spans if s['step']==step and s['completion_kind']==kind]
+            # Retain every retry in the timeline; only an unambiguous latest-attempt total summarizes completion.
+            latest=max((s['attempt_number'] for s in selected),default=None)
+            selected=[s for s in selected if s['attempt_number']==latest]
+            completion[name]={'state':selected[0]['state'] if len(selected)==1 else 'missing' if not selected else 'conflict',
+                              'duration_ms':selected[0]['duration_ms'] if len(selected)==1 else None,
+                              'finished_at_ms_from_request_start':selected[0]['finished_at_ms_from_request_start'] if len(selected)==1 else None,'attempt_number':latest}
+        return {'availability':'observed','spans':spans,'missing_steps':[step for step in TRACE_STEPS if not any(s['step']==step for s in spans)],
+                'completion':completion,'issues':sorted(set(issues))}
     def chain(self,project,key,group,q):
-        facts=[r['facts'] for r in group];reference=self.ref(key,project,'request',facts[0]['request_ref']);environments={f['environment'] for f in facts}
+        trace=self.timeline(group)
+        # Timing evidence never changes comparison eligibility or the seven-stage audit.
+        comparison_group=[r for r in group if r['facts']['stage']!='trace']
+        facts=[r['facts'] for r in (comparison_group or group)];group=comparison_group or group;reference=self.ref(key,project,'request',facts[0]['request_ref']);environments={f['environment'] for f in facts}
         issues=[];slots=defaultdict(list);attempt_ids=defaultdict(set)
         for row in group:
             f=row['facts']
@@ -260,7 +320,8 @@ class Audit:
         if any(env!=q.expected_environment for env in environments):issues.append('unexpected_environment')
         if len(releases)!=1 or not all(available(r) for r in releases):issues.append('release_unavailable_or_mixed')
         by_stage=defaultdict(list)
-        for row in observations:by_stage[row['facts']['stage']].append(row)
+        for row in observations:
+            if row['facts']['stage'] in STAGES:by_stage[row['facts']['stage']].append(row)
         if any(len(v)>1 for v in by_stage.values()):issues.append('duplicate_stage_observations')
         values={}
         for field in ['request_kind','command_kind','release_sha','request_started_at_ms','comparison_eligible','confirmation_required','tool_required','reply_required']:
@@ -295,7 +356,7 @@ class Audit:
             'environment_mismatch':any(env!=q.expected_environment for env in environments),'request_kind':values['request_kind'] or 'unknown',
             'command_kind':values['command_kind'],'release_sha':values['release_sha'],'request_started_at_ms':values['request_started_at_ms'],
             'business_attempts_observed':len(slots),'latest_attempt_number':latest,'missing_attempt_numbers':max(slots)-len(slots) if slots else None,
-            'comparison_declared_eligible':declared,'comparison':comparison,'stages':stages,'issues':sorted(set(issues)),
+            'comparison_declared_eligible':declared,'comparison':comparison,'trace':trace,'stages':stages,'issues':sorted(set(issues)),
             'producer_reported_unsafe':any(f.get('proposal_safe') is False for f in facts),'business_state':'not_independently_verified',
             'release_coverage':[self.ref(key,project,'release',r) if available(r) else 'unavailable' for r in sorted(releases,key=str)],
             'answer_check':({field:by_stage['quality'][0]['facts'].get(field) for field in ['check_version','checked_claims','mismatched_claims','unknown_claims','reported_outcome']}

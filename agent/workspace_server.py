@@ -197,9 +197,14 @@ def loop_propose(project:str,proposal_id:str,definition:dict)->dict:
     return project_request(project,'/api/loop/proposals/'+quote(proposal_id,safe=''),definition,'PUT')
 
 @mcp.tool(annotations=WRITE)
-def loop_release(project:str,action_id:str,connection_id:str)->dict:
+def loop_merged_propose(project:str,proposal_id:str,source:dict)->dict:
+    """Verify an already merged PR and its exact goal bytes. Poll the job, then an owner must adopt its exact proposal hash. No PR or merge is created."""
+    return project_request(project,'/api/loop/merged-artifacts/'+quote(proposal_id,safe=''),source,'PUT')
+
+@mcp.tool(annotations=WRITE)
+def loop_release(project:str,action_id:str,connection_id:str,commit:str|None=None)->dict:
     """Read exact Railway deployment proof for a reconciled merged tracking artifact. No deployment is triggered."""
-    return project_request(project,'/api/loop/actions/'+quote(action_id,safe='')+'/release',{'connection_id':connection_id},'POST')
+    return project_request(project,'/api/loop/actions/'+quote(action_id,safe='')+'/release',{'connection_id':connection_id,**({'commit':commit} if commit else {})},'POST')
 
 @mcp.tool(annotations=ACCESS)
 def loop_action(project:str,action_id:str,operation:Literal['draft-pr','reconcile','merge'])->dict:

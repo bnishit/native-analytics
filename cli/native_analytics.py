@@ -103,11 +103,11 @@ def parser():
             command.add_argument('--request-id',required=True,type=uuid.UUID);command.add_argument('--file')
         if name=='loop-deliver':command.add_argument('--connection',required=True,type=uuid.UUID)
         if name=='loop-action':command.add_argument('--operation',required=True,choices=['draft-pr','reconcile','merge'])
-    for name in ['loop-sources','loop-source-connect','loop-source-revoke','loop-scan','loop-scan-status','loop-job-status','loop-propose','loop-adopt','loop-release']:
+    for name in ['loop-sources','loop-source-connect','loop-source-revoke','loop-scan','loop-scan-status','loop-job-status','loop-propose','loop-merged-propose','loop-adopt','loop-release']:
         command=sub.add_parser(name);command.add_argument('--project',required=True)
         if name not in ['loop-sources','loop-adopt']:command.add_argument('--id',required=True,type=uuid.UUID)
         if name in ['loop-source-connect','loop-source-revoke']:command.add_argument('--revision',required=True,type=int)
-        if name in ['loop-source-connect','loop-scan','loop-propose','loop-adopt','loop-release']:command.add_argument('--file',required=True)
+        if name in ['loop-source-connect','loop-scan','loop-propose','loop-merged-propose','loop-adopt','loop-release']:command.add_argument('--file',required=True)
         if name=='loop-adopt':command.add_argument('--goal',required=True)
     return p
 
@@ -146,7 +146,7 @@ def main(argv=None):
         if getattr(args,'file',None):
             value=json.loads(Path(args.file).read_text())
             body={**body,'files':value['files']} if command=='loop-prepare' else value
-    if command in ['loop-sources','loop-source-connect','loop-source-revoke','loop-scan','loop-scan-status','loop-job-status','loop-propose','loop-adopt','loop-release']:
+    if command in ['loop-sources','loop-source-connect','loop-source-revoke','loop-scan','loop-scan-status','loop-job-status','loop-propose','loop-merged-propose','loop-adopt','loop-release']:
         if command=='loop-sources':path='/api/loop/sources'
         elif command in ['loop-source-connect','loop-source-revoke']:
             path='/api/loop/sources/'+str(args.id);params['revision']=args.revision
@@ -155,6 +155,7 @@ def main(argv=None):
             path='/api/loop/scans/'+str(args.id);method='PUT' if command=='loop-scan' else 'GET'
         elif command=='loop-job-status':path='/api/loop/jobs/'+str(args.id)
         elif command=='loop-propose':path='/api/loop/proposals/'+str(args.id);method='PUT'
+        elif command=='loop-merged-propose':path='/api/loop/merged-artifacts/'+str(args.id);method='PUT'
         elif command=='loop-adopt':path='/api/loop/goals/'+urllib.parse.quote(args.goal,safe='')+'/adopt';method='POST'
         else:path='/api/loop/actions/'+str(args.id)+'/release';method='POST'
         if getattr(args,'file',None):body=private_json(args.file) if command=='loop-source-connect' else json.loads(Path(args.file).read_text())

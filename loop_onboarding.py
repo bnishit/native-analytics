@@ -158,8 +158,20 @@ class AdoptInput(Model):
     proposal_sha256: Digest
 
 
+class MergedArtifactInput(Model):
+    connection_id: uuid.UUID
+    goal: str = Field(pattern=r'^[a-z][a-z0-9-]{0,63}$')
+    pr_number: int = Field(gt=0, le=2147483647, strict=True)
+    base: str = Field(default='main', pattern=r'^[A-Za-z0-9][A-Za-z0-9_./-]{0,150}$')
+    base_sha: SHA
+    head_sha: SHA
+    merge_sha: SHA
+    goal_sha256: Digest
+
+
 class ReleaseInput(Model):
     connection_id: uuid.UUID
+    commit: SHA | None = None
 
 
 def repo_goal(current):
@@ -228,13 +240,20 @@ class RepoOnboarding:
 
         @app.post('/api/loop/goals/{goal}/adopt')
         def adopt(project: str, goal: str, req: AdoptInput, request: Request):
-            self.require_owner(request, project)
-            return self.adopt(project, goal, req)
+            with self.authorized(lambda: self.require_owner(request, project)):
+                return self.adopt(project, goal, req)
+
+        @app.put('/api/loop/merged-artifacts/{id}', dependencies=[Depends(editor)])
+        def merged_artifact(project: str, id: uuid.UUID, req: MergedArtifactInput,
+                            background: BackgroundTasks, request: Request):
+            payload = req.model_dump(mode='json')
+            return self.queue(project, str(id), 'merged-artifact', payload, background,
+                              lambda: self.propose_merged(project, str(id), req), lambda: editor(request, project))
 
         @app.post('/api/loop/actions/{id}/release', dependencies=[Depends(editor)])
         def release(project: str, id: uuid.UUID, req: ReleaseInput, request: Request):
             with self.authorized(lambda: editor(request, project)):
-                return self.release(project, str(id), str(req.connection_id))
+                return self.release(project, str(id), str(req.connection_id), req.commit)
 
     def require_owner(self, request, project):
         self.loop.owner(request, project)
@@ -390,23 +409,62 @@ class RepoOnboarding:
         definition, scan = proposal['definition'], proposal['scan']
         if definition['id'] != goal or proposal['proposal_sha256'] != req.proposal_sha256:
             raise HTTPException(409, 'adopt the exact goal ID and proposal digest')
-        self.provider(project, scan)
+        provider = self.provider(project, scan)
+        merged = proposal.get('merged_receipt')
+        if merged:
+            merged = provider.verify_adopted(proposal['plan'], merged)
         bundle = {**scan, 'definition': definition, 'path': '.afterspan/goals/' + goal + '.json',
                   'content_sha256': hashlib.sha256((canonical(definition) + '\n').encode()).hexdigest(),
-                  'proposal_sha256': req.proposal_sha256, 'provenance': 'owner_adopted_scan_bound_proposal'}
+                  'proposal_sha256': req.proposal_sha256,
+                  'provenance': 'owner_adopted_merged_pr' if merged else 'owner_adopted_scan_bound_proposal'}
         with closing(self.loop.connect()) as c, c:
             c.execute('BEGIN IMMEDIATE')
+            check = self.access_check.get()
+            if check:
+                check()
+            self.provider(project, scan)
             old = c.execute('SELECT * FROM loop_goals WHERE project=? AND goal=? ORDER BY revision DESC LIMIT 1', (project, goal)).fetchone()
-            if old and json.loads(old['bundle']) == bundle:
-                return self.loop.view(project, goal, c)
+            same = old and json.loads(old['bundle']) == bundle
             if old and json.loads(old['bundle'])['definition'].get('schema') != 'afterspan-repo-goal-v2':
                 raise HTTPException(409, 'use a new goal ID; the existing native contract cannot be replaced')
             if not old and c.execute('SELECT count(DISTINCT goal) FROM loop_goals WHERE project=?', (project,)).fetchone()[0] >= 100:
                 raise HTTPException(422, 'maximum 100 goals per project')
-            c.execute('INSERT INTO loop_goals VALUES(?,?,?,?,?,?,?,?)',
-                      (project, goal, old['revision'] + 1 if old else 1, digest(definition['question']),
-                       digest(definition['measurement']), digest(definition['mapping']), canonical(bundle), time.time()))
-            return self.loop.view(project, goal, c)
+            revision = old['revision'] if same else old['revision'] + 1 if old else 1
+            if not same:
+                c.execute('INSERT INTO loop_goals VALUES(?,?,?,?,?,?,?,?)',
+                          (project, goal, revision, digest(definition['question']),
+                           digest(definition['measurement']), digest(definition['mapping']), canonical(bundle), time.time()))
+            if merged:
+                action_id = str(req.proposal_id)
+                plan = proposal['plan'] | {'id': action_id, 'action_id': action_id,
+                                           **self.loop.refs(self.loop.goal(c, project, goal))}
+                action = c.execute('SELECT * FROM loop_actions WHERE project=? AND id=?', (project, action_id)).fetchone()
+                if action and (action['goal'] != goal or action['goal_revision'] != revision
+                               or json.loads(action['plan']) != plan):
+                    raise HTTPException(409, 'adoption ID belongs to a different action')
+                if not action:
+                    c.execute('INSERT INTO loop_actions VALUES(?,?,?,?,?,?,?,?,?)',
+                              (project, goal, action_id, action_id, revision, canonical(plan),
+                               canonical(merged | {'action_id': action_id}), 'merged', time.time()))
+            result = self.loop.view(project, goal, c)
+            if merged:
+                result['adopted_action_id'] = str(req.proposal_id)
+            return result
+
+    def propose_merged(self, project, id, req):
+        payload = req.model_dump(mode='json')
+        old = self.replay(project, id, 'proposal', payload)
+        if old:
+            return old
+        connection = self.connections.resolve(project, str(req.connection_id), 'github')
+        binding = {'connection_id': connection['id'], 'connection_revision': connection['revision']}
+        evidence = self.provider(project, binding).merged_proposal(req.goal, payload, binding)
+        receipt = {**evidence, 'id': id, 'status': 'proposal_requires_owner_adoption',
+                   'limitations': ['Existing merged bytes only; no PR is created or merged.',
+                                   'A committed scan ID is not a receipt imported from another service.',
+                                   'Merge, exact provider release and observed outcome remain separate.']}
+        receipt['proposal_sha256'] = digest(receipt)
+        return self.save(project, id, 'proposal', payload, receipt)
 
     def prepare(self, project, goal, request_id, files):
         if not files:
@@ -438,7 +496,7 @@ class RepoOnboarding:
                           (canonical(plan), 'prepared', project, id))
                 return self.loop.action(c, project, id)
 
-    def release(self, project, id, connection_id):
+    def release(self, project, id, connection_id, commit=None):
         from loop_sources import railway_release
         with self.loop.action_locks[(project, id)]:
             with closing(self.loop.connect()) as c:
@@ -454,15 +512,22 @@ class RepoOnboarding:
                 raise HTTPException(409, 'the merged artifact could not be verified')
             connection = self.connections.resolve(project, connection_id, 'railway')
             environment = current['bundle']['definition']['mapping']['environment']
-            proof = railway_release(connection, receipt['merge_sha'], environment, guard=self.source_guard(project, connection))
+            binding = provider.artifact_release_binding(action['plan'], receipt['merge_sha'], commit) if commit else None
+            proof = railway_release(connection, commit or receipt['merge_sha'], environment, guard=self.source_guard(project, connection))
             if proof.get('status') == 'released' and proof.get('verified') is True:
                 receipt = {**receipt, 'release_status': 'released', 'release': {
                     **proof, 'artifact_sha256': action['plan']['artifact_sha256'],
-                    'connection_id': connection['id'], 'connection_revision': connection['revision']}}
+                    'connection_id': connection['id'], 'connection_revision': connection['revision'],
+                    **({'artifact_binding': binding} if binding else {})}}
             else:
                 receipt = {**receipt, 'release_status': 'release_pending', 'release': None,
                            'release_gap': proof.get('reason', 'exact successful Railway deployment not observed')}
             with closing(self.loop.connect()) as c, c:
+                c.execute('BEGIN IMMEDIATE')
+                self.source_guard(project, connection)()
+                self.provider(project, current['bundle'])
+                if self.loop.goal(c, project, action['goal'])['revision'] != action['goal_revision']:
+                    raise HTTPException(409, 'goal changed during release verification')
                 c.execute('UPDATE loop_actions SET receipt=?,status=? WHERE project=? AND id=?',
                           (canonical(receipt), receipt.get('status', 'merged'), project, id))
                 return self.loop.action(c, project, id)
@@ -601,7 +666,8 @@ class RepoOnboarding:
                          'definition': definition, **self.loop.refs(current)}, 'history': history,
                 'policy': {k: v for k, v in policy.items() if k != 'issuer'} if policy else None,
                 'actions': actions, 'observations': observations, 'connection': None, 'connection_status': None,
-                'latest_answer': None, 'dependency_status': 'scan_bound_proposal', 'stages': stages,
+                'latest_answer': None, 'dependency_status': ('verified_merged_artifact'
+                    if current['bundle'].get('provenance') == 'owner_adopted_merged_pr' else 'scan_bound_proposal'), 'stages': stages,
                 'next_action': following, 'tracking_repair_available': False,
                 'tracking_artifact_available': True, 'limitations': [
                     'Tracking code requires review. Exact artifact verification does not certify its business meaning.',

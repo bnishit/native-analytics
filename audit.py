@@ -352,8 +352,8 @@ class Audit:
         elif declared:issues.append('incomplete_or_conflicting_comparison')
         ordering=[by_stage[s][0]['ts'] for s in ['parser','planner','confirmation','tool','reply','quality'] if len(by_stage.get(s,[]))==1]
         if ordering!=sorted(ordering):issues.append('stage_time_conflict');comparison='unavailable'
-        return {'request':reference,'environment':'conflict' if len(environments)!=1 else next(iter(environments)),
-            'environment_mismatch':any(env!=q.expected_environment for env in environments),'request_kind':values['request_kind'] or 'unknown',
+        return {'request':reference,'environment':('conflict' if len(environments)!=1 else next(iter(environments))) if comparison_group else 'unknown',
+            'environment_mismatch':bool(comparison_group) and any(env!=q.expected_environment for env in environments),'request_kind':values['request_kind'] or 'unknown',
             'command_kind':values['command_kind'],'release_sha':values['release_sha'],'request_started_at_ms':values['request_started_at_ms'],
             'business_attempts_observed':len(slots),'latest_attempt_number':latest,'missing_attempt_numbers':max(slots)-len(slots) if slots else None,
             'comparison_declared_eligible':declared,'comparison':comparison,'trace':trace,'stages':stages,'issues':sorted(set(issues)),

@@ -90,6 +90,12 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(trace['completion']['delivery']['state'],'conflict')
         self.assertEqual(len([s for s in trace['spans'] if s['step']=='slack_delivery']),2)
 
+    def test_trace_only_default_environment_does_not_enter_production_latency(self):
+        self.observe(self.trace_facts(str(uuid.uuid4()),str(uuid.uuid4()),str(uuid.uuid4()),'webhook_ack','started'))
+        report=self.review();self.assertEqual(report['requests'][0]['environment'],'unknown')
+        self.assertEqual(report['latency_scope']['selected_requests'],0)
+        self.assertEqual(report['agreement']['denominator'],0)
+
     def test_trace_strict_contract_rejects_private_fields_and_wrong_state_shapes(self):
         from audit import Observation
         facts=self.trace_facts(str(uuid.uuid4()),str(uuid.uuid4()),str(uuid.uuid4()),'policy','started')

@@ -80,7 +80,7 @@ MEANINGS={
  'completion_kind':'Total processing and provider-accepted delivery are distinct. Neither establishes human reading or independent business success.',
  'command_kind':'Bounded parsed read-command category. Missing in older producers; never infer it from reply text or a source check.',
  'release_sha':'Exact producer Git revision. Missing or conflicting revisions cannot qualify a release-bound request outcome.',
- 'request_started_at_ms':'Original request handling start, Unix milliseconds. It survives business retries; a reply cannot restart the goal clock.',
+ 'request_started_at_ms':'Verified incoming event time when valid, otherwise server handling start, Unix milliseconds. It survives business retries; message sends never restart this clock.',
  'check_version':'growthbook-catalog-v1: producer-side deterministic check of the exact rendered catalog answer against a separate uncached GrowthBook read. Not a second model vote or an independent Afterspan source fetch.',
  'checked_claims':'Number of displayed catalog rows with a matching source version checked for presence, enabled state and explicit Identity $in list-entry count. Not active users or SDK eligibility.',
  'mismatched_claims':'Checked rows which disagreed with the source. Nonzero forces failed; never averaged into a clean pass.',
@@ -291,9 +291,9 @@ class Audit:
                           'finished_at_ms_from_request_start':round(ends[0]['ts']*1000-clock,3) if len(ends)==1 and not conflict and clock is not None and not clock_conflict else None,
                           'completion_kind':first.get('completion_kind')})
         completion={}
-        for name,step,kind in [('webhook_ack','webhook_ack',None),('processing','total','processing'),('delivery','total','delivered')]:
+        for name,step,kind in [('webhook_ack','webhook_ack',None),('processing','total','processing'),('delivery','slack_delivery',None)]:
             selected=[s for s in spans if s['step']==step and s['completion_kind']==kind]
-            # Retain every retry in the timeline; only an unambiguous latest-attempt total summarizes completion.
+            # Retain every send; a completion summary cannot choose between multiple operations.
             latest=max((s['attempt_number'] for s in selected),default=None)
             selected=[s for s in selected if s['attempt_number']==latest]
             completion[name]={'state':selected[0]['state'] if len(selected)==1 else 'missing' if not selected else 'conflict',

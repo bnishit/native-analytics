@@ -212,8 +212,11 @@ require `duration_ms`; starts omit it. Optional `parent_span_ref` links operatio
 `trace_step` is one of preparation, feature_list, feature_lookup, policy,
 mutation, readback, slack_delivery, webhook_ack, background or total. Total spans
 require `completion_kind: processing` or `delivered` on both observations.
-Processing completion, HTTP acknowledgement and Slack API acceptance remain
-separate. No human reading or independent business-state verification is implied.
+Processing completion, webhook response readiness and Slack API acceptance remain
+separate. Response readiness does not prove network acknowledgement. The delivery
+summary uses `slack_delivery` without a completion kind; multiple sends within the
+latest observed attempt make that summary conflicting and remain separately visible.
+An accepted message may be intermediate or a confirmation, not a finished answer. No human reading or independent business-state verification is implied.
 No raw Slack text, errors, feature references, user or customer identifiers belong
 in this contract. Unknown fields are rejected. Raw span/request references and
 comparison digests never leave audit endpoints.

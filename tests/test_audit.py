@@ -37,7 +37,7 @@ class AuditTests(unittest.TestCase):
         for number,(step,states,kind) in enumerate([
             ('feature_list',['started','succeeded'],None),('feature_list',['started','failed'],None),
             ('readback',['started'],None),('webhook_ack',['started','succeeded'],None),
-            ('total',['started','succeeded'],'processing'),('total',['started','failed'],'delivered')]):
+            ('total',['started','succeeded'],'processing'),('slack_delivery',['started','failed'],None)]):
             for offset,state in enumerate(states):
                 self.observe(self.trace_facts(ref,attempt,spans[number],step,state,
                              **({'completion_kind':kind} if kind else {})),10+number*2+offset)
@@ -74,6 +74,21 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(row['trace']['spans'][0]['state'],'conflict')
         self.assertIsNone(row['trace']['spans'][0]['duration_ms'])
         self.assertEqual(self.client.post('/api/audit/trace?project='+self.p['id'],json={**report['query'],'request':row['request']}).status_code,401)
+
+    def test_producer_shaped_spans_and_multiple_slack_sends(self):
+        # Literal JSON shape matches the TypeScript producer: total processing, transport has no completion kind.
+        ref,attempt=self.chain()
+        payload=json.loads('{"schema_version":"slack-request-v1","stage":"trace","environment":"production","attempt_number":1,"request_started_at_ms":0,"trace_step":"total","span_state":"started","completion_kind":"processing"}')
+        payload.update(request_ref=ref,attempt_ref=attempt,span_ref=str(uuid.uuid4()))
+        self.observe(payload,10)
+        self.observe({**payload,'span_state':'succeeded','duration_ms':20},11)
+        for number in range(2):
+            span=str(uuid.uuid4())
+            for offset,state in enumerate(['started','succeeded']):self.observe(self.trace_facts(ref,attempt,span,'slack_delivery',state),20+number*2+offset)
+        trace=self.review()['requests'][0]['trace']
+        self.assertEqual(trace['completion']['processing']['state'],'succeeded')
+        self.assertEqual(trace['completion']['delivery']['state'],'conflict')
+        self.assertEqual(len([s for s in trace['spans'] if s['step']=='slack_delivery']),2)
 
     def test_trace_strict_contract_rejects_private_fields_and_wrong_state_shapes(self):
         from audit import Observation

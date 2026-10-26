@@ -96,6 +96,18 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(report['latency_scope']['selected_requests'],0)
         self.assertEqual(report['agreement']['denominator'],0)
 
+    def test_trace_rejects_contradictory_outcomes_without_requiring_historical_outcome(self):
+        from audit import Observation
+        for state,expected in [('started','unknown'),('succeeded','succeeded'),('failed','failed')]:
+            facts=self.trace_facts(str(uuid.uuid4()),str(uuid.uuid4()),str(uuid.uuid4()),'slack_delivery',state)
+            Observation.model_validate(facts)
+            Observation.model_validate({**facts,'reported_outcome':expected})
+            for outcome in {'unknown','succeeded','failed','clarification','cancelled'}-{expected}:
+                with self.subTest(state=state,outcome=outcome),self.assertRaises(ValueError):
+                    Observation.model_validate({**facts,'reported_outcome':outcome})
+        response=self.client.post('/v1/events',headers={'Authorization':'Bearer '+self.p['write_key']},json={'events':[{'name':'trace','properties':{'afterspan_audit':{**facts,'span_state':'succeeded','reported_outcome':'failed'}}}]})
+        self.assertEqual(response.status_code,422)
+
     def test_trace_strict_contract_rejects_private_fields_and_wrong_state_shapes(self):
         from audit import Observation
         facts=self.trace_facts(str(uuid.uuid4()),str(uuid.uuid4()),str(uuid.uuid4()),'policy','started')

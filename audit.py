@@ -59,6 +59,8 @@ class Observation(BaseModel):
             if any(v is None or v=='[redacted]' for v in (self.request_ref,self.attempt_ref,self.attempt_number,self.request_started_at_ms,self.span_ref,self.trace_step,self.span_state)):
                 raise ValueError('trace observations require opaque request, attempt, span and clock')
             if (self.span_state=='started')!=(self.duration_ms is None):raise ValueError('only terminal spans have a required duration')
+            expected='unknown' if self.span_state=='started' else self.span_state
+            if self.reported_outcome is not None and self.reported_outcome!=expected:raise ValueError('trace outcome must match span state')
             if self.parent_span_ref==self.span_ref:raise ValueError('span cannot parent itself')
             if self.completion_kind is not None and self.trace_step!='total':raise ValueError('completion kind belongs to total')
             if self.trace_step=='total' and self.completion_kind is None:raise ValueError('total requires completion kind')

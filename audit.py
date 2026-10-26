@@ -298,9 +298,17 @@ class Audit:
             # Retain every send; a completion summary cannot choose between multiple operations.
             latest=max((s['attempt_number'] for s in selected),default=None)
             selected=[s for s in selected if s['attempt_number']==latest]
+            if name=='processing' and selected:
+                phase=max(s['at_ms_from_request_start'] for s in selected)
+                selected=[s for s in selected if s['at_ms_from_request_start']==phase]
             completion[name]={'state':selected[0]['state'] if len(selected)==1 else 'missing' if not selected else 'conflict',
                               'duration_ms':selected[0]['duration_ms'] if len(selected)==1 else None,
                               'finished_at_ms_from_request_start':selected[0]['finished_at_ms_from_request_start'] if len(selected)==1 else None,'attempt_number':latest}
+            if name=='processing' and len(selected)==1 and selected[0]['state'] in {'succeeded','failed'}:
+                end=selected[0]['finished_at_ms_from_request_start']
+                later_work=end is None or any(r['facts']['attempt_number']>=latest and r['facts']['trace_step'] not in {'total','webhook_ack'}
+                    and round(r['ts']*1000-clock,3)>end for r in rows)
+                if later_work:completion[name].update(state='incomplete',duration_ms=None,finished_at_ms_from_request_start=None)
         return {'availability':'observed','spans':spans,'missing_steps':[step for step in TRACE_STEPS if not any(s['step']==step for s in spans)],
                 'completion':completion,'issues':sorted(set(issues))}
     def chain(self,project,key,group,q):

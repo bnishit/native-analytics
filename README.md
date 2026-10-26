@@ -216,7 +216,10 @@ Processing completion, webhook response readiness and Slack API acceptance remai
 separate. Response readiness does not prove network acknowledgement. The delivery
 summary uses `slack_delivery` without a completion kind; multiple sends within the
 latest observed attempt make that summary conflicting and remain separately visible.
-An accepted message may be intermediate or a confirmation, not a finished answer. No human reading or independent business-state verification is implied.
+An accepted message may be intermediate or a confirmation, not a finished answer.
+Processing uses the latest unambiguous phase by start time within the latest
+observed processing attempt; prompt and confirmed-action phases stay in the timeline.
+Later observed work without a closing total makes processing incomplete. No human reading or independent business-state verification is implied.
 No raw Slack text, errors, feature references, user or customer identifiers belong
 in this contract. Unknown fields are rejected. Raw span/request references and
 comparison digests never leave audit endpoints.

@@ -45,7 +45,7 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(report['agreement']['denominator'],1)
         self.assertEqual([s['state'] for s in trace['spans']],['succeeded','failed','unclosed','succeeded','succeeded','failed'])
         self.assertEqual(trace['completion']['webhook_ack']['state'],'succeeded')
-        self.assertEqual(trace['completion']['processing']['state'],'succeeded')
+        self.assertEqual(trace['completion']['processing']['state'],'incomplete')
         self.assertEqual(trace['completion']['delivery']['state'],'failed')
         self.assertIn('policy',trace['missing_steps'])
         frozen=self.review({**report['query'],'request':row['request']},path='trace')
@@ -86,7 +86,7 @@ class AuditTests(unittest.TestCase):
             span=str(uuid.uuid4())
             for offset,state in enumerate(['started','succeeded']):self.observe(self.trace_facts(ref,attempt,span,'slack_delivery',state),20+number*2+offset)
         trace=self.review()['requests'][0]['trace']
-        self.assertEqual(trace['completion']['processing']['state'],'succeeded')
+        self.assertEqual(trace['completion']['processing']['state'],'incomplete')
         self.assertEqual(trace['completion']['delivery']['state'],'conflict')
         self.assertEqual(len([s for s in trace['spans'] if s['step']=='slack_delivery']),2)
 
@@ -107,6 +107,28 @@ class AuditTests(unittest.TestCase):
                     Observation.model_validate({**facts,'reported_outcome':outcome})
         response=self.client.post('/v1/events',headers={'Authorization':'Bearer '+self.p['write_key']},json={'events':[{'name':'trace','properties':{'afterspan_audit':{**facts,'span_state':'succeeded','reported_outcome':'failed'}}}]})
         self.assertEqual(response.status_code,422)
+
+    def test_confirmation_processing_uses_latest_phase_and_never_old_completion(self):
+        ref,attempt=self.chain();clock=int(self.t*1000)
+        def span(step,start,end=None,**extra):
+            identity=str(uuid.uuid4())
+            self.observe(self.trace_facts(ref,attempt,identity,step,'started',request_started_at_ms=clock,**extra),start)
+            if end is not None:self.observe(self.trace_facts(ref,attempt,identity,step,'succeeded',request_started_at_ms=clock,duration_ms=(end-start)*1000,**extra),end)
+        span('total',.01,.33,completion_kind='processing')
+        span('total',.50,.60,completion_kind='processing')
+        span('mutation',.52,.535);span('readback',.54,.549)
+        trace=self.review()['requests'][0]['trace']
+        self.assertEqual(len([s for s in trace['spans'] if s['step']=='total']),2)
+        self.assertEqual(trace['completion']['processing']['state'],'succeeded')
+        self.assertAlmostEqual(trace['completion']['processing']['duration_ms'],100)
+        self.assertAlmostEqual(trace['completion']['processing']['finished_at_ms_from_request_start'],600,delta=1)
+        span('mutation',.70,.80)
+        summary=self.review()['requests'][0]['trace']['completion']['processing']
+        self.assertEqual(summary['state'],'incomplete');self.assertIsNone(summary['duration_ms'])
+        span('total',.65,None,completion_kind='processing')
+        self.assertEqual(self.review()['requests'][0]['trace']['completion']['processing']['state'],'unclosed')
+        span('total',.65,.81,completion_kind='processing')
+        self.assertEqual(self.review()['requests'][0]['trace']['completion']['processing']['state'],'conflict')
 
     def test_trace_strict_contract_rejects_private_fields_and_wrong_state_shapes(self):
         from audit import Observation

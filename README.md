@@ -291,10 +291,9 @@ The workspace bridge exposes 42 tools for scoped team operations, optional billi
 Provisioning is available through the same scoped API and JSON CLI. Secret-producing CLI commands require a mode-600 private receipt file rather than printing keys:
 
 ```sh
-# Request an email link. Complete it from a private {"token":"..."} file.
-python cli/native_analytics.py login --email you@example.com
-python cli/native_analytics.py complete-login --file /private/login.json --output /private/session.json
-# Set AFTERSPAN_SESSION_FILE=/private/session.json for account actions.
+# Open an approval page; the waiting CLI saves the session without copying tokens.
+python cli/native_analytics.py login-browser --output /private/session.json
+export AFTERSPAN_SESSION_FILE=/private/session.json
 python cli/native_analytics.py create-workspace --name 'My studio'
 python cli/native_analytics.py create-project --workspace WORKSPACE_ID --id my-app --name 'My app' --output /private/project.json
 python cli/native_analytics.py create-agent-key --workspace WORKSPACE_ID --label Codex --role editor --days 30 --output /private/agent.json
@@ -302,6 +301,16 @@ python cli/native_analytics.py create-agent-key --workspace WORKSPACE_ID --label
 python cli/native_analytics.py members --workspace WORKSPACE_ID
 python cli/native_analytics.py invite --workspace WORKSPACE_ID --file /private/invite.json
 ```
+
+`login-browser` emits a JSON approval link/code, opens the browser, and polls for up to ten minutes. Use `--no-browser` for a remote agent and open its link on another device. Sign in on the approval page if needed, compare the terminal code, then explicitly approve. The CLI receives account access only until the approving session expires (at most 12 hours); **Sign out everywhere** revokes it. Use an editor workspace key for ongoing setup automation. Expired, denied or interrupted attempts need a fresh command; choose a new receipt path when an earlier one exists. Legacy `login --email` and `complete-login --file ... --output ...` remain available.
+
+For an already linked Vercel project and authenticated Vercel CLI, transfer the producer key directly from its private receipt:
+
+```sh
+python cli/native_analytics.py install-vercel-key --file /private/project.json --cwd /path/to/producer --vercel-project prj_ID --vercel-team team_ID --environment preview
+```
+
+This checks the exact linked team/project, sends the key through stdin to [Vercel's environment command](https://vercel.com/docs/cli/env), and suppresses provider output. It installs only the server-side `NATIVE_ANALYTICS_WRITE_KEY`, without forcing replacement. Set `NATIVE_ANALYTICS_URL` in the producer's hosting configuration too. A timeout means the write may have succeeded: inspect before retrying. A provider acceptance receipt is not deployment or event delivery. Deploy with the host CLI, run `check-setup`, send that exact check through the producer, and read `setup` to verify collection. No secret must be copied into chat. Only perform these writes for the user's authorized destination.
 
 The CLI also supports owner-only `rename-workspace`, `workspaces`, `me`, `invites`, `accept-invite`, `resend-invite`, `revoke-invite`, `change-role`, `remove-member`, `agent-keys`, `revoke-agent-key`, `mail` and `audit`. Read-only project operations accept the aggregate read key. All four bridges use the official MCP Python v1 SDK over local stdio; hosted OAuth/remote MCP remains planned.
 

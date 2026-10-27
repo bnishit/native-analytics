@@ -162,7 +162,7 @@ def redact(value, depth=0):
         return [redact(v,depth+1) for v in value]
     if isinstance(value,str):
         # Remove recognizable bearer/API credentials even when placed in innocent fields.
-        return re.sub(r'(?i)\bBearer\s+[^\s]+|\b(?:mbb_inv_|na_write_|na_admin_|as_read_|as_workspace_|as_session_|as_login_|as_invite_|sk-)[A-Za-z0-9_-]+','[redacted]',value[:2000])
+        return re.sub(r'(?i)\bBearer\s+[^\s]+|\b(?:mbb_inv_|na_write_|na_admin_|as_read_|as_workspace_|as_session_|as_device_|as_login_|as_invite_|sk-)[A-Za-z0-9_-]+','[redacted]',value[:2000])
     if value is None or isinstance(value,(bool,int,float)):
         if isinstance(value,float) and not math.isfinite(value):raise ValueError('numbers must be finite')
         return value

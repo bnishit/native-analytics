@@ -42,6 +42,10 @@ class SignIn(EmailInput):
     invite:str|None=Field(default=None,max_length=160)
 class Token(Model):
     token:str=Field(min_length=20,max_length=160)
+class DeviceApproval(Model):
+    code:str=Field(pattern=r'^[A-F0-9]{12}$')
+    approve:bool
+
 class WorkspaceInput(Model):
     name:str=Field(min_length=1,max_length=80)
     @field_validator('name')
@@ -73,6 +77,9 @@ class Accounts:
         CREATE INDEX IF NOT EXISTS membership_user ON memberships(user_id,workspace);
         CREATE TABLE IF NOT EXISTS account_sessions(key_hash TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES accounts(id),
           created REAL NOT NULL,expires REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS cli_authorizations(device_hash TEXT PRIMARY KEY,code_hash TEXT UNIQUE NOT NULL,
+          created REAL NOT NULL,expires REAL NOT NULL,last_poll REAL NOT NULL DEFAULT 0,
+          source_session TEXT,state TEXT NOT NULL DEFAULT 'pending');
         CREATE TABLE IF NOT EXISTS sign_in_links(key_hash TEXT PRIMARY KEY,email TEXT NOT NULL,created REAL NOT NULL,expires REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS workspace_invites(id TEXT PRIMARY KEY,workspace TEXT NOT NULL REFERENCES workspaces(id),
           email TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN ('reader','editor','owner')),key_hash TEXT UNIQUE NOT NULL,
@@ -233,7 +240,65 @@ class Accounts:
             if count>=limit:raise HTTPException(429,'too many link requests; wait 15 minutes',headers={'Retry-After':'900'})
             c.execute('INSERT INTO login_limits VALUES(?,?,?) ON CONFLICT(ip) DO UPDATE SET window=excluded.window,attempts=excluded.attempts',(key,window,count+1))
 
+    def create_session(self,c,user_id,now,expires):
+        token='as_session_'+secrets.token_urlsafe(32)
+        c.execute('DELETE FROM account_sessions WHERE expires<=?',(now,))
+        # Keep at most ten active sessions per account, including terminal sessions.
+        c.execute('DELETE FROM account_sessions WHERE key_hash IN (SELECT key_hash FROM account_sessions WHERE user_id=? ORDER BY created DESC LIMIT -1 OFFSET 9)',(user_id,))
+        c.execute('INSERT INTO account_sessions VALUES(?,?,?,?)',(digest(token),user_id,now,expires))
+        return token
+
     def install(self,app):
+        @app.post('/auth/cli/start',status_code=201)
+        def cli_start(request:Request,response:Response):
+            self.csrf(request);origin,_=self.origin();now=time.time()
+            device='as_device_'+secrets.token_urlsafe(32);code=secrets.token_hex(6).upper()
+            with closing(self.connect()) as c,c:
+                c.execute('BEGIN IMMEDIATE');self.rate(c,request,'cli:'+secrets.token_hex(16))
+                c.execute('DELETE FROM cli_authorizations WHERE expires<=?',(now,))
+                c.execute('INSERT INTO cli_authorizations(device_hash,code_hash,created,expires) VALUES(?,?,?,?)',
+                          (digest(device),digest(code),now,now+600))
+            response.headers['Cache-Control']='no-store'
+            return {'device_code':device,'user_code':code,'verification_uri':origin+'/assets/cli-login.html',
+                    'expires_in':600,'interval':3}
+
+        @app.post('/auth/cli/approve')
+        def cli_approve(req:DeviceApproval,request:Request):
+            self.session_user(request);now=time.time()
+            with closing(self.connect()) as c,c:
+                c.execute('BEGIN IMMEDIATE');self.rate(c,request,'cli-approval:'+secrets.token_hex(16))
+            with closing(self.connect()) as c,c:
+                c.execute('BEGIN IMMEDIATE')
+                row=c.execute('SELECT state FROM cli_authorizations WHERE code_hash=? AND expires>?',
+                              (digest(req.code),now)).fetchone()
+                if not row or row['state']!='pending':raise HTTPException(400,'request expired or already decided')
+                c.execute('UPDATE cli_authorizations SET source_session=?,state=? WHERE code_hash=?',
+                          (digest(request.cookies['as_session']),'approved' if req.approve else 'denied',digest(req.code)))
+            return {'ok':True,'status':'approved' if req.approve else 'denied'}
+
+        @app.post('/auth/cli/poll')
+        def cli_poll(req:Token,request:Request,response:Response):
+            self.csrf(request);self.origin();now=time.time();result=None
+            with closing(self.connect()) as c,c:
+                c.execute('BEGIN IMMEDIATE')
+                row=c.execute('SELECT * FROM cli_authorizations WHERE device_hash=? AND expires>?',
+                              (digest(req.token),now)).fetchone()
+                if not row:raise HTTPException(400,'request expired or invalid')
+                if now-row['last_poll']<3:
+                    raise HTTPException(429,'poll no more than once every 3 seconds',headers={'Retry-After':'3'})
+                c.execute('UPDATE cli_authorizations SET last_poll=? WHERE device_hash=?',(now,digest(req.token)))
+                if row['state']=='approved':
+                    source=c.execute('SELECT user_id,expires FROM account_sessions WHERE key_hash=? AND expires>?',
+                                     (row['source_session'],now)).fetchone()
+                    if source:
+                        token=self.create_session(c,source['user_id'],now,source['expires'])
+                        result={'status':'complete','session':token,'cookie_name':'as_session','expires':source['expires']}
+                    else:result={'status':'denied'}
+                    c.execute('DELETE FROM cli_authorizations WHERE device_hash=?',(digest(req.token),))
+                else:result={'status':row['state']}
+            response.headers['Cache-Control']='no-store'
+            return result
+
         @app.get('/auth/config')
         def auth_config():
             try:self.mail_ready();ready=True
@@ -262,7 +327,7 @@ class Accounts:
 
         @app.post('/auth/consume-link')
         def consume(req:Token,request:Request,response:Response):
-            self.csrf(request);self.origin();now=time.time();session_token='as_session_'+secrets.token_urlsafe(32)
+            self.csrf(request);self.origin();now=time.time()
             with closing(self.connect()) as c,c:
                 c.execute('BEGIN IMMEDIATE')
                 link=c.execute('SELECT email FROM sign_in_links WHERE key_hash=? AND expires>?',(digest(req.token),now)).fetchone()
@@ -270,10 +335,7 @@ class Accounts:
                 c.execute('DELETE FROM sign_in_links WHERE key_hash=?',(digest(req.token),))
                 user=c.execute('SELECT id FROM accounts WHERE email=?',(link['email'],)).fetchone();user_id=user['id'] if user else uid('u_')
                 if not user:c.execute('INSERT INTO accounts VALUES(?,?,?)',(user_id,link['email'],now))
-                c.execute('DELETE FROM account_sessions WHERE expires<=?',(now,))
-                # An account can retain at most ten active browser sessions.
-                c.execute('DELETE FROM account_sessions WHERE key_hash IN (SELECT key_hash FROM account_sessions WHERE user_id=? ORDER BY created DESC LIMIT -1 OFFSET 9)',(user_id,))
-                c.execute('INSERT INTO account_sessions VALUES(?,?,?,?)',(digest(session_token),user_id,now,now+43200))
+                session_token=self.create_session(c,user_id,now,now+43200)
             response.set_cookie('as_session',session_token,httponly=True,secure=os.environ.get('COOKIE_SECURE','true')=='true',samesite='strict',max_age=43200)
             response.delete_cookie('na_session')
             return {'ok':True,'user':{'id':user_id,'email':link['email']}}

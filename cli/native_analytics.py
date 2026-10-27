@@ -40,7 +40,11 @@ def parser():
     assign=sub.add_parser('assign-existing');assign.add_argument('--user',required=True);assign.add_argument('--confirm',required=True)
     for name in ['health','schema','workspaces','me']:sub.add_parser(name)
     sub.add_parser('projects').add_argument('--workspace')
+    install=sub.add_parser('install-vercel-key');install.add_argument('--file',required=True);install.add_argument('--cwd',required=True)
+    install.add_argument('--vercel-project',required=True);install.add_argument('--vercel-team',required=True)
+    install.add_argument('--environment',required=True,choices=['preview','production'])
     login=sub.add_parser('login');login.add_argument('--email',required=True);login.add_argument('--plan',choices=['free','builder','team'])
+    browser=sub.add_parser('login-browser');browser.add_argument('--output',required=True);browser.add_argument('--no-browser',action='store_true')
     complete=sub.add_parser('complete-login');complete.add_argument('--file',required=True);complete.add_argument('--output',required=True)
     existing=sub.add_parser('login-existing');existing.add_argument('--file',required=True);existing.add_argument('--output',required=True)
     sub.add_parser('create-workspace').add_argument('--name',required=True)
@@ -114,6 +118,9 @@ def parser():
 
 def main(argv=None):
     args=parser().parse_args(argv);command=args.command
+    if command=='install-vercel-key':
+        from vercel_setup import install
+        result=install(args,private_json(args.file));print(json.dumps(result));return 0 if result['ok'] else 1
     if command=='init-answer-goal':
         from loop_repo import init_answer_goal
         print(json.dumps(init_answer_goal(args.repo,args.question,args.verifier,args.environment,args.dependency,args.source_of_truth,args.criteria,args.safe_test),indent=2));return 0
@@ -126,6 +133,9 @@ def main(argv=None):
     origin=os.environ.get('NATIVE_ANALYTICS_URL','').rstrip('/')
     parsed=urllib.parse.urlsplit(origin)
     if not (parsed.scheme=='https' and parsed.hostname or parsed.scheme=='http' and parsed.hostname=='127.0.0.1') or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:raise ValueError('set NATIVE_ANALYTICS_URL to your HTTPS origin')
+    if command=='login-browser':
+        from browser_login import login
+        return login(origin,args.output,not args.no_browser)
     path={'health':'/healthz','schema':'/openapi.json','projects':'/api/projects','create-project':'/api/projects','send':'/v1/events','identify':'/v1/identify',
           'overview':'/api/overview','events':'/api/events','people':'/api/people','charts':'/api/charts','query':'/api/query','journeys':'/api/journeys','setup':'/api/setup','check-setup':'/api/setup-checks','me':'/auth/me','workspaces':'/api/workspaces','create-workspace':'/api/workspaces','login':'/auth/request-link','complete-login':'/auth/consume-link','login-existing':'/auth/login','accept-invite':'/api/invites/accept','save-chart':'/api/charts','tag':'/api/people'}.get(command)
     body=None;method='GET';params={}
@@ -229,7 +239,9 @@ def main(argv=None):
     public=command in ['health','schema','login','complete-login','login-existing']
     session_file=os.environ.get('AFTERSPAN_SESSION_FILE')
     receipt=SessionReceipt.read(session_file) if session_file and not public and command not in ['send','identify','assign-existing'] else None
-    if receipt:key=None
+    if receipt:
+        if private_json(session_file).get('origin',origin)!=origin:raise ValueError('session belongs to another service')
+        key=None
     if command in ['create-agent-key','create-workspace','accept-invite']:key=None
     if not public and not key and not receipt:raise ValueError('set a scoped key or AFTERSPAN_SESSION_FILE')
     if hasattr(args,'output') and Path(args.output).exists():raise ValueError('private receipt already exists')

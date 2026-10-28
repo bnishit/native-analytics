@@ -8,6 +8,8 @@ from urllib.parse import urlsplit,parse_qsl
 import httpx
 from starlette.routing import Route
 from mcp.server.auth.middleware.auth_context import get_access_token
+from mcp.server.auth.handlers.metadata import MetadataHandler
+from mcp.server.auth.routes import build_metadata,cors_middleware
 from mcp.server.auth.settings import AuthSettings,ClientRegistrationOptions,RevocationOptions
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -121,7 +123,11 @@ def install(app,provider):
             async with mcp.session_manager.run():yield
     remote=mcp.streamable_http_app()
     app.router.lifespan_context=lifespan
+    metadata=build_metadata(mcp.settings.auth.issuer_url,None,mcp.settings.auth.client_registration_options,mcp.settings.auth.revocation_options)
+    metadata.token_endpoint_auth_methods_supported=['none']
+    metadata.revocation_endpoint_auth_methods_supported=['none']
     for route in remote.routes:
         if route.path=='/revoke':continue
-        app.router.routes.append(Route(route.path,endpoint=remote,methods=route.methods))
+        endpoint=cors_middleware(MetadataHandler(metadata).handle,['GET','OPTIONS']) if route.path=='/.well-known/oauth-authorization-server' else remote
+        app.router.routes.append(Route(route.path,endpoint=endpoint,methods=route.methods))
     return mcp

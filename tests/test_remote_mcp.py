@@ -50,6 +50,11 @@ class RemoteMCPTests(unittest.TestCase):
         return owner,uid,workspace,project,cid,r.json(),code,verifier
 
     def test_real_protocol_requires_pkce_consent_and_scopes(self):
+        metadata=self.client.get('/.well-known/oauth-authorization-server',headers={'Origin':'https://client.example'})
+        self.assertEqual(metadata.status_code,200)
+        self.assertEqual(metadata.headers['access-control-allow-origin'],'*')
+        self.assertEqual(metadata.json()['token_endpoint_auth_methods_supported'],['none'])
+        self.assertEqual(metadata.json()['revocation_endpoint_auth_methods_supported'],['none'])
         owner,uid,w,p,cid,t,code,verifier=self.grant('analytics:read')
         h={'Authorization':'Bearer '+t['access_token']}
         self.assertEqual(self.client.get('/api/charts',params={'project':p},headers=h).status_code,200)

@@ -302,7 +302,7 @@ python cli/native_analytics.py members --workspace WORKSPACE_ID
 python cli/native_analytics.py invite --workspace WORKSPACE_ID --file /private/invite.json
 ```
 
-`login-browser` emits a JSON approval link/code, opens the browser, and polls for up to ten minutes. Use `--no-browser` for a remote agent and open its link on another device. Sign in on the approval page if needed, compare the terminal code, then explicitly approve. The CLI receives account access only until the approving session expires (at most 12 hours); **Sign out everywhere** revokes it. Use an editor workspace key for ongoing setup automation. Expired, denied or interrupted attempts need a fresh command; choose a new receipt path when an earlier one exists. Legacy `login --email` and `complete-login --file ... --output ...` remain available.
+`login-browser` emits a JSON approval link/code, opens the browser, and polls for up to ten minutes. Use `--no-browser` for a remote agent and open its link on another device. Sign in on the approval page if needed, compare the terminal code, then explicitly approve. The CLI receives account access only until the approving session expires (at most 12 hours); **Sign out everywhere** revokes it. Use an editor workspace key for ongoing setup automation. Brief polling failures retry within the same ten-minute window, honoring rate limits (up to three consecutive failures). Expired, denied or interrupted attempts, and lost one-time completion responses, need a fresh command; choose a new receipt path when an earlier one exists. Legacy `login --email` and `complete-login --file ... --output ...` remain available.
 
 For an already linked Vercel project and authenticated Vercel CLI, transfer the producer key directly from its private receipt:
 

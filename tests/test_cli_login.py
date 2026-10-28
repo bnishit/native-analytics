@@ -94,6 +94,7 @@ class CliLoginTests(unittest.TestCase):
             result=vercel_setup.install(args,receipt)
             self.assertTrue(result['ok']);self.assertNotIn(receipt['write_key'],json.dumps(result))
             self.assertNotIn(receipt['write_key'],str(run.call_args.args))
+            self.assertNotIn('--yes',run.call_args.args[0])
             self.assertEqual(run.call_args.kwargs['input'],receipt['write_key'])
             args.vercel_project='prj_other'
             with self.assertRaises(ValueError):vercel_setup.install(args,receipt)
@@ -137,3 +138,31 @@ class CliLoginTests(unittest.TestCase):
         for _ in range(19):
             self.assertEqual(self.approve(owner,{'user_code':'000000000000'}).status_code,400)
         self.assertEqual(self.approve(owner,{'user_code':'000000000000'}).status_code,429)
+
+    def test_poll_recovers_from_throttle_and_service_outage(self):
+        import urllib.error
+        path=Path(self.fixture.temp.name)/'retry-session.json'
+        grant={'verification_uri':'https://example.test/assets/cli-login.html','user_code':'123456ABCDEF','device_code':'as_device_synthetic','expires_in':600,'interval':3}
+        receipt={'status':'complete','session':'as_session_synthetic','cookie_name':'as_session','expires':time.time()+100}
+        output=io.StringIO()
+        with patch('browser_login.urllib.request.build_opener') as opener,patch('browser_login.time.sleep') as sleep,contextlib.redirect_stdout(output):
+            opener.return_value.open.side_effect=[io.BytesIO(json.dumps(grant).encode()),
+                urllib.error.HTTPError('https://example.test',429,'limited',{'Retry-After':'8'},None),
+                urllib.error.HTTPError('https://example.test',503,'unavailable',{},None),
+                io.BytesIO(json.dumps(receipt).encode())]
+            self.assertEqual(browser_login.login('https://example.test',path,False),0)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list],[3,8,3])
+        self.assertEqual(json.loads(path.read_text())['session'],receipt['session'])
+        self.assertNotIn(receipt['session'],output.getvalue());self.assertNotIn(grant['device_code'],output.getvalue())
+
+    def test_lost_completion_response_never_claims_success(self):
+        import urllib.error
+        path=Path(self.fixture.temp.name)/'lost-session.json'
+        grant={'verification_uri':'https://example.test/assets/cli-login.html','user_code':'123456ABCDEF','device_code':'as_device_synthetic','expires_in':600,'interval':3}
+        output=io.StringIO()
+        with patch('browser_login.urllib.request.build_opener') as opener,patch('browser_login.time.sleep'),contextlib.redirect_stdout(output):
+            opener.return_value.open.side_effect=[io.BytesIO(json.dumps(grant).encode()),
+                urllib.error.URLError('lost response'),urllib.error.HTTPError('https://example.test',400,'already collected',{},None)]
+            self.assertEqual(browser_login.login('https://example.test',path,False),1)
+        self.assertFalse(path.exists())
+        self.assertEqual(json.loads(output.getvalue().splitlines()[-1])['result'],'unknown')

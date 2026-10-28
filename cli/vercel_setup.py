@@ -15,7 +15,7 @@ def install(args,receipt):
         raise ValueError('linked Vercel destination does not match the requested project and team')
     environment={**os.environ,'VERCEL_PROJECT_ID':args.vercel_project,'VERCEL_ORG_ID':args.vercel_team}
     command=['vercel','env','add','NATIVE_ANALYTICS_WRITE_KEY',args.environment,
-             '--sensitive','--yes','--cwd',str(root),'--scope',args.vercel_team]
+             '--sensitive','--cwd',str(root),'--scope',args.vercel_team]
     try:
         result=subprocess.run(command,input=key,text=True,capture_output=True,timeout=60,env=environment)
     except subprocess.TimeoutExpired:

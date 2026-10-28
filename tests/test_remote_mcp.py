@@ -165,6 +165,14 @@ class RemoteMCPTests(unittest.TestCase):
             detail=call('workflow_trace_detail',{'trace':reviewed['traces'][0]['trace'],'query':reviewed['query']})
             self.assertEqual(detail['trace'],reviewed['traces'][0])
             self.assertEqual(detail['trace']['completion']['receive']['state'],'incomplete')
+            batch_event=app.Event(name='trace.observed',properties={'afterspan_trace':{
+                **trace_event.properties['afterspan_trace'],'trace_id':str(uuid.uuid4()),'span_id':str(uuid.uuid4()),
+                'step':'processing','receipt_count':1,'linked_trace_ids':[trace_event.properties['afterspan_trace']['trace_id']]}})
+            with closing(app.connect()) as c,c:app.store_events(c,p,[batch_event])
+            reviewed=call('workflow_trace_review',{'query':{'environment':'staging','limit':1}})
+            detail=call('workflow_trace_detail',{'trace':reviewed['traces'][0]['trace'],'query':reviewed['query']})
+            self.assertEqual(detail['trace']['batch']['receipt_count'],1)
+            self.assertEqual(len(detail['linked_inputs']),1)
             chart={'chart_id':str(uuid.uuid4()),'title':'Contacts','query':{'event':'contact.clicked','days':30}}
             a=call('save_chart',chart);b=call('save_chart',chart);self.assertEqual(a['id'],b['id'])
             self.assertEqual(len(call('saved_charts')['charts']),1)

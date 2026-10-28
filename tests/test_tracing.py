@@ -69,6 +69,50 @@ class TracingTests(unittest.TestCase):
         self.assertIn('attempt_identity_conflict',self.review()['traces'][0]['issues'])
         self.assertEqual(self.review()['traces'][0]['completion']['provider_send']['state'],'unknown')
 
+    def test_three_receipts_link_to_one_booking_without_fanout(self):
+        inputs=[str(uuid.uuid4()) for _ in range(3)]
+        for tid in inputs:
+            self.assertEqual(self.ingest(self.event(trace_id=tid,step='receive',span_id=str(uuid.uuid4()))).status_code,200)
+        self.assertEqual(self.ingest(self.event(at=1,step='processing',receipt_count=3,linked_trace_ids=inputs),
+            self.event('succeeded',2,step='processing'),
+            self.event(at=3,step='booking',span_id=(booking:=str(uuid.uuid4()))),
+            self.event('succeeded',4,step='booking',span_id=booking)).status_code,200)
+        report=self.review(limit=1);batch=report['traces'][0]
+        self.assertEqual(batch['batch']['receipt_count'],3)
+        self.assertEqual(batch['completion']['booking'],{'state':'succeeded','observations':1})
+        detail=self.client.post('/api/traces/detail?project=alpha',headers=self.admin,json={**report['query'],'trace':batch['trace']}).json()
+        self.assertEqual(len(detail['linked_inputs']),3)
+        self.assertTrue(all(t['completion']['booking']['observations']==0 for t in detail['linked_inputs']))
+        self.assertTrue(all(tid not in json.dumps(detail) for tid in inputs+[self.tid]))
+
+    def test_links_are_strict_bounded_and_frozen(self):
+        links=[str(uuid.uuid4()) for _ in range(21)]
+        invalid=[{'receipt_count':1}, {'linked_trace_ids':[]}, {'receipt_count':True,'linked_trace_ids':[]},
+            {'receipt_count':21,'linked_trace_ids':links}, {'receipt_count':1,'linked_trace_ids':links[:2]},
+            {'receipt_count':2,'linked_trace_ids':[links[0],links[0]]}, {'receipt_count':1,'linked_trace_ids':[self.tid]},
+            {'receipt_count':1,'linked_trace_ids':['patient']}, {'receipt_count':1,'linked_trace_ids':[],'step':'booking'},
+            {'receipt_count':1,'linked_trace_ids':[],'state':'succeeded'}]
+        for changes in invalid:
+            self.assertEqual(self.ingest(self.event(**{'step':'processing',**changes})).status_code,422,changes)
+        self.assertEqual(self.ingest(self.event(step='processing',receipt_count=20,linked_trace_ids=links[:20])).status_code,200)
+        self.ingest(self.event(step='processing',receipt_count=20,linked_trace_ids=links[1:]))
+        trace=self.review()['traces'][0]
+        self.assertIn('batch_membership_conflict',trace['issues']);self.assertIn('span_conflict',trace['issues'])
+        self.assertIsNone(trace['batch'])
+
+    def test_links_never_resolve_across_project_environment_or_snapshot(self):
+        links=[str(uuid.uuid4()) for _ in range(3)]
+        self.ingest(self.event(trace_id=links[0],step='receive'),headers=self.fixture.b)
+        self.ingest(self.event(trace_id=links[1],step='receive',environment='production'))
+        self.ingest(self.event(at=1,step='processing',receipt_count=4,linked_trace_ids=links))
+        frozen=self.review();batch=frozen['traces'][0]
+        self.assertEqual(batch['batch']['unlinked_receipts'],1)
+        self.assertTrue(all(i['state']=='missing_in_window' for i in batch['batch']['inputs']))
+        self.ingest(self.event(trace_id=links[2],step='receive'))
+        detail=self.client.post('/api/traces/detail?project=alpha',headers=self.admin,json={**frozen['query'],'trace':batch['trace']}).json()
+        self.assertEqual(detail['linked_inputs'],[])
+        self.assertEqual(detail['trace'],batch)
+
     def test_maximum_parent_chain_is_bounded_and_larger_review_refuses_partial_results(self):
         from tracing import project_trace
         from contextlib import closing

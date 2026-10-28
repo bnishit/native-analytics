@@ -1,0 +1,8 @@
+{
+  "name": "afterspan",
+  "version": "0.1.0",
+  "description": "Connect, inspect tracking, build saved charts, and investigate Afterspan request evidence.",
+  "license": "MIT",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}

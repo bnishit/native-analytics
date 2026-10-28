@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "afterspan": {
+      "type": "http",
+      "url": "${AFTERSPAN_URL}/mcp"
+    }
+  }
+}

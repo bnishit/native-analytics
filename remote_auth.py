@@ -146,7 +146,7 @@ class OAuthProvider:
         if not token:raise HTTPException(401,'agent access expired or revoked')
         path=request.url.path
         allowed={'/api/overview','/api/catalog','/api/query','/api/charts','/api/setup','/api/journeys','/api/funnels','/api/funnels/analyze','/api/segments','/api/segments/analyze','/api/retention','/api/retention/analyze'}
-        audit=path in {'/api/audit/catalog','/api/audit/review','/api/audit/trace','/api/audit/evaluate','/api/audit/onboarding'}
+        audit=path in {'/api/audit/catalog','/api/audit/review','/api/audit/trace','/api/audit/evaluate','/api/audit/onboarding','/api/traces/catalog','/api/traces/review','/api/traces/detail'}
         chart=path=='/api/charts' or bool(re.fullmatch(r'/api/charts/[0-9a-f-]{36}',path))
         scope='audit:read' if audit else 'charts:write' if chart and request.method!='GET' else 'analytics:read'
         if chart and request.method not in {'GET','POST','PUT'}:raise HTTPException(403,'agent access cannot remove charts')

@@ -22,6 +22,7 @@ from remote_auth import OAuthProvider
 from accounts import Accounts
 from billing import Billing
 from audit import Audit,Observation
+from tracing import Tracing,SpanObservation
 from retention import Retention
 from product_loop import ProductLoop
 from catalog import Catalog
@@ -192,6 +193,10 @@ class Event(Model):
 
     @model_validator(mode='after')
     def subject_matches(self):
+        if 'afterspan_trace' in self.properties:
+            if self.name!='trace.observed' or self.distinct_id is not None or self.attributes or self.journey is not None or set(self.properties)!={'afterspan_trace'}:
+                raise ValueError('trace events accept only the trace contract, without identities or extra properties')
+            self.properties['afterspan_trace']=SpanObservation.model_validate(self.properties['afterspan_trace']).model_dump(mode='json')
         if 'afterspan_audit' in self.properties:
             self.properties['afterspan_audit']=Observation.model_validate(self.properties['afterspan_audit']).model_dump(mode='json',exclude_unset=True)
         if self.journey and self.journey.subject_kind=='anonymous' and self.distinct_id is not None:
@@ -746,7 +751,7 @@ def where(project,q):
 
 
 def product_only(clause):
-    return clause+" AND name NOT IN ('analytics.pipeline','afterspan.setup.checked')"
+    return clause+" AND name NOT IN ('analytics.pipeline','afterspan.setup.checked','trace.observed') AND json_type(properties,'$.afterspan_trace') IS NULL"
 
 
 def percentile(values):
@@ -766,6 +771,7 @@ def aggregate(rows,q):
 def query_data(project,q):
     q=freeze(q)
     clause,params=where(project,q)
+    clause+=" AND name!='trace.observed' AND json_type(properties,'$.afterspan_trace') IS NULL"
     if q.event is None:clause=product_only(clause)
     with closing(connect()) as c:
         count=c.execute('SELECT count(*) FROM events WHERE '+clause,params).fetchone()[0]
@@ -1010,6 +1016,7 @@ Retention(app,products,reader,editor)
 Catalog(app,products,reader,editor)
 
 request_audit=Audit(app,connect,audit_reader,freeze,evidence_metadata,editor)
+workflow_tracing=Tracing(app,connect,audit_reader,freeze,evidence_metadata)
 product_loop=ProductLoop(app,connect,reader,editor,owner,RETENTION_DAYS,store_events=store_events,audit=request_audit)
 
 

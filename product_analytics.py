@@ -168,7 +168,7 @@ class ProductAnalytics:
             c.execute('DELETE FROM product_definitions WHERE project=? AND id=?',(project,id))
         return {'deleted':True}
     def load(self,c,project,q):
-        rows=c.execute("SELECT name,distinct_id,ts,properties FROM events WHERE project=? AND ts>=? AND ts<? AND received<=? AND name NOT IN ('analytics.pipeline','afterspan.setup.checked') ORDER BY ts,id LIMIT 200001",(project,q.start.timestamp(),q.end.timestamp(),q.as_of.timestamp())).fetchall()
+        rows=c.execute("SELECT name,distinct_id,ts,properties FROM events WHERE project=? AND ts>=? AND ts<? AND received<=? AND name NOT IN ('analytics.pipeline','afterspan.setup.checked','trace.observed') AND json_type(properties,'$.afterspan_trace') IS NULL ORDER BY ts,id LIMIT 200001",(project,q.start.timestamp(),q.end.timestamp(),q.as_of.timestamp())).fetchall()
         if len(rows)>200000:raise HTTPException(422,'analysis exceeds 200,000 events; shorten the window')
         return [{**dict(r),'properties':json.loads(r['properties'])} for r in rows]
     def cohort(self,c,project,rows,definition):

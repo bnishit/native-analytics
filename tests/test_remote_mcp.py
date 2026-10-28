@@ -62,6 +62,7 @@ class RemoteMCPTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/events',params={'project':p},headers=h).status_code,403)
         self.assertEqual(self.client.post('/api/charts',params={'project':p},headers=h,json={'title':'Denied','query':{}}).status_code,403)
         self.assertEqual(self.client.post('/api/audit/review',params={'project':p},headers=h,json={}).status_code,403)
+        self.assertEqual(self.client.get('/api/traces/catalog',params={'project':p},headers=h).status_code,403)
         self.assertEqual(self.client.delete('/api/charts/'+str(uuid.uuid4()),params={'project':p},headers=h).status_code,403)
         self.assertEqual(self.exchange(cid,code,verifier).status_code,400)
         rid,v=self.begin(cid)
@@ -71,6 +72,25 @@ class RemoteMCPTests(unittest.TestCase):
         nextcode=parse_qs(urlsplit(r.json()['redirect_uri']).query)['code'][0]
         self.assertEqual(self.exchange(cid,nextcode,'wrong'*12).status_code,400)
         self.assertEqual(self.exchange(cid,nextcode,v).status_code,200)
+
+    def test_analytics_scope_cannot_read_trace_properties_through_product_queries(self):
+        owner,uid,w,p,cid,t,*_=self.grant('analytics:read')
+        trace_id=str(uuid.uuid4())
+        event=app.Event(name='trace.observed',properties={'afterspan_trace':{
+            'schema_version':'workflow-trace-v1','trace_id':trace_id,'attempt_id':str(uuid.uuid4()),
+            'attempt_number':1,'span_id':str(uuid.uuid4()),'workflow':'appointment_request',
+            'environment':'staging','step':'provider_send','state':'started'}})
+        with closing(app.connect()) as c,c:app.store_events(c,p,[event])
+        h={'Authorization':'Bearer '+t['access_token']}
+        self.assertEqual(self.client.post('/api/traces/review',params={'project':p},headers=h,json={'environment':'staging'}).status_code,403)
+        for query in [{},{'event':'trace.observed','breakdown':'afterspan_trace'},{'breakdown':'afterspan_trace'}]:
+            r=self.client.post('/api/query',params={'project':p},headers=h,json=query)
+            self.assertEqual(r.status_code,200,r.text);self.assertEqual(r.json()['total'],0)
+            self.assertNotIn(trace_id,r.text)
+        r=self.client.post('/api/catalog',params={'project':p},headers=h,json={'event':'trace.observed'})
+        self.assertEqual(r.status_code,200,r.text);self.assertNotIn('afterspan_trace',r.text)
+        r=self.client.get('/api/overview',params={'project':p},headers=h)
+        self.assertEqual(r.status_code,200,r.text);self.assertNotIn('trace.observed',r.text)
 
     def test_refresh_rotation_replay_and_membership_changes(self):
         owner,uid,w,p,cid,t,*_=self.grant()
@@ -134,6 +154,25 @@ class RemoteMCPTests(unittest.TestCase):
             self.assertEqual(call('connection_status')['project'],p)
             self.assertIn('instructions',call('get_workflow',{'name':'build-dashboard'}))
             self.assertIn('events',call('event_catalog',{'query':{'days':30}}))
+            self.assertIn('meanings',call('workflow_trace_catalog'))
+            self.assertEqual(call('workflow_trace_review',{'query':{'environment':'staging'}})['traces'],[])
+            trace_event=app.Event(name='trace.observed',properties={'afterspan_trace':{
+                'schema_version':'workflow-trace-v1','trace_id':str(uuid.uuid4()),'attempt_id':str(uuid.uuid4()),
+                'attempt_number':1,'span_id':str(uuid.uuid4()),'workflow':'appointment_request',
+                'environment':'staging','step':'receive','state':'started'}})
+            with closing(app.connect()) as c,c:app.store_events(c,p,[trace_event])
+            reviewed=call('workflow_trace_review',{'query':{'environment':'staging'}})
+            detail=call('workflow_trace_detail',{'trace':reviewed['traces'][0]['trace'],'query':reviewed['query']})
+            self.assertEqual(detail['trace'],reviewed['traces'][0])
+            self.assertEqual(detail['trace']['completion']['receive']['state'],'incomplete')
+            batch_event=app.Event(name='trace.observed',properties={'afterspan_trace':{
+                **trace_event.properties['afterspan_trace'],'trace_id':str(uuid.uuid4()),'span_id':str(uuid.uuid4()),
+                'step':'processing','receipt_count':1,'linked_trace_ids':[trace_event.properties['afterspan_trace']['trace_id']]}})
+            with closing(app.connect()) as c,c:app.store_events(c,p,[batch_event])
+            reviewed=call('workflow_trace_review',{'query':{'environment':'staging','limit':1}})
+            detail=call('workflow_trace_detail',{'trace':reviewed['traces'][0]['trace'],'query':reviewed['query']})
+            self.assertEqual(detail['trace']['batch']['receipt_count'],1)
+            self.assertEqual(len(detail['linked_inputs']),1)
             chart={'chart_id':str(uuid.uuid4()),'title':'Contacts','query':{'event':'contact.clicked','days':30}}
             a=call('save_chart',chart);b=call('save_chart',chart);self.assertEqual(a['id'],b['id'])
             self.assertEqual(len(call('saved_charts')['charts']),1)

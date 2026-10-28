@@ -97,6 +97,21 @@ def install(app,provider):
         return await call('/api/'+kind+'/analyze',query)
 
     @mcp.tool(annotations=READ)
+    async def workflow_trace_catalog()->dict:
+        """Requires audit:read. Discover the content-free workflow trace contract and precise step meanings."""
+        return await call('/api/traces/catalog')
+
+    @mcp.tool(annotations=READ)
+    async def workflow_trace_review(query:dict)->dict:
+        """Requires audit:read. query={days:7,environment:'staging',limit:20}. Separate receive, queue, availability, booking, provider acceptance and delivery; missing evidence stays unknown."""
+        return await call('/api/traces/review',query)
+
+    @mcp.tool(annotations=READ)
+    async def workflow_trace_detail(trace:str,query:dict)->dict:
+        """Requires audit:read. Inspect one opaque trace from workflow_trace_review using its exact returned query. Producer observations do not independently prove patient delivery or booking."""
+        return await call('/api/traces/detail',{**query,'trace':trace})
+
+    @mcp.tool(annotations=READ)
     async def diagnostic_catalog(query:dict)->dict:
         """Requires audit:read. Discover approved trace meanings and coverage first; query={days:7}."""
         return await call('/api/audit/catalog',query)

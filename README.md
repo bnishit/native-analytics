@@ -181,6 +181,12 @@ Event-match filters accept `{"property":"modal_type","op":"in","value":["milesto
 
 ### Owner request review with Codex
 
+For application workflows, remote MCP provides `workflow_trace_catalog`, `workflow_trace_review` and `workflow_trace_detail` with `audit:read`. The API equivalents are `GET /api/traces/catalog`, `POST /api/traces/review` and `POST /api/traces/detail`, all project scoped. Review requires an explicit environment and accepts the normal frozen time window plus a limit of 1–60 traces. Detail requires the opaque trace reference and exact query returned by review. More than 20,000 observations fails explicitly; shorter windows avoid partial evidence.
+
+Producers send `trace.observed` through `/v1/events` with only `properties.afterspan_trace`, matching the schema returned by the trace catalog. Use fresh random UUIDv4 trace, attempt and span IDs; persist correlation across queue and delivery callbacks. Reuse the event ID and timestamp for transport retries. Start and terminal observations share the span ID. A business retry has a new attempt ID and increasing attempt number. No identity, attributes, message text, provider identifiers or extra properties are accepted on trace events.
+
+The initial workflow contract separates receipt, queue, processing, availability, booking, provider acceptance and provider delivery. Each operation has `started`, `succeeded`, `failed` or explicit `unknown` observations. Missing starts, parents, attempts and conflicting facts stay visible. An availability lookup is not a reservation; a completed booking operation is a producer report; send acceptance is not delivery; delivery is not reading. Historical unlinked events are never joined by guesswork. This bounded contract is not an OpenTelemetry receiver or automatic instrumentation. Instrumented producer deployment and a real test are separate from receiver availability.
+
 Open **Request audit**, choose the expected environment and review up to 60 latest linked requests. A request can have several business attempts. The latest observed attempt determines comparison; a delivery retry keeps its event ID. Review separates stored events, covered observations, linked requests, declared eligibility and independently comparable pairs. Missing, unknown, explicit not-required and conflicting stages stay distinct. Production latency excludes other/conflicting environments and reports sample counts with nearest-rank p50/p95.
 
 | Owner question | API (project=ID) | CLI --project ID --file query.json | Audit MCP |

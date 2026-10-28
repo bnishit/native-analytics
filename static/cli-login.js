@@ -1,7 +1,11 @@
 'use strict';
 const element=id=>document.getElementById(id);
-element('code').value=new URLSearchParams(location.hash.slice(1)).get('code')||'';
-history.replaceState(null,'',location.pathname);
+function loadRequest(){
+  element('code').value=new URLSearchParams(location.hash.slice(1)).get('code')||'';
+  element('status').textContent='';
+  checkSignIn();
+}
+window.addEventListener('hashchange',loadRequest);
 async function checkSignIn(){
   try{
     const response=await fetch('/auth/me',{cache:'no-store'});
@@ -22,4 +26,4 @@ async function decide(approve){
 element('approval').onsubmit=event=>{event.preventDefault();decide(true);};
 element('deny').onclick=()=>decide(false);
 element('refresh').onclick=checkSignIn;
-checkSignIn();
+loadRequest();

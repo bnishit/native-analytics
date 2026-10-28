@@ -1,6 +1,8 @@
 'use strict';
 const element=id=>document.getElementById(id);
+let requestVersion=0;
 function loadRequest(){
+  requestVersion++;
   element('code').value=new URLSearchParams(location.hash.slice(1)).get('code')||'';
   element('status').textContent='';
   checkSignIn();
@@ -16,12 +18,14 @@ async function checkSignIn(){
   }catch(error){element('identity').textContent=error.message;element('signin').hidden=false;element('allow').disabled=true;element('deny').disabled=true;}
 }
 async function decide(approve){
+  const version=requestVersion;
   element('allow').disabled=true;element('deny').disabled=true;
   try{
     const response=await fetch('/auth/cli/approve',{method:'POST',headers:{'Content-Type':'application/json','X-Native-CSRF':'1'},body:JSON.stringify({code:element('code').value.trim().toUpperCase(),approve})});
+    if(version!==requestVersion)return;
     if(!response.ok)throw Error('Could not approve this request. It may have expired or already been decided.');
     element('status').textContent=approve?'Approved. Your terminal will continue automatically. You can close this tab.':'Denied. Your terminal will stop.';
-  }catch(error){element('status').textContent=error.message;await checkSignIn();}
+  }catch(error){if(version!==requestVersion)return;element('status').textContent=error.message;await checkSignIn();}
 }
 element('approval').onsubmit=event=>{event.preventDefault();decide(true);};
 element('deny').onclick=()=>decide(false);

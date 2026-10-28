@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
+from remote_auth import OAuthProvider
 from accounts import Accounts
 from billing import Billing
 from audit import Audit,Observation
@@ -63,6 +64,7 @@ def connect():
 accounts=Accounts(connect)
 billing=Billing(connect,accounts)
 accounts.billing=billing
+oauth=OAuthProvider(connect,accounts,os.getenv('ANALYTICS_PUBLIC_URL','http://127.0.0.1:8769').rstrip('/'))
 
 
 def init_db():
@@ -99,6 +101,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS relay_projects(project TEXT PRIMARY KEY REFERENCES projects(id),events TEXT NOT NULL,enabled INTEGER NOT NULL);
         ''')
         accounts.init_db(c)
+        OAuthProvider.init_db(c)
         billing.init_db(c)
         ProductAnalytics.init_db(c)
         Catalog.init_db(c)
@@ -116,6 +119,11 @@ def prune():
         c.execute('DELETE FROM people WHERE last_seen < ?', (cutoff,))
         c.execute('DELETE FROM login_limits WHERE window < ?', (time.time()-3600,))
         c.execute('DELETE FROM setup_checks WHERE created < ?', (cutoff,))
+        c.execute('DELETE FROM oauth_codes WHERE expires<=?',(time.time(),))
+        c.execute('DELETE FROM oauth_pending WHERE expires<=?',(time.time(),))
+        c.execute('DELETE FROM oauth_tokens WHERE grant_id IN (SELECT id FROM oauth_grants WHERE expires<=? OR revoked=1)',(time.time(),))
+        c.execute('DELETE FROM oauth_codes WHERE grant_id IN (SELECT id FROM oauth_grants WHERE expires<=? OR revoked=1)',(time.time(),))
+        c.execute('DELETE FROM oauth_grants WHERE expires<=? OR revoked=1',(time.time(),))
         c.execute('DELETE FROM sign_in_links WHERE expires<=?',(time.time(),))
         c.execute('DELETE FROM account_sessions WHERE expires<=?',(time.time(),))
         c.execute('DELETE FROM account_mail WHERE expires<?',(time.time()-86400,))
@@ -292,6 +300,7 @@ def operator(request):
 
 
 def project_access(request,project,role):
+    if credential(request).startswith('as_oauth_'):return oauth.project_access(request,project,role)
     if operator(request):return
     if session(request.cookies.get('na_session','')):
         admin(request)
@@ -933,13 +942,24 @@ def charts(project:str):
 
 
 @app.post('/api/charts',dependencies=[Depends(editor)])
-def save_chart(req:Chart,project:str):
+def save_chart(req:Chart,project:str,chart_id:uuid.UUID|None=None):
     project_exists(project)
     if req.query.metric not in {'count','users'} and not req.query.measure:raise HTTPException(422,'numeric metric needs measure')
     with closing(connect()) as c,c:
+        c.execute('BEGIN IMMEDIATE')
+        if chart_id:
+            prior=c.execute('SELECT project,title,definition FROM charts WHERE id=?',(str(chart_id),)).fetchone()
+            if prior:
+                if prior['project']==project and prior['title']==req.title and json.loads(prior['definition'])==req.query.model_dump(mode='json'):return {'id':str(chart_id),'created':False}
+                raise HTTPException(409,'chart ID already exists with a different definition')
         if c.execute('SELECT count(*) FROM charts WHERE project=?',(project,)).fetchone()[0]>=30:raise HTTPException(422,'maximum 30 saved charts per project')
-        cid=str(uuid.uuid4());c.execute('INSERT INTO charts VALUES(?,?,?,?,?)',(cid,project,req.title,req.query.model_dump_json(),time.time()))
+        cid=str(chart_id or uuid.uuid4());c.execute('INSERT INTO charts VALUES(?,?,?,?,?)',(cid,project,req.title,req.query.model_dump_json(),time.time()))
     return {'id':cid}
+
+
+@app.put('/api/charts/{chart_id}',dependencies=[Depends(editor)])
+def put_chart(chart_id:uuid.UUID,req:Chart,project:str):
+    return save_chart(req,project,chart_id)
 
 
 @app.delete('/api/charts/{chart_id}',dependencies=[Depends(editor)])
@@ -971,6 +991,7 @@ def assign_existing(req:ExistingOwner,request:Request):
 
 
 accounts.install(app)
+oauth.install(app)
 billing.install(app)
 
 @app.get('/pricing')
@@ -998,4 +1019,8 @@ def capabilities():
       'analytics':{'catalog':'/api/catalog','funnels':'/api/funnels/analyze','retention':'/api/retention/analyze','unit':'explicit opaque identity; not automatically a person'},
       'product_loop':{'goals':'/api/loop/goals','contract':'committed goals, scoped tracking PRs, independent answer checks and mature observational outcomes','local_mcp':'agent/loop_server.py','production_release_proof':'separate from PR and merge','repo_onboarding':{'sources':'/api/loop/sources','scans':'/api/loop/scans/{UUID}','jobs':'/api/loop/jobs/{UUID}','contract':'afterspan-repo-goal-v2','unit':'declared logged events or observed read requests, not unique people','measurements':['event-outcome-v1','slack-read-outcome-v1'],'credentials':'owner-only encrypted project connections','release':'/api/loop/actions/{id}/release'}},
       'audit':{'catalog':'/api/audit/catalog','review':'/api/audit/review','trace':'/api/audit/trace','evaluate':'/api/audit/evaluate','onboarding':'/api/audit/onboarding','quality_metric':'answer-quality-v1','contract':'properties.afterspan_audit / slack-request-v1','scope':'project audit-purpose read key','historical_evidence':'/api/audit/evidence/{UUIDv4}','max_requests':60,'raw_data':False,'overall_readiness_claim':False},
-      'connection':{'transport':'local stdio MCP','bootstrap':'An owner uses connect-audit to issue a private, expiring audit-only connection receipt. No operator token fallback.','launcher':'agent/run_audit.py PRIVATE_RECEIPT','remote_oauth':False}}
+      'connection':{'transport':'local stdio MCP','bootstrap':'An owner uses connect-audit to issue a private, expiring audit-only connection receipt. No operator token fallback.','launcher':'agent/run_audit.py PRIVATE_RECEIPT','remote_oauth':True,'remote_mcp':'/mcp','consent':'/assets/mcp-connect.html','scopes':['analytics:read','charts:write','audit:read']}}
+
+
+from remote_mcp import install as install_remote_mcp
+remote_mcp=install_remote_mcp(app,oauth)

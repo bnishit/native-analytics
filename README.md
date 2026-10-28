@@ -6,6 +6,23 @@
 
 Funnels, saved behavior/trait segments, linked journeys, retries, event metrics and scoped agent access are included in the core. Self-hosting needs no Stripe account, subscription or commercial quota. Accounts, teams and roles protect your own instance. Optional hosted billing is a separate opt-in; it never gates a core analytics feature.
 
+### Connect an agent remotely
+
+Use **your deployment's** `https://YOUR_HOST/mcp` URL with an OAuth-capable Streamable HTTP client. Discover the endpoint and limits at `/.well-known/afterspan`. The server uses the official MCP SDK for OAuth discovery, dynamic public-client registration, S256 PKCE, exact registered redirect validation and token exchange. Tokens are bound to this MCP resource. HTTPS is required except for local loopback development/callbacks.
+
+For Codex (no Python checkout or private setup script needed):
+
+```sh
+codex mcp add afterspan --url https://YOUR_HOST/mcp
+codex mcp login afterspan --scopes analytics:read,charts:write
+```
+
+In the browser, sign in if needed, return to the approval page, check the client and callback address, select one project, and approve. `analytics:read` reads aggregates and saved definitions; `charts:write` creates charts; `audit:read` reads privacy-safe diagnostic evidence. Request only the scopes needed. Editor membership is required for chart writes. Connections expire after 30 days; access tokens expire after one hour and refresh tokens rotate. Role changes, removal and explicit revocation are checked on subsequent requests. A replayed refresh token revokes the connection. View/revoke connections at `/assets/mcp-connect.html`. A client name is self-reported, not a verified publisher.
+
+Start with `connection_status`, then `get_workflow`. Five guides cover connection verification, tracking audits, dashboard building, failure investigation and release checks. `event_catalog`, `query_metric`, `saved_charts`, `save_chart`, product analysis and audit tools reuse the existing API guards and query engine. `save_chart` requires a caller-generated UUID: retries with the same definition are safe, conflicting content is rejected. It does not overwrite existing charts. The browser continues to show individual saved charts, not a multi-section dashboard editor. No producer keys, raw event export, arbitrary SQL, cloud deployment or account administration are exposed.
+
+This repository includes Codex and Claude plugin manifests plus standard `skills/*/SKILL.md` files. Set `AFTERSPAN_URL` to your own origin before loading the package in a client that supports environment substitution. The same guides are available through MCP without installing a plugin. Client/plugin packaging is not a marketplace listing or proof of ChatGPT app-directory availability. Remote client compatibility must be verified per client; a custom MCP connection is separate from publication in an app store.
+
 ### Run locally
 
 ```sh
@@ -191,7 +208,7 @@ After signing into **your** deployment, set `NATIVE_ANALYTICS_URL` and `AFTERSPA
 codex mcp add afterspan_audit -- /absolute/.venv/bin/python /absolute/agent/run_audit.py /private/audit.json
 ```
 
-Ask a fresh Codex client: “Review up to 60 recent Slack bot requests. Discover meanings first, show disagreements, missing confirmation/shadow evidence, environment mistakes, unsafe reports and latency. Follow one request with the exact review query. State sample limits.” The audit-only key cannot use general queries, taxonomy, raw records or writes. It expires; list/revoke it with `read-keys` / `revoke-read-key`. The launcher rejects a world/group-readable receipt. Public `/.well-known/afterspan` describes discovery, scopes and supported local stdio transport. No operator credential is required and no remote OAuth MCP is provided.
+Ask a fresh Codex client: “Review up to 60 recent Slack bot requests. Discover meanings first, show disagreements, missing confirmation/shadow evidence, environment mistakes, unsafe reports and latency. Follow one request with the exact review query. State sample limits.” The audit-only key cannot use general queries, taxonomy, raw records or writes. It expires; list/revoke it with `read-keys` / `revoke-read-key`. The launcher rejects a world/group-readable receipt. Public `/.well-known/afterspan` describes discovery, scopes and supported local stdio transport. No operator credential is required. For remote OAuth connections, see the remote MCP section below.
 
 Two fresh ephemeral Codex CLI clients were exercised locally with only this bridge, no prior conversation, no user MCP config and an empty working folder. Both discovered meanings, reviewed requests and traced one using exactly these three tools, with no shell/file/web calls. One synthetic case had 183 events, 8 chains and 3/4 agreement; the other had 183 events, 2 write chains and zero eligible comparisons. This proves the scoped local CLI workflow, not Desktop automatic registration, a production integration, parsing correctness or release readiness.
 
@@ -312,7 +329,7 @@ python cli/native_analytics.py install-vercel-key --file /private/project.json -
 
 This checks the exact linked team/project, sends the key through stdin to [Vercel's environment command](https://vercel.com/docs/cli/env), and suppresses provider output. It installs only the server-side `NATIVE_ANALYTICS_WRITE_KEY`, without forcing replacement. Set `NATIVE_ANALYTICS_URL` in the producer's hosting configuration too. A timeout means the write may have succeeded: inspect before retrying. A provider acceptance receipt is not deployment or event delivery. Deploy with the host CLI, run `check-setup`, send that exact check through the producer, and read `setup` to verify collection. No secret must be copied into chat. Only perform these writes for the user's authorized destination.
 
-The CLI also supports owner-only `rename-workspace`, `workspaces`, `me`, `invites`, `accept-invite`, `resend-invite`, `revoke-invite`, `change-role`, `remove-member`, `agent-keys`, `revoke-agent-key`, `mail` and `audit`. Read-only project operations accept the aggregate read key. All four bridges use the official MCP Python v1 SDK over local stdio; hosted OAuth/remote MCP remains planned.
+The CLI also supports owner-only `rename-workspace`, `workspaces`, `me`, `invites`, `accept-invite`, `resend-invite`, `revoke-invite`, `change-role`, `remove-member`, `agent-keys`, `revoke-agent-key`, `mail` and `audit`. Read-only project operations accept the aggregate read key. All four local bridges use the official MCP Python v1 SDK over stdio. Remote OAuth MCP is also available as described below.
 
 Queries accept fixed UTC start/end times and an as_of receipt cutoff. Echo the returned query to repeat the same window, including up to ten typed equality filters. Retention and authorized erasure may remove data; fingerprints identify a query and definition, not an immutable backup.
 
@@ -485,7 +502,7 @@ Unauthorized callers are shown as unauthenticated. Forwarded headers and user ag
 metadata; network IPs may belong to NAT/proxies. This service makes no bank/customer/device outcome claim.
 
 Retention limits disk growth over time, but capacity depends on traffic. Railway compute and storage
-still incur normal infrastructure costs. Usage metering, bounded draft plans and a hosted Stripe adapter exist locally; real Stripe sandbox receipts exist, while live payments and a production billing rollout are unverified. SSO, MFA, hosted OAuth MCP and multi-replica storage remain absent. Paid plans do not change the single-process storage architecture.
+still incur normal infrastructure costs. Usage metering, bounded draft plans and a hosted Stripe adapter exist locally; real Stripe sandbox receipts exist, while live payments and a production billing rollout are unverified. SSO, MFA and multi-replica storage remain absent. Paid plans do not change the single-process storage architecture.
 Volume backups must be configured separately; no backup schedule is claimed by this deployment.
 
 ## Optional hosted billing

@@ -503,6 +503,7 @@ class Accounts:
             if member['role']=='owner' and role!='owner' and c.execute("SELECT count(*) FROM memberships WHERE workspace=? AND role='owner'",(workspace,)).fetchone()[0]<=1:raise HTTPException(409,'keep at least one owner; promote another member first')
             if role is None:
                 c.execute('DELETE FROM memberships WHERE workspace=? AND user_id=?',(workspace,user_id))
+                c.execute('UPDATE oauth_grants SET revoked=1 WHERE user_id=? AND project IN (SELECT id FROM projects WHERE workspace=?)',(user_id,workspace))
                 c.execute('DELETE FROM workspace_keys WHERE workspace=? AND user_id=?',(workspace,user_id))
                 c.execute('DELETE FROM read_keys WHERE issuer=? AND project IN (SELECT id FROM projects WHERE workspace=?)',(user_id,workspace))
             else:c.execute('UPDATE memberships SET role=? WHERE workspace=? AND user_id=?',(role,workspace,user_id))

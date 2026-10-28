@@ -23,6 +23,7 @@ jobs:
       - run: node --check static/billing.js
       - run: node --check static/billing-test.js
       - run: node --check static/cli-login.js
+      - run: node --check static/mcp-connect.js
       - run: node --check static/accounts.js
       - run: node --check static/app.js
       - run: node --check static/landing.js

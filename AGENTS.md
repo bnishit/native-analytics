@@ -39,6 +39,8 @@ Set `NATIVE_ANALYTICS_URL` to YOUR HTTPS origin. Use `AFTERSPAN_SESSION_FILE` fo
 Set `NATIVE_ANALYTICS_WRITE_KEY` for send/identify. Use `--project` on project-scoped reads.
 
 - `health`, `schema`: availability and actual contracts.
+- `login-browser --output /private/session.json`: opens a browser approval link and waits; use `--no-browser` for remote agents. The user approves the matching code; the CLI saves the session privately. No manual token transfer. Use scoped editor keys for ongoing setup.
+- `install-vercel-key --file /private/project.json --cwd /path/to/producer --vercel-project prj_ID --vercel-team team_ID --environment preview`: transfers the producer key directly to the exact linked destination through an authenticated Vercel CLI. No chat or command-argument secrets. Provider acceptance is not deployment or delivery proof.
 - `login --email ADDRESS`, `complete-login --file /private/token.json --output /private/session.json`: email verification and a private account-session receipt. No token arguments or operator impersonation.
 - `workspaces`, `create-workspace --name NAME`: list memberships or create a customer workspace through a human account session.
 - `members`, `invites`, `invite --file invite.json`, `resend-invite --id ID`, `revoke-invite --id ID`, `change-role --user ID --role ROLE`, `remove-member --user ID --confirm ID`: use --workspace. Actual invite emails and access changes need the human request.

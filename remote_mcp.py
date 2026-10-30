@@ -97,6 +97,16 @@ def install(app,provider):
         return await call('/api/'+kind+'/analyze',query)
 
     @mcp.tool(annotations=READ)
+    async def search_traces(query:dict)->dict:
+        """Requires audit:read. Search safe request refs, operation names and release SHA across contracts. query={days:7,environment:'production',search:'',status:'all',limit:20,offset:0}. Reuse returned query for frozen pagination."""
+        return await call('/api/traces/search',query)
+
+    @mcp.tool(annotations=READ)
+    async def open_trace(reference:str,query:dict)->dict:
+        """Requires audit:read. Open a trace from search_traces with its exact query. Returns parent-linked spans, attempts and evidence gaps. Observed is not business success."""
+        return await call('/api/traces/open',{**query,'reference':reference})
+
+    @mcp.tool(annotations=READ)
     async def workflow_trace_catalog()->dict:
         """Requires audit:read. Discover the content-free workflow trace contract and precise step meanings."""
         return await call('/api/traces/catalog')

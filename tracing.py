@@ -9,7 +9,7 @@ from fastapi import Depends,HTTPException
 from pydantic import BaseModel,ConfigDict,Field,UUID4,model_validator
 from product_analytics import Window
 
-STEPS=('receive','queue','processing','availability','booking','provider_send','provider_delivery')
+STEPS=('receive','queue','processing','model','tool','retrieval','storage','http','response','availability','booking','provider_send','provider_delivery')
 Environment=Literal['production','staging','development','test','local']
 class SpanObservation(BaseModel):
     model_config=ConfigDict(extra='forbid')
@@ -19,10 +19,10 @@ class SpanObservation(BaseModel):
     attempt_number:int=Field(ge=1,le=10000,strict=True)
     span_id:UUID4
     parent_span_id:UUID4|None=None
-    workflow:Literal['appointment_request','request_processing']
+    workflow:str=Field(pattern=r'^[a-z][a-z0-9_.-]{0,63}$')
     environment:Environment
     release_sha:str|None=Field(default=None,pattern=r'^[a-f0-9]{40}$')
-    step:Literal['receive','queue','processing','availability','booking','provider_send','provider_delivery']
+    step:Literal['receive','queue','processing','model','tool','retrieval','storage','http','response','availability','booking','provider_send','provider_delivery']
     state:Literal['started','succeeded','failed','unknown']
     duration_ms:float|None=Field(default=None,ge=0,le=86400000,allow_inf_nan=False,strict=True)
     outcome_code:Literal['none','unavailable','rejected','timeout','cancelled','internal','uncertain']= 'none'
@@ -112,6 +112,7 @@ def project_trace(rows,reference,reference_for=None,available=None):
     if issues:
         for item in completion.values():item['state']='unknown'
     return {'trace':reference,'workflow':rows[0]['facts']['workflow'],'environment':rows[0]['facts']['environment'],
+            'release_sha':next(iter({r['facts'].get('release_sha') for r in rows})) if len({r['facts'].get('release_sha') for r in rows})==1 else None,
             'latest_attempt':latest,'observed_attempts':len(slots),'last_seen':max(r['ts'] for r in rows),'spans':spans,
             'completion':completion,'issues':sorted(set(issues)),'batch':batch,
             'reported_failures':[s['span'] for s in spans if s['state']=='failed'],'business_outcome':'not_established'}
@@ -124,7 +125,10 @@ class Tracing:
         def catalog(project:str):
             return {'schema':SpanObservation.model_json_schema(),'steps':list(STEPS),
                     'meanings':{'receive':'Application receipt; not a queue or reply guarantee.',
-                    'queue':'Queue handling; not patient delivery.','processing':'Application work; not booking or delivery proof.',
+                    'queue':'Queue handling; not end-user delivery.','processing':'Application work; not business outcome or delivery proof.',
+                    'model':'Model call completed; not answer correctness.','tool':'Tool call completed; not verified business state.',
+                    'retrieval':'Context lookup; not source correctness.','storage':'Storage operation; not independent durable-state verification.',
+                    'http':'HTTP call; status alone is not business success.','response':'Application response prepared; not receipt or reading.',
                     'availability':'Availability lookup completed; not a reservation.',
                     'booking':'Producer reports its booking operation completed; independent readback still required.',
                     'provider_send':'Provider accepted the send; not patient delivery.',
@@ -141,7 +145,7 @@ class Tracing:
             if item is None:raise HTTPException(404,'trace is outside this review; reuse its exact query')
             return {**{k:v for k,v in report.items() if k!='traces'},'trace':item}
 
-    def review(self,project,req,detail_reference=None):
+    def review(self,project,req,detail_reference=None,*,all_traces=False):
         q=self.freeze(req)
         with closing(self.connect()) as c:
             rows=c.execute("SELECT ts,json_extract(properties,'$.afterspan_trace') AS facts FROM events WHERE project=? AND ts>=? AND ts<? AND received<=? AND json_type(properties,'$.afterspan_trace') IS NOT NULL ORDER BY ts,id LIMIT 20001",
@@ -172,4 +176,4 @@ class Tracing:
                            'Telemetry is best effort. This is not a complete ledger of patient activity.',
                            'Batch inputs are direct links within the same project, environment and frozen window. Missing links remain unknown. Booking and send spans belong once to the batch, never once per linked receipt.']
         return {**result,**({'linked_inputs':linked_inputs} if detail_reference else {}),'coverage':{'observations_scanned':len(rows),'invalid_observations':invalid,'other_environment_observations':other,
-                                    'observed_traces':len(traces),'returned_traces':min(len(traces),q.limit),'has_more':len(traces)>q.limit},'traces':traces[:q.limit]}
+                                    'observed_traces':len(traces),'returned_traces':min(len(traces),q.limit),'has_more':len(traces)>q.limit},'traces':traces if all_traces else traces[:q.limit]}

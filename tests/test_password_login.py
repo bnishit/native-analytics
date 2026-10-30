@@ -66,3 +66,23 @@ class PasswordTests(unittest.TestCase):
         self.client.cookies.set('as_session',result['session'])
         self.assertEqual(self.setup_password(self.client).status_code,403)
         self.assertGreater(result['expires'],time.time()+179*86400)
+
+    def test_stale_first_password_setup_offers_recovery_and_link_returns_to_settings(self):
+        owner,uid=self.user('owner@example.test')
+        fresh=owner.get('/auth/password').json()
+        self.assertTrue(fresh['recent_authentication']);self.assertFalse(fresh['requires_email_verification'])
+        self.assertGreater(fresh['session_expires'],time.time()+179*86400)
+        with closing(app.connect()) as c,c:c.execute('UPDATE account_sessions SET auth_time=? WHERE user_id=?',(time.time()-1000,uid))
+        stale=owner.get('/auth/password').json();self.assertTrue(stale['requires_email_verification'])
+        self.assertEqual(self.setup_password(owner).status_code,403)
+        self.assertEqual(owner.post('/auth/request-link',headers=CSRF,json={'email':'owner@example.test','password_setup':True}).status_code,202)
+        with closing(app.connect()) as c:
+            body=c.execute('SELECT body FROM account_mail WHERE recipient=? ORDER BY created DESC',('owner@example.test',)).fetchone()['body']
+        self.assertIn('view=team',body)
+        token=self.token('owner@example.test')
+        self.assertEqual(owner.post('/auth/consume-link',headers=CSRF,json={'token':token}).status_code,200)
+        self.assertFalse(owner.get('/auth/password').json()['requires_email_verification'])
+        self.assertEqual(self.setup_password(owner).status_code,200)
+        with closing(app.connect()) as c,c:c.execute('UPDATE account_sessions SET auth_time=? WHERE user_id=?',(time.time()-1000,uid))
+        existing=owner.get('/auth/password').json()
+        self.assertFalse(existing['requires_email_verification']);self.assertFalse(existing['recent_authentication'])

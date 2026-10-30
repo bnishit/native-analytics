@@ -181,6 +181,8 @@ Event-match filters accept `{"property":"modal_type","op":"in","value":["milesto
 
 ### Owner request review with Codex
 
+**Traces** is a primary workspace screen for searchable requests, nested timelines, attempts and missing evidence across supported contracts. Use `search_traces` and `open_trace` through remote or local audit MCP for the same frozen view. Generic application workflows support fixed code-owned names and model/tool/retrieval/storage/HTTP steps. See [tracing design, research and integration](docs/tracing.md) for the schema, search flow and limits. This is not OTLP ingestion or proof of business success.
+
 For application workflows, remote MCP provides `workflow_trace_catalog`, `workflow_trace_review` and `workflow_trace_detail` with `audit:read`. The API equivalents are `GET /api/traces/catalog`, `POST /api/traces/review` and `POST /api/traces/detail`, all project scoped. Review requires an explicit environment and accepts the normal frozen time window plus a limit of 1–60 traces. Detail requires the opaque trace reference and exact query returned by review. More than 20,000 observations fails explicitly; shorter windows avoid partial evidence.
 
 Producers send `trace.observed` through `/v1/events` with only `properties.afterspan_trace`, matching the schema returned by the trace catalog. Use fresh random UUIDv4 trace, attempt and span IDs; persist correlation across queue and delivery callbacks. Reuse the event ID and timestamp for transport retries. Start and terminal observations share the span ID. A business retry has a new attempt ID and increasing attempt number. No identity, attributes, message text, provider identifiers or extra properties are accepted on trace events.

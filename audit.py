@@ -15,7 +15,7 @@ from pydantic import BaseModel,ConfigDict,Field,StrictBool,UUID4,model_validator
 from product_analytics import Window
 
 SCHEMA='slack-request-v1'
-TRACE_STEPS=('preparation','feature_list','feature_lookup','policy','mutation','readback','slack_delivery','webhook_ack','background','total')
+TRACE_STEPS=('preparation','parser','model','feature_list','feature_lookup','policy','mutation','readback','slack_delivery','webhook_ack','background','total')
 STAGES=('parser','planner','shadow','confirmation','tool','reply','quality')
 Digest=Annotated[str,Field(pattern=r'^[a-f0-9]{64}$')]
 class Observation(BaseModel):
@@ -45,7 +45,7 @@ class Observation(BaseModel):
     duration_ms:float|None=Field(default=None,ge=0,le=86400000,allow_inf_nan=False,strict=True)
     span_ref:UUID4|None=None
     parent_span_ref:UUID4|None=None
-    trace_step:Literal['preparation','feature_list','feature_lookup','policy','mutation','readback','slack_delivery','webhook_ack','background','total']|None=None
+    trace_step:Literal['preparation','parser','model','feature_list','feature_lookup','policy','mutation','readback','slack_delivery','webhook_ack','background','total']|None=None
     span_state:Literal['started','succeeded','failed']|None=None
     completion_kind:Literal['processing','delivered']|None=None
     check_version:Literal['growthbook-catalog-v1']|None=None

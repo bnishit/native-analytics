@@ -3,7 +3,7 @@ let auditWindow=null,auditEnvironment='production';
 function resetAuditWindow(){auditWindow=null}
 const stageLabel={parser:'Parser',planner:'Planner',shadow:'Shadow check',confirmation:'Confirmation',tool:'Tool result',reply:'Reply delivery',quality:'Answer source check'};
 const stateLabel={observed:'Observed',not_required:'Not required',missing:'Missing in window',unknown:'Unknown',conflict:'Conflicting reports'};
-const traceStepLabel={preparation:'Prepare request',feature_list:'List experiments',feature_lookup:'Find experiment',policy:'Check permission',mutation:'Apply change',readback:'Read back change',slack_delivery:'Send Slack reply',webhook_ack:'Prepare webhook response',background:'Background work',total:'Total'};
+const traceStepLabel={parser:'Parse request',model:'Model call',preparation:'Prepare request',feature_list:'List experiments',feature_lookup:'Find experiment',policy:'Check permission',mutation:'Apply change',readback:'Read back change',slack_delivery:'Send Slack reply',webhook_ack:'Prepare webhook response',background:'Background work',total:'Total'};
 function requestTimeline(trace){
   if(!trace||trace.availability==='unavailable')return '<h3>Request timing unavailable</h3><p>This request has no linked timing observations. Older events cannot establish where its time went.</p>';
   const completionLabel={webhook_ack:'Webhook response ready',processing:'Processing finished',delivery:'Slack message accepted'};

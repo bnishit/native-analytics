@@ -72,6 +72,7 @@ class RemoteMCPTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/charts',params={'project':p},headers=h,json={'title':'Denied','query':{}}).status_code,403)
         self.assertEqual(self.client.post('/api/audit/review',params={'project':p},headers=h,json={}).status_code,403)
         self.assertEqual(self.client.get('/api/traces/catalog',params={'project':p},headers=h).status_code,403)
+        self.assertEqual(self.client.post('/api/traces/search',params={'project':p},headers=h,json={}).status_code,403)
         self.assertEqual(self.client.delete('/api/charts/'+str(uuid.uuid4()),params={'project':p},headers=h).status_code,403)
         self.assertEqual(self.exchange(cid,code,verifier).status_code,400)
         rid,v=self.begin(cid)
@@ -174,6 +175,10 @@ class RemoteMCPTests(unittest.TestCase):
             detail=call('workflow_trace_detail',{'trace':reviewed['traces'][0]['trace'],'query':reviewed['query']})
             self.assertEqual(detail['trace'],reviewed['traces'][0])
             self.assertEqual(detail['trace']['completion']['receive']['state'],'incomplete')
+            searched=call('search_traces',{'query':{'environment':'staging'}})
+            opened=call('open_trace',{'reference':searched['traces'][0]['reference'],'query':searched['query']})
+            self.assertTrue(opened['trace']['has_gaps'])
+            self.assertEqual(opened['trace']['business_outcome'],'not_independently_verified')
             batch_event=app.Event(name='trace.observed',properties={'afterspan_trace':{
                 **trace_event.properties['afterspan_trace'],'trace_id':str(uuid.uuid4()),'span_id':str(uuid.uuid4()),
                 'step':'processing','receipt_count':1,'linked_trace_ids':[trace_event.properties['afterspan_trace']['trace_id']]}})

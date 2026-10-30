@@ -1,5 +1,6 @@
 """Email accounts, workspace boundaries, delegated keys and transactional membership rules."""
 import hashlib
+import hmac
 import http.client
 import json
 import os
@@ -18,7 +19,15 @@ from typing import Literal
 from urllib.parse import quote,urlencode,urlsplit
 
 from fastapi import Depends,HTTPException,Request,Response
-from pydantic import BaseModel,ConfigDict,Field,field_validator
+from pydantic import BaseModel,ConfigDict,Field,SecretStr,field_validator
+
+SESSION_SECONDS=180*86400
+PASSWORD_LOCK=threading.Lock()
+
+def password_hash(password,salt):
+    if not PASSWORD_LOCK.acquire(timeout=5):raise HTTPException(503,'Sign-in is busy; try again shortly.')
+    try:return hashlib.scrypt(password.encode(),salt=bytes.fromhex(salt),n=2**17,r=8,p=1,maxmem=256*1024*1024).hex()
+    finally:PASSWORD_LOCK.release()
 
 ROLES={'reader':1,'editor':2,'owner':3}
 Role=Literal['reader','editor','owner']
@@ -42,6 +51,13 @@ class SignIn(EmailInput):
     invite:str|None=Field(default=None,max_length=160)
 class Token(Model):
     token:str=Field(min_length=20,max_length=160)
+class PasswordLogin(Model):
+    username:str=Field(min_length=1,max_length=254)
+    password:SecretStr=Field(min_length=1,max_length=128)
+class PasswordSetup(Model):
+    username:str=Field(pattern=r'^[a-zA-Z0-9][a-zA-Z0-9_.-]{2,39}$')
+    password:SecretStr=Field(min_length=15,max_length=128)
+    current_password:SecretStr|None=Field(default=None,max_length=128)
 class DeviceApproval(Model):
     code:str=Field(pattern=r'^[A-F0-9]{12}$')
     approve:bool
@@ -70,6 +86,8 @@ class Accounts:
     def init_db(self,c):
         c.executescript('''
         CREATE TABLE IF NOT EXISTS accounts(id TEXT PRIMARY KEY,email TEXT UNIQUE NOT NULL,created REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS account_passwords(user_id TEXT PRIMARY KEY REFERENCES accounts(id),
+          username TEXT UNIQUE NOT NULL,salt TEXT NOT NULL,password_hash TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS workspaces(id TEXT PRIMARY KEY,name TEXT NOT NULL,created REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS memberships(workspace TEXT NOT NULL REFERENCES workspaces(id),
           user_id TEXT NOT NULL REFERENCES accounts(id),role TEXT NOT NULL CHECK(role IN ('reader','editor','owner')),
@@ -95,6 +113,9 @@ class Accounts:
           created REAL NOT NULL,expires REAL NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next_attempt REAL NOT NULL,
           state TEXT NOT NULL DEFAULT 'queued',workspace TEXT REFERENCES workspaces(id),invite_id TEXT REFERENCES workspace_invites(id));
         ''')
+        if 'auth_time' not in {row['name'] for row in c.execute('PRAGMA table_info(account_sessions)')}:
+            c.execute('ALTER TABLE account_sessions ADD COLUMN auth_time REAL')
+            c.execute('UPDATE account_sessions SET auth_time=created WHERE auth_time IS NULL')
         c.execute("INSERT OR IGNORE INTO workspaces VALUES('legacy','Existing projects',?)",(time.time(),))
         columns={row['name'] for row in c.execute('PRAGMA table_info(projects)')}
         if 'workspace' not in columns:c.execute("ALTER TABLE projects ADD COLUMN workspace TEXT REFERENCES workspaces(id)")
@@ -233,22 +254,78 @@ class Accounts:
                     with closing(self.connect()) as c,c:c.execute("UPDATE account_mail SET attempts=attempts+1,next_attempt=?,state=CASE WHEN attempts>=4 THEN 'failed' ELSE 'queued' END WHERE id=?",(time.time()+min(300,5*2**row['attempts']),row['id']))
         finally:self.delivery_lock.release()
 
-    def rate(self,c,request,email):
+    def rate(self,c,request,email,*,password=False):
         now=time.time();ip=request.client.host if request.client else 'unknown'
-        for key,limit in [('mail:email:'+digest(email),3),('mail:ip:'+digest(ip),20),('mail:global',200)]:
+        prefix='password:' if password else 'mail:'
+        for key,limit in [(prefix+'email:'+digest(email),10 if password else 3),(prefix+'ip:'+digest(ip),30 if password else 20),(prefix+'global',200)]:
             row=c.execute('SELECT window,attempts FROM login_limits WHERE ip=?',(key,)).fetchone();window=row['window'] if row and now-row['window']<900 else now;count=row['attempts'] if window!=now else 0
-            if count>=limit:raise HTTPException(429,'too many link requests; wait 15 minutes',headers={'Retry-After':'900'})
+            if count>=limit:raise HTTPException(429,'too many sign-in attempts; wait 15 minutes',headers={'Retry-After':'900'})
             c.execute('INSERT INTO login_limits VALUES(?,?,?) ON CONFLICT(ip) DO UPDATE SET window=excluded.window,attempts=excluded.attempts',(key,window,count+1))
 
-    def create_session(self,c,user_id,now,expires):
+    def create_session(self,c,user_id,now,expires,auth_time=None):
         token='as_session_'+secrets.token_urlsafe(32)
         c.execute('DELETE FROM account_sessions WHERE expires<=?',(now,))
         # Keep at most ten active sessions per account, including terminal sessions.
         c.execute('DELETE FROM account_sessions WHERE key_hash IN (SELECT key_hash FROM account_sessions WHERE user_id=? ORDER BY created DESC LIMIT -1 OFFSET 9)',(user_id,))
-        c.execute('INSERT INTO account_sessions VALUES(?,?,?,?)',(digest(token),user_id,now,expires))
+        c.execute('INSERT INTO account_sessions(key_hash,user_id,created,expires,auth_time) VALUES(?,?,?,?,?)',(digest(token),user_id,now,expires,now if auth_time is None else auth_time))
         return token
 
+    def session_cookie(self,response,token):
+        response.set_cookie('as_session',token,httponly=True,secure=os.environ.get('COOKIE_SECURE','true')=='true',samesite='strict',max_age=SESSION_SECONDS)
+        response.delete_cookie('na_session')
+        response.headers['Cache-Control']='no-store'
+
     def install(self,app):
+        @app.post('/auth/password-login')
+        def password_login(req:PasswordLogin,request:Request,response:Response):
+            self.csrf(request);self.origin();identifier=req.username.strip().lower();now=time.time()
+            with closing(self.connect()) as c,c:
+                c.execute('BEGIN IMMEDIATE');self.rate(c,request,identifier,password=True)
+            with closing(self.connect()) as c:
+                row=c.execute('SELECT p.*,a.email FROM account_passwords p JOIN accounts a ON a.id=p.user_id WHERE p.username=? OR a.email=?',(identifier,identifier)).fetchone()
+            salt=row['salt'] if row else '00'*16
+            actual=password_hash(req.password.get_secret_value(),salt)
+            if not row or not hmac.compare_digest(actual,row['password_hash']):raise HTTPException(401,'Username or password is incorrect. You can also use an email link.')
+            with closing(self.connect()) as c,c:
+                c.execute('BEGIN IMMEDIATE')
+                current=c.execute('SELECT password_hash FROM account_passwords WHERE user_id=?',(row['user_id'],)).fetchone()
+                if not current or current['password_hash']!=row['password_hash']:raise HTTPException(401,'Password changed; sign in again.')
+                token=self.create_session(c,row['user_id'],now,now+SESSION_SECONDS)
+            self.session_cookie(response,token)
+            return {'ok':True}
+
+        @app.get('/auth/password')
+        def password_status(request:Request):
+            p=self.session_user(request)
+            with closing(self.connect()) as c:row=c.execute('SELECT username FROM account_passwords WHERE user_id=?',(p['id'],)).fetchone()
+            return {'username':row['username'] if row else None,'password_enabled':row is not None}
+
+        @app.post('/auth/password')
+        def set_password(req:PasswordSetup,request:Request,response:Response):
+            p=self.session_user(request);self.origin();now=time.time()
+            with closing(self.connect()) as c,c:
+                c.execute('BEGIN IMMEDIATE');self.rate(c,request,p['email'],password=True)
+            with closing(self.connect()) as c:
+                session=c.execute('SELECT auth_time FROM account_sessions WHERE key_hash=?',(digest(request.cookies['as_session']),)).fetchone()
+                old=c.execute('SELECT * FROM account_passwords WHERE user_id=?',(p['id'],)).fetchone()
+            fresh=session and session['auth_time'] is not None and now-session['auth_time']<=900
+            if not fresh:
+                if not old or not req.current_password or not hmac.compare_digest(password_hash(req.current_password.get_secret_value(),old['salt']),old['password_hash']):
+                    raise HTTPException(403,'Enter your current password, or sign in with a fresh email link before setting a password.')
+            salt=secrets.token_hex(16);hashed=password_hash(req.password.get_secret_value(),salt)
+            with closing(self.connect()) as c,c:
+                c.execute('BEGIN IMMEDIATE')
+                valid=c.execute('SELECT 1 FROM account_sessions WHERE key_hash=? AND expires>?',(digest(request.cookies['as_session']),now)).fetchone()
+                current=c.execute('SELECT password_hash FROM account_passwords WHERE user_id=?',(p['id'],)).fetchone()
+                if not valid or (current['password_hash'] if current else None)!=(old['password_hash'] if old else None):raise HTTPException(401,'Account access changed; sign in again.')
+                try:c.execute('INSERT INTO account_passwords VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,salt=excluded.salt,password_hash=excluded.password_hash',(p['id'],req.username.lower(),salt,hashed))
+                except sqlite3.IntegrityError:raise HTTPException(409,'That username is unavailable.') from None
+                c.execute('DELETE FROM account_sessions WHERE user_id=?',(p['id'],))
+                c.execute('DELETE FROM sign_in_links WHERE email=?',(p['email'],))
+                token=self.create_session(c,p['id'],now,now+SESSION_SECONDS)
+            self.session_cookie(response,token)
+            return {'ok':True,'username':req.username.lower(),'note':'Password saved. Other browser and terminal sessions were signed out.'}
+
         @app.post('/auth/cli/start',status_code=201)
         def cli_start(request:Request,response:Response):
             self.csrf(request);origin,_=self.origin();now=time.time()
@@ -288,10 +365,10 @@ class Accounts:
                     raise HTTPException(429,'poll no more than once every 3 seconds',headers={'Retry-After':'3'})
                 c.execute('UPDATE cli_authorizations SET last_poll=? WHERE device_hash=?',(now,digest(req.token)))
                 if row['state']=='approved':
-                    source=c.execute('SELECT user_id,expires FROM account_sessions WHERE key_hash=? AND expires>?',
+                    source=c.execute('SELECT user_id,expires,auth_time FROM account_sessions WHERE key_hash=? AND expires>?',
                                      (row['source_session'],now)).fetchone()
                     if source:
-                        token=self.create_session(c,source['user_id'],now,source['expires'])
+                        token=self.create_session(c,source['user_id'],now,source['expires'],source['auth_time'])
                         result={'status':'complete','session':token,'cookie_name':'as_session','expires':source['expires']}
                     else:result={'status':'denied'}
                     c.execute('DELETE FROM cli_authorizations WHERE device_hash=?',(digest(req.token),))
@@ -335,9 +412,8 @@ class Accounts:
                 c.execute('DELETE FROM sign_in_links WHERE key_hash=?',(digest(req.token),))
                 user=c.execute('SELECT id FROM accounts WHERE email=?',(link['email'],)).fetchone();user_id=user['id'] if user else uid('u_')
                 if not user:c.execute('INSERT INTO accounts VALUES(?,?,?)',(user_id,link['email'],now))
-                session_token=self.create_session(c,user_id,now,now+43200)
-            response.set_cookie('as_session',session_token,httponly=True,secure=os.environ.get('COOKIE_SECURE','true')=='true',samesite='strict',max_age=43200)
-            response.delete_cookie('na_session')
+                session_token=self.create_session(c,user_id,now,now+SESSION_SECONDS)
+            self.session_cookie(response,session_token)
             return {'ok':True,'user':{'id':user_id,'email':link['email']}}
 
         @app.get('/auth/me')

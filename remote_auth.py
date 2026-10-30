@@ -6,7 +6,7 @@ import time
 from contextlib import closing
 from urllib.parse import urlsplit
 
-from accounts import ROLES,digest
+from accounts import ROLES,SESSION_SECONDS,digest
 from fastapi import HTTPException,Request,Response
 from fastapi.responses import JSONResponse
 from mcp.server.auth.provider import AccessToken,AuthorizationCode,AuthorizeError,RegistrationError,TokenError,construct_redirect_uri
@@ -58,7 +58,7 @@ class OAuthProvider:
             c.execute('BEGIN IMMEDIATE')
             c.execute('DELETE FROM oauth_clients WHERE expires<=?',(time.time(),))
             if c.execute('SELECT count(*) FROM oauth_clients').fetchone()[0]>=1000:raise RegistrationError('invalid_client_metadata','Client registration capacity reached.')
-            c.execute('INSERT INTO oauth_clients VALUES(?,?,?)',(client_info.client_id,client_info.model_dump_json(),time.time()+30*86400))
+            c.execute('INSERT INTO oauth_clients VALUES(?,?,?)',(client_info.client_id,client_info.model_dump_json(),time.time()+SESSION_SECONDS))
 
     async def authorize(self,client,params):
         if params.resource not in {None,self.resource}:raise AuthorizeError('invalid_request','Incorrect resource.')
@@ -203,8 +203,9 @@ class OAuthProvider:
                     row=c.execute('SELECT p.workspace,m.role FROM projects p JOIN memberships m ON m.workspace=p.workspace WHERE p.id=? AND m.user_id=?',(req.project,p['id'])).fetchone()
                     if not row or ROLES[row['role']]<ROLES[minimum]:raise HTTPException(403,'project role does not allow requested access')
                     if c.execute('SELECT count(*) FROM oauth_grants WHERE user_id=? AND revoked=0 AND expires>?',(p['id'],time.time())).fetchone()[0]>=30:raise HTTPException(422,'revoke an unused connection first')
-                    gid=secrets.token_hex(16);code=secrets.token_urlsafe(32)
-                    c.execute('INSERT INTO oauth_grants VALUES(?,?,?,?,?,?,0)',(gid,p['id'],req.project,r['client'],json.dumps(params['scopes']),time.time()+30*86400))
+                    gid=secrets.token_hex(16);code=secrets.token_urlsafe(32);expires=time.time()+SESSION_SECONDS
+                    c.execute('UPDATE oauth_clients SET expires=MAX(expires,?) WHERE id=?',(expires,r['client']))
+                    c.execute('INSERT INTO oauth_grants VALUES(?,?,?,?,?,?,0)',(gid,p['id'],req.project,r['client'],json.dumps(params['scopes']),expires))
                     c.execute('INSERT INTO oauth_codes VALUES(?,?,?,?)',(digest(code),gid,r['params'],time.time()+120))
                     self.accounts.audit(c,row['workspace'],p,'mcp.approved',gid,minimum)
                     result=construct_redirect_uri(redirect,code=code,state=params['state'])

@@ -16,7 +16,7 @@ jobs:
       - run: node --check static/evidence.js
       - run: node --check static/loop.js
       - run: node --check static/loop-onboarding.js
-      - run: node --test tests/loop-ui.test.cjs tests/cli-login-ui.test.cjs
+      - run: node --test tests/*.test.cjs
       - run: node --check static/product.js
       - run: node --check static/journeys.js
       - run: node --check static/pricing.js

@@ -47,6 +47,7 @@ class EmailInput(Model):
             raise ValueError('provide an email address')
         return value
 class SignIn(EmailInput):
+    password_setup:bool=False
     plan:Literal['free','builder','team']|None=None
     invite:str|None=Field(default=None,max_length=160)
 class Token(Model):
@@ -297,8 +298,13 @@ class Accounts:
         @app.get('/auth/password')
         def password_status(request:Request):
             p=self.session_user(request)
-            with closing(self.connect()) as c:row=c.execute('SELECT username FROM account_passwords WHERE user_id=?',(p['id'],)).fetchone()
-            return {'username':row['username'] if row else None,'password_enabled':row is not None}
+            with closing(self.connect()) as c:
+                row=c.execute('SELECT username FROM account_passwords WHERE user_id=?',(p['id'],)).fetchone()
+                session=c.execute('SELECT auth_time,expires FROM account_sessions WHERE key_hash=?',(digest(request.cookies['as_session']),)).fetchone()
+            recent=bool(session and session['auth_time'] is not None and time.time()-session['auth_time']<=900)
+            return {'username':row['username'] if row else None,'password_enabled':row is not None,
+                    'recent_authentication':recent,'requires_email_verification':not recent and row is None,
+                    'session_expires':session['expires'] if session else None}
 
         @app.post('/auth/password')
         def set_password(req:PasswordSetup,request:Request,response:Response):
@@ -391,7 +397,7 @@ class Accounts:
                     invite=c.execute('SELECT email FROM workspace_invites WHERE key_hash=? AND used IS NULL AND revoked IS NULL AND expires>?',(digest(req.invite),now)).fetchone()
                     if not invite or invite['email']!=req.email:raise HTTPException(400,'invite is invalid, expired or belongs to a different email')
                 c.execute('INSERT INTO sign_in_links VALUES(?,?,?,?)',(digest(token),req.email,now,now+900))
-                link=self.origin()[0]+'/app#'+urlencode({'sign-in':token,**({'invite':req.invite} if req.invite else {}),**({'plan':req.plan} if req.plan else {})})
+                link=self.origin()[0]+'/app#'+urlencode({'sign-in':token,**({'view':'team'} if req.password_setup else {}),**({'invite':req.invite} if req.invite else {}),**({'plan':req.plan} if req.plan else {})})
                 self.queue_mail(c,req.email,'Sign in to Afterspan','Use this one-time link within 15 minutes:\n\n'+link+'\n\nIf you did not request this, ignore this email.',now+900)
             return {'status':'queued','message':'A sign-in link has been queued for this address. It expires in 15 minutes.'}
 

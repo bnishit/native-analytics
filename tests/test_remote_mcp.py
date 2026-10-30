@@ -49,6 +49,15 @@ class RemoteMCPTests(unittest.TestCase):
         code=q['code'][0];r=self.exchange(cid,code,verifier);self.assertEqual(r.status_code,200,r.text)
         return owner,uid,workspace,project,cid,r.json(),code,verifier
 
+    def test_connection_lasts_six_months_but_access_tokens_stay_short_lived(self):
+        owner,uid,w,p,cid,t,code,verifier=self.grant('audit:read')
+        self.assertLessEqual(t['expires_in'],3600)
+        with closing(app.connect()) as c:
+            grant=c.execute('SELECT expires FROM oauth_grants WHERE client=?',(cid,)).fetchone()
+            client=c.execute('SELECT expires FROM oauth_clients WHERE id=?',(cid,)).fetchone()
+            self.assertGreater(grant['expires'],time.time()+179*86400)
+            self.assertGreaterEqual(client['expires'],grant['expires'])
+
     def test_real_protocol_requires_pkce_consent_and_scopes(self):
         metadata=self.client.get('/.well-known/oauth-authorization-server',headers={'Origin':'https://client.example'})
         self.assertEqual(metadata.status_code,200)

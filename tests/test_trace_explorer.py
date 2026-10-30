@@ -71,3 +71,10 @@ class SlackExplorerTests(unittest.TestCase):
         r=self.f.owner.post('/api/traces/search?project='+self.f.p['id'],headers=CSRF,json={'environment':'staging'}).json()
         self.assertEqual(r['total'],1)
         self.assertIn('timing_environment_mixed',r['traces'][0]['issues'])
+
+    def test_terminal_only_slack_span_has_unknown_start(self):
+        ref,attempt=self.f.chain()
+        self.f.observe(self.f.trace_facts(ref,attempt,str(uuid.uuid4()),'model','succeeded'),10)
+        r=self.f.owner.post('/api/traces/search?project='+self.f.p['id'],headers=CSRF,json={}).json()
+        d=self.f.owner.post('/api/traces/open?project='+self.f.p['id'],headers=CSRF,json={**r['query'],'reference':r['traces'][0]['reference']}).json()['trace']
+        self.assertIsNone(d['spans'][0]['start_ms']);self.assertTrue(d['has_gaps'])

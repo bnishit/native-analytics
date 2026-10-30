@@ -24,7 +24,7 @@ def slack_trace(audit, project, key, group, q):
     timing = row['trace']
     spans = [{'id':str(s['operation']), 'parent':str(s['parent_operation']) if s['parent_operation'] else None,
               'step':s['step'], 'attempt':s['attempt_number'], 'state':s['state'],
-              'start_ms':s['at_ms_from_request_start'], 'duration_ms':s['duration_ms'],
+              'start_ms':None if s['state']=='missing_start' else s['at_ms_from_request_start'], 'duration_ms':s['duration_ms'],
               'end_ms':s['finished_at_ms_from_request_start'], 'parent_missing':s['parent_missing']}
              for s in timing.get('spans',[])]
     environments = {r['facts']['environment'] for r in group}

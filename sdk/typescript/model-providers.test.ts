@@ -62,3 +62,13 @@ test('Provider updates cannot relabel prior estimates as reported counts',()=>{
  o.observeAnthropic({type:'message_start',message:{usage:{input_tokens:3,cache_creation_input_tokens:0,cache_read_input_tokens:0}}});
  assert.equal(o.snapshot().input_count,3);assert.equal(o.snapshot().output_count,undefined);assert.equal(o.snapshot().reasoning_count,undefined);
 });
+test('Malformed usage/detail containers clear accounting and increment diagnostics',()=>{
+ for(const [method,event] of [
+  ...['malformed',[],true,3].map(usage=>['observeAnthropic',{type:'message_delta',usage}]),
+  ...['malformed',[],true,3].map(usage=>['observeResponses',{object:'response',usage}]),
+  ...['input_tokens_details','output_tokens_details'].map(name=>['observeResponses',{object:'response',usage:{[name]:[]}}])
+ ] as ['observeAnthropic'|'observeResponses',unknown][]){
+  const {o}=observation();o.record({input_count:3,usage_source:'provider_reported',cost_usd_decimal:'0.001',cost_source:'provider_reported'});
+  assert.equal(o[method](event),false);assert.equal(o.rejectedUpdates,1);assert.equal(o.snapshot().input_count,undefined);assert.equal(o.snapshot().cost_usd_decimal,undefined);
+ }
+});

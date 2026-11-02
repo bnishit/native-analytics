@@ -34,6 +34,10 @@ def _validated(value):
 def _field(value,name):
     return value.get(name) if isinstance(value,dict) else getattr(value,name,None)
 
+def _usage_object(value):
+    if not isinstance(value,dict) and not hasattr(value,'__dict__'):raise ValueError('invalid provider metadata object')
+    return value
+
 class ModelObservation:
     def __init__(self,provider,model,template_version=None,*,clock=None,started_at_ms=None):
         self.clock=clock or (lambda:time.monotonic()*1000)
@@ -101,6 +105,9 @@ class ModelObservation:
             value=_field(event,'response') if kind in {'response.created','response.in_progress','response.completed','response.incomplete','response.failed'} else event if _field(event,'object')=='response' else None
             fields={};usage=_field(value,'usage')
             if usage is not None:
+                _usage_object(usage)
+                for name in ['input_tokens_details','output_tokens_details']:
+                    if _field(usage,name) is not None:_usage_object(_field(usage,name))
                 fields=dict(input_count=_field(usage,'input_tokens'),output_count=_field(usage,'output_tokens'),cache_read_count=_field(_field(usage,'input_tokens_details'),'cached_tokens'),reasoning_count=_field(_field(usage,'output_tokens_details'),'reasoning_tokens'))
             return self._provider_usage(value,fields)
         except (ValueError,TypeError,AttributeError):return self._reject()
@@ -118,6 +125,7 @@ class ModelObservation:
             value=_field(event,'message') if kind=='message_start' else event if kind in {'message','message_delta'} else None
             fields={};usage=_field(value,'usage');components=dict(self._anthropic_input)
             if usage is not None:
+                _usage_object(usage)
                 for key in ['input_tokens','cache_creation_input_tokens','cache_read_input_tokens']:
                     count=_field(usage,key)
                     if count is not None:

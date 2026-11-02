@@ -29,6 +29,7 @@ function validated(value:Record<string,unknown>):Metadata {
  return d as Metadata;
 }
 function field(value:unknown,key:string):unknown{return value&&typeof value==='object'?(value as Record<string,unknown>)[key]:undefined}
+function usageObject(value:unknown){if(!value||typeof value!=='object'||Array.isArray(value))throw Error('Invalid provider metadata object')}
 export class ModelObservation {
  private data:Metadata;private first?:number;private closed=false;private anthropicInput:Record<string,number>={};
  readonly clock:()=>number;readonly started:number;rejectedUpdates=0;
@@ -87,6 +88,8 @@ export class ModelObservation {
    const value=['response.created','response.in_progress','response.completed','response.incomplete','response.failed'].includes(kind as string)?field(event,'response'):field(event,'object')==='response'?event:undefined;
    const update:Partial<Metadata>={},usage=field(value,'usage');
    if(usage!==undefined&&usage!==null){
+    usageObject(usage);
+    for(const name of ['input_tokens_details','output_tokens_details']){const details=field(usage,name);if(details!==undefined&&details!==null)usageObject(details)}
     const values={input_count:field(usage,'input_tokens'),output_count:field(usage,'output_tokens'),cache_read_count:field(field(usage,'input_tokens_details'),'cached_tokens'),reasoning_count:field(field(usage,'output_tokens_details'),'reasoning_tokens')};
     Object.assign(update,Object.fromEntries(Object.entries(values).map(([k,v])=>[k,v??undefined])));
    }
@@ -108,6 +111,7 @@ export class ModelObservation {
    const value=kind==='message_start'?field(event,'message'):['message','message_delta'].includes(kind as string)?event:undefined;
    const update:Partial<Metadata>={},usage=field(value,'usage'),components={...this.anthropicInput};
    if(usage!==undefined&&usage!==null){
+    usageObject(usage);
     for(const key of ['input_tokens','cache_creation_input_tokens','cache_read_input_tokens']){
      const count=field(usage,key);
      if(count!==undefined&&count!==null){if(!Number.isSafeInteger(count)||Number(count)<0||Number(count)>1e9)throw Error('Invalid model usage count');components[key]=count as number}

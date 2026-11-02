@@ -67,3 +67,8 @@ class ProviderObservationTests(unittest.TestCase):
         o.observe_anthropic({'type':'message_start','message':{'usage':{'input_tokens':3,'cache_creation_input_tokens':0,'cache_read_input_tokens':0}}})
         self.assertEqual(o.snapshot()['input_count'],3)
         self.assertNotIn('output_count',o.snapshot());self.assertNotIn('reasoning_count',o.snapshot())
+    def test_malformed_usage_and_details_cannot_preserve_old_accounting(self):
+        for method,event in [('observe_anthropic',{'type':'message_delta','usage':value}) for value in ['malformed',[],True,3]]+ [('observe_responses',{'object':'response','usage':value}) for value in ['malformed',[],True,3]]+ [('observe_responses',{'object':'response','usage':{name:[]}}) for name in ['input_tokens_details','output_tokens_details']]:
+            o=self.observation('example');o.record(input_count=3,usage_source='provider_reported',cost_usd_decimal='0.001',cost_source='provider_reported')
+            self.assertFalse(getattr(o,method)(event));self.assertEqual(o.rejected_updates,1)
+            self.assertNotIn('input_count',o.snapshot());self.assertNotIn('cost_usd_decimal',o.snapshot())

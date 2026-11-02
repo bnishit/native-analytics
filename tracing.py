@@ -13,18 +13,24 @@ from product_analytics import Window
 TRACE_SUBJECT_PATTERN=r'[a-z][a-z0-9_]{0,31}_[a-f0-9]{64}'
 
 def init_trace_subjects(c):
-    missing=c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_trace_subjects'").fetchone() is None
-    c.execute("""CREATE TABLE IF NOT EXISTS workflow_trace_subjects(
-      project TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,trace_id TEXT NOT NULL,
-      subject_id TEXT,last_seen REAL NOT NULL,erased REAL,PRIMARY KEY(project,trace_id))""")
-    c.execute('CREATE INDEX IF NOT EXISTS workflow_subject_lookup ON workflow_trace_subjects(project,subject_id) WHERE subject_id IS NOT NULL')
-    if missing:
-        for key in ['afterspan_trace','afterspan_evidence']:
-            c.execute(f"""INSERT INTO workflow_trace_subjects(project,trace_id,subject_id,last_seen)
-              SELECT project,json_extract(properties,'$.{key}.trace_id'),distinct_id,MAX(received)
-              FROM events WHERE json_type(properties,'$.{key}.trace_id')='text'
-              GROUP BY project,json_extract(properties,'$.{key}.trace_id')
-              ON CONFLICT(project,trace_id) DO UPDATE SET last_seen=MAX(last_seen,excluded.last_seen)""")
+    c.execute('SAVEPOINT workflow_subject_migration')
+    try:
+        missing=c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_trace_subjects'").fetchone() is None
+        c.execute("""CREATE TABLE IF NOT EXISTS workflow_trace_subjects(
+          project TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,trace_id TEXT NOT NULL,
+          subject_id TEXT,last_seen REAL NOT NULL,erased REAL,PRIMARY KEY(project,trace_id))""")
+        c.execute('CREATE INDEX IF NOT EXISTS workflow_subject_lookup ON workflow_trace_subjects(project,subject_id) WHERE subject_id IS NOT NULL')
+        if missing:
+            for key in ['afterspan_trace','afterspan_evidence']:
+                c.execute(f"""INSERT INTO workflow_trace_subjects(project,trace_id,subject_id,last_seen)
+                  SELECT project,json_extract(properties,'$.{key}.trace_id'),distinct_id,MAX(received)
+                  FROM events WHERE json_type(properties,'$.{key}.trace_id')='text'
+                  GROUP BY project,json_extract(properties,'$.{key}.trace_id')
+                  ON CONFLICT(project,trace_id) DO UPDATE SET last_seen=MAX(last_seen,excluded.last_seen)""")
+    except BaseException:
+        c.execute('ROLLBACK TO workflow_subject_migration');c.execute('RELEASE workflow_subject_migration')
+        raise
+    c.execute('RELEASE workflow_subject_migration')
 
 def bind_trace_subject(c,project,facts,subject_id,identity_erased,now):
     trace_id=facts['trace_id']

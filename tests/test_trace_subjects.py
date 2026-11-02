@@ -82,3 +82,23 @@ class TraceSubjectTests(unittest.TestCase):
             self.f.client.post('/v1/erase',headers=self.f.a,json={'distinct_id':SUBJECT}).raise_for_status()
             with closing(test_analytics.analytics.connect()) as c:self.assertEqual(c.execute('SELECT count(*) FROM debug_snapshots').fetchone()[0],0)
             current=self.f.client.get('/api/debug/policy?project=alpha',headers=self.f.admin).json();self.assertEqual(current['captured_count'],1);self.assertEqual(current['stored_snapshots'],0)
+
+    def test_interrupted_migration_rolls_back_ddl_and_restarts_with_anonymous_binding(self):
+        from tracing import init_trace_subjects
+        event=self.event(None);trace=event['properties']['afterspan_trace']['trace_id']
+        self.assertEqual(self.f.ingest([event]).status_code,200)
+        class InterruptedConnection:
+            def __init__(self,connection,fail_at):self.connection=connection;self.fail_at=fail_at;self.inserts=0
+            def execute(self,sql,parameters=()):
+                if sql.lstrip().startswith('INSERT INTO workflow_trace_subjects'):
+                    self.inserts+=1
+                    if self.inserts==self.fail_at:raise RuntimeError('synthetic migration interruption')
+                return self.connection.execute(sql,parameters)
+        for fail_at in [1,2]:
+            with self.subTest(backfill=fail_at):
+                with closing(test_analytics.analytics.connect()) as c,c:c.execute('DROP TABLE workflow_trace_subjects')
+                with closing(test_analytics.analytics.connect()) as c:
+                    with self.assertRaises(RuntimeError):init_trace_subjects(InterruptedConnection(c,fail_at))
+                    self.assertIsNone(c.execute("SELECT 1 FROM sqlite_master WHERE name='workflow_trace_subjects'").fetchone())
+                test_analytics.analytics.init_db()
+                self.assertEqual(self.f.ingest([self.event(SUBJECT,trace)]).status_code,409)

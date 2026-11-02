@@ -18,11 +18,11 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from remote_auth import OAuthProvider
+from remote_auth import OAuthProvider,SCOPES
 from accounts import Accounts
 from billing import Billing
 from audit import Audit,Observation
-from tracing import Tracing,SpanObservation
+from tracing import WorkflowEvidence,Tracing,SpanObservation
 from retention import Retention
 from product_loop import ProductLoop
 from catalog import Catalog
@@ -195,6 +195,10 @@ class Event(Model):
 
     @model_validator(mode='after')
     def subject_matches(self):
+        if 'afterspan_evidence' in self.properties:
+            if self.name!='evidence.observed' or self.distinct_id is not None or self.attributes or self.journey is not None or set(self.properties)!={'afterspan_evidence'}:
+                raise ValueError('evidence events accept only the evidence contract')
+            self.properties['afterspan_evidence']=WorkflowEvidence.model_validate(self.properties['afterspan_evidence']).model_dump(mode='json')
         if 'afterspan_trace' in self.properties:
             if self.name!='trace.observed' or self.distinct_id is not None or self.attributes or self.journey is not None or set(self.properties)!={'afterspan_trace'}:
                 raise ValueError('trace events accept only the trace contract, without identities or extra properties')
@@ -753,7 +757,7 @@ def where(project,q):
 
 
 def product_only(clause):
-    return clause+" AND name NOT IN ('analytics.pipeline','afterspan.setup.checked','trace.observed') AND json_type(properties,'$.afterspan_trace') IS NULL"
+    return clause+" AND name NOT IN ('analytics.pipeline','afterspan.setup.checked','trace.observed','evidence.observed') AND json_type(properties,'$.afterspan_trace') IS NULL"
 
 
 def percentile(values):
@@ -773,7 +777,7 @@ def aggregate(rows,q):
 def query_data(project,q):
     q=freeze(q)
     clause,params=where(project,q)
-    clause+=" AND name!='trace.observed' AND json_type(properties,'$.afterspan_trace') IS NULL"
+    clause+=" AND name NOT IN ('trace.observed','evidence.observed') AND json_type(properties,'$.afterspan_trace') IS NULL AND json_type(properties,'$.afterspan_evidence') IS NULL"
     if q.event is None:clause=product_only(clause)
     with closing(connect()) as c:
         count=c.execute('SELECT count(*) FROM events WHERE '+clause,params).fetchone()[0]
@@ -1033,7 +1037,7 @@ def capabilities():
       'outcomes':{'goals':'/api/outcomes/goals','evaluate':'/api/outcomes/evaluate','contract':'workflow-outcome-v1','scope':'project audit-purpose read; editor writes goal versions','evidence':'producer-reported criteria, not independent business proof'},
       'traces':{'search':'/api/traces/search','open':'/api/traces/open','contracts':['slack-request-v1','workflow-trace-v1'],'scope':'project audit-purpose read key','raw_data':False},
       'audit':{'catalog':'/api/audit/catalog','review':'/api/audit/review','trace':'/api/audit/trace','evaluate':'/api/audit/evaluate','onboarding':'/api/audit/onboarding','quality_metric':'answer-quality-v1','contract':'properties.afterspan_audit / slack-request-v1','scope':'project audit-purpose read key','historical_evidence':'/api/audit/evidence/{UUIDv4}','max_requests':60,'raw_data':False,'overall_readiness_claim':False},
-      'connection':{'transport':'local stdio MCP','bootstrap':'An owner uses connect-audit to issue a private, expiring audit-only connection receipt. No operator token fallback.','launcher':'agent/run_audit.py PRIVATE_RECEIPT','remote_oauth':True,'remote_mcp':'/mcp','consent':'/assets/mcp-connect.html','scopes':['analytics:read','charts:write','audit:read']}}
+      'connection':{'transport':'local stdio MCP','bootstrap':'An owner uses connect-audit to issue a private, expiring audit-only connection receipt. No operator token fallback.','launcher':'agent/run_audit.py PRIVATE_RECEIPT','remote_oauth':True,'remote_mcp':'/mcp','consent':'/assets/mcp-connect.html','scopes':SCOPES}}
 
 
 from remote_mcp import install as install_remote_mcp

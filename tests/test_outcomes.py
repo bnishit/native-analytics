@@ -17,13 +17,20 @@ class OutcomeTests(unittest.TestCase):
         return self.client.put('/api/outcomes/goals/'+self.id+'?project=alpha&revision='+str(revision),headers=self.admin,json=goal or self.goal)
     def check(self,result='passed',**changes):
         return {'name':'source_facts','version':1,'result':result,'required':True,'method':'source','phase':'before_delivery','evidence_ref':str(uuid.uuid4()),**changes}
-    def task(self,check=None,attempt=1,disposition='delivered',clock=None,**changes):
+    def task(self,check=None,attempt=1,disposition='delivered',clock=None,receipts=True,receipt_changes=None,**changes):
         f=self.fixture
         clock=clock if clock is not None else int(f.base*1000)
         common={'workflow':'document_export','request_started_at_ms':clock,'attempt_number':attempt,**changes}
         events=[]
         for step,at,milestone,checks in [('processing',1,'completion',[check or self.check()]),('response',3,'delivery',None)]:
             span=str(uuid.uuid4())
+            for checked in checks or []:
+                if receipts and checked.get('evidence_ref'):
+                    evidence={k:checked[k] for k in ['name','version','result','method','phase']}
+                    evidence.update(schema_version='workflow-evidence-v1',receipt_id=checked['evidence_ref'],trace_id=f.tid,attempt_id=f.aid,
+                        span_id=span,workflow=common['workflow'],environment=changes.get('environment','staging'),release_sha=changes.get('release_sha'),evidence_digest='a'*64)
+                    evidence.update(receipt_changes or {})
+                    events.append({'id':str(uuid.uuid4()),'name':'evidence.observed','timestamp':datetime.fromtimestamp(f.base+at+.5,timezone.utc).isoformat(),'properties':{'afterspan_evidence':evidence}})
             events.append(f.event(at=at,span_id=span,step=step,**common))
             events.append(f.event('succeeded',at+1,span_id=span,step=step,milestone=milestone,
                 **({'checks':checks} if checks else {'disposition':disposition}),**common))
@@ -31,6 +38,59 @@ class OutcomeTests(unittest.TestCase):
     def evaluate(self,**query):
         r=self.client.post('/api/outcomes/evaluate?project=alpha',headers=self.admin,json={'goal_id':self.id,'version':1,**query})
         self.assertEqual(r.status_code,200,r.text);return r.json()
+    def test_missing_wrong_task_wrong_attempt_and_wrong_check_receipts_do_not_qualify(self):
+        self.task(receipts=False)
+        self.assertEqual(self.evaluate()['counts']['unclassified'],1)
+        for changes in [{'trace_id':str(uuid.uuid4())},{'attempt_id':str(uuid.uuid4())},{'version':2},{'workflow':'other_workflow'},{'result':'failed'}]:
+            self.fixture.tid=str(uuid.uuid4());self.fixture.aid=str(uuid.uuid4())
+            self.task(receipt_changes=changes)
+        r=self.evaluate();self.assertEqual(r['counts']['satisfied'],0);self.assertEqual(r['counts']['unclassified'],6)
+    def test_resolved_evidence_has_no_raw_receipt_reference_or_digest_in_reader_result(self):
+        import json
+        check=self.check();self.task(check)
+        r=self.evaluate();self.assertEqual(r['counts']['satisfied'],1)
+        opened=self.client.post('/api/traces/open?project=alpha',headers=self.admin,json={**r['trace_query'],'reference':r['tasks'][0]['trace']}).json()
+        self.assertEqual(opened['trace']['checks'][0]['evidence_status'],'resolved')
+        self.assertNotIn(check['evidence_ref'],json.dumps(opened));self.assertNotIn('a'*64,json.dumps(opened))
+        aggregate=self.client.post('/api/query?project=alpha',headers=self.admin,json={'event':'evidence.observed','breakdown':'afterspan_evidence'}).json()
+        self.assertEqual(aggregate['total'],0)
+        self.assertNotIn('a'*64,json.dumps(aggregate))
+    def test_other_project_or_environment_cannot_supply_a_receipt(self):
+        import app,json
+        self.task(receipts=False)
+        with app.connect() as c:row=c.execute("SELECT ts,properties FROM events WHERE name='trace.observed' AND json_type(properties,'$.afterspan_trace.checks')='array'").fetchone()
+        facts=json.loads(row['properties'])['afterspan_trace'];check=facts['checks'][0]
+        evidence={k:check[k] for k in ['name','version','result','method','phase']}
+        evidence.update(schema_version='workflow-evidence-v1',receipt_id=check['evidence_ref'],trace_id=facts['trace_id'],attempt_id=facts['attempt_id'],span_id=facts['span_id'],workflow=facts['workflow'],environment=facts['environment'],evidence_digest='a'*64)
+        event={'id':str(uuid.uuid4()),'name':'evidence.observed','timestamp':datetime.fromtimestamp(row['ts']-.1,timezone.utc).isoformat(),'properties':{'afterspan_evidence':evidence}}
+        self.assertEqual(self.fixture.ingest(event,headers=self.fixture.fixture.b).status_code,200)
+        self.assertEqual(self.evaluate()['counts']['unclassified'],1)
+        event['id']=str(uuid.uuid4());event['properties']['afterspan_evidence']['environment']='production'
+        self.assertEqual(self.fixture.ingest(event).status_code,200)
+        self.assertEqual(self.evaluate()['counts']['unclassified'],1)
+
+    def test_receipt_is_immutable_on_same_event_retry_and_rejects_raw_content(self):
+        import app,json
+        self.task()
+        with app.connect() as c:row=c.execute("SELECT id,ts,properties FROM events WHERE name='evidence.observed'").fetchone()
+        event={'id':row['id'],'name':'evidence.observed','timestamp':datetime.fromtimestamp(row['ts'],timezone.utc).isoformat(),'properties':json.loads(row['properties'])}
+        event['properties']['afterspan_evidence']['evidence_digest']='b'*64
+        self.assertEqual(self.fixture.ingest(event).json()['duplicates'],1)
+        self.assertEqual(self.evaluate()['counts']['satisfied'],1)
+        event['id']=str(uuid.uuid4());event['properties']['afterspan_evidence']['prompt']='must never be retained'
+        self.assertEqual(self.fixture.ingest(event).status_code,422)
+
+    def test_receipt_conflicts_and_late_arrival_respect_frozen_window(self):
+        import app,json
+        check=self.check();self.task(check);frozen=self.evaluate()
+        with app.connect() as c:
+            row=c.execute("SELECT ts,properties FROM events WHERE name='evidence.observed'").fetchone()
+        evidence=json.loads(row['properties'])['afterspan_evidence'];evidence['evidence_digest']='b'*64
+        event={'id':str(uuid.uuid4()),'name':'evidence.observed','timestamp':datetime.fromtimestamp(row['ts'],timezone.utc).isoformat(),'properties':{'afterspan_evidence':evidence}}
+        self.assertEqual(self.fixture.ingest(event).status_code,200)
+        self.assertEqual(self.evaluate(**frozen['query']),frozen)
+        self.assertEqual(self.evaluate()['counts']['unclassified'],1)
+
     def test_goal_versions_are_immutable_and_retries_idempotent(self):
         self.assertEqual(self.save().json()['version'],1)
         second={**self.goal,'deadline_seconds':60}

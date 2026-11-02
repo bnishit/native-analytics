@@ -89,6 +89,11 @@ def parser():
     evidence=sub.add_parser('attach-audit-evidence');evidence.add_argument('--project',required=True);evidence.add_argument('--id',required=True);evidence.add_argument('--file',required=True)
     for name in ['audit-catalog','audit-review','audit-trace','audit-evaluate','audit-onboarding','catalog','describe-property','outcome-evaluate']:
         command=sub.add_parser(name);command.add_argument('--project',required=True);command.add_argument('--file',required=True)
+    for name in ['outcome-goals','outcome-goal','outcome-save']:
+        command=sub.add_parser(name);command.add_argument('--project',required=True)
+        if name!='outcome-goals':command.add_argument('--id',required=True)
+        if name=='outcome-goal':command.add_argument('--version',required=True,type=int)
+        if name=='outcome-save':command.add_argument('--revision',required=True,type=int);command.add_argument('--file',required=True)
     connect=sub.add_parser('connect-audit');connect.add_argument('--project',required=True);connect.add_argument('--label',default='Codex request audit');connect.add_argument('--days',type=int,default=7);connect.add_argument('--output',required=True)
     key=sub.add_parser('create-read-key');key.add_argument('--purpose',choices=['analytics','audit'],default='analytics');key.add_argument('--project',required=True);key.add_argument('--label',required=True);key.add_argument('--days',type=int,default=30);key.add_argument('--output',required=True)
     key=sub.add_parser('read-keys');key.add_argument('--project',required=True)
@@ -193,6 +198,11 @@ def main(argv=None):
                 method={'analyze':'POST','save':'POST','update':'PUT','delete':'DELETE'}[action]
     if command in ['audit-catalog','audit-review','audit-trace','audit-evaluate','audit-onboarding','catalog','describe-property','outcome-evaluate']:
         path='/api/catalog'+('/describe' if command=='describe-property' else '') if command in ['catalog','describe-property'] else '/api/audit/'+command.split('-')[1];body=json.loads(Path(args.file).read_text());method='POST'
+    if command in ['outcome-goals','outcome-goal','outcome-save']:
+        path='/api/outcomes/goals'
+        if command!='outcome-goals':path+='/'+urllib.parse.quote(args.id,safe='')
+        if command=='outcome-goal':params['version']=args.version
+        if command=='outcome-save':params['revision']=args.revision;body=json.loads(Path(args.file).read_text());method='PUT'
     if command=='outcome-evaluate':path='/api/outcomes/evaluate';body=json.loads(Path(args.file).read_text());method='POST'
     if command=='attach-audit-evidence':
         path='/api/audit/evidence/'+urllib.parse.quote(args.id,safe='');body=json.loads(Path(args.file).read_text());method='PUT'
@@ -235,7 +245,7 @@ def main(argv=None):
     key_name='NATIVE_ANALYTICS_WRITE_KEY' if command in ['send','identify'] else 'ANALYTICS_ADMIN_TOKEN'
     key=os.environ.get(key_name)
     if key_name!='NATIVE_ANALYTICS_WRITE_KEY' and command!='assign-existing':key=os.environ.get('AFTERSPAN_WORKSPACE_KEY') or key
-    if command in ['projects','overview','query','journeys','setup','charts','funnels','segments','retention','analyze-funnel','analyze-segment','analyze-retention','catalog','audit-catalog','audit-review','audit-trace','audit-evaluate','audit-onboarding','outcome-evaluate','loop-goals','loop-status','loop-observe','loop-compare']:
+    if command in ['projects','overview','query','journeys','setup','charts','funnels','segments','retention','analyze-funnel','analyze-segment','analyze-retention','catalog','audit-catalog','audit-review','audit-trace','audit-evaluate','audit-onboarding','outcome-evaluate','outcome-goals','outcome-goal','loop-goals','loop-status','loop-observe','loop-compare']:
         key=os.environ.get('AFTERSPAN_READ_KEY') or key
     public=command in ['health','schema','login','complete-login','login-existing']
     session_file=os.environ.get('AFTERSPAN_SESSION_FILE')

@@ -3,7 +3,7 @@ let traceQuery=null,traceReference='',traceProject='';
 try{const p=new URLSearchParams(location.hash.slice(1));traceQuery=JSON.parse(p.get('trace_query')||'null');traceReference=p.get('trace')||'';traceProject=p.get('project')||''}catch{traceQuery=null}
 function traceWorkflowChecks(checks){
  if(!checks?.length)return '';
- return '<h3>Workflow checks</h3><p>Producer-reported evaluations. A passed check is not proof of task completion.</p><ul>'+checks.map(c=>`<li>${esc(c.name)} v${fmt(c.version)} · ${esc(c.result)} · ${c.required?'required':'optional'} · ${esc(c.method)} · ${esc(c.phase.replaceAll('_',' '))} · evidence ${c.evidence_present?'referenced':'not supplied'}</li>`).join('')+'</ul>';
+ return '<h3>Workflow checks</h3><p>Producer-reported evaluations. A passed check is not proof of task completion.</p><ul>'+checks.map(c=>`<li>${esc(c.name)} v${fmt(c.version)} · ${esc(c.result)} · ${c.required?'required':'optional'} · ${esc(c.method)} · ${esc(c.phase.replaceAll('_',' '))} · evidence ${esc((c.evidence_status||'not resolved').replaceAll('_',' '))}</li>`).join('')+'</ul>';
 }
 function traceReadTargets(trace){
  return `<p>Request environment: ${esc(trace.environment)} · Read target environments: ${trace.read_target_environments?.length?trace.read_target_environments.map(esc).join(', '):'unknown'}</p>`;

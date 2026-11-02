@@ -50,6 +50,11 @@ def install(app,provider):
         """Load one official task guide before working. Guides never grant extra authority."""
         return {'name':name,'instructions':(Path(__file__).parent/'skills'/name/'SKILL.md').read_text()}
 
+    @mcp.tool(annotations=WRITE)
+    async def save_outcome_goal(id:UUID,revision:int,definition:dict)->dict:
+        """Requires separately approved goals:write and editor role. Create/version a workflow goal with stable UUID and last-read revision (0 for new). Identical retries return the same immutable version. This grants no deployment permission."""
+        return await call('/api/outcomes/goals/'+str(id)+'?revision='+str(revision),definition,'PUT')
+
     @mcp.tool(annotations=READ)
     async def outcome_goals()->dict:
         """Requires audit:read. List current versioned workflow outcome goals in the approved project."""

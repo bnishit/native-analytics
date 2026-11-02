@@ -26,7 +26,7 @@ class RemoteMCPTests(unittest.TestCase):
     join=test_workspaces.WorkspaceTests.join
 
     def register(self):
-        r=self.client.post('/register',json={'client_name':'Fresh test agent','redirect_uris':['http://127.0.0.1:19191/callback'],'grant_types':['authorization_code','refresh_token'],'response_types':['code'],'token_endpoint_auth_method':'none','scope':'analytics:read charts:write audit:read'})
+        r=self.client.post('/register',json={'client_name':'Fresh test agent','redirect_uris':['http://127.0.0.1:19191/callback'],'grant_types':['authorization_code','refresh_token'],'response_types':['code'],'token_endpoint_auth_method':'none','scope':'analytics:read charts:write audit:read goals:write'})
         self.assertEqual(r.status_code,201,r.text);return r.json()['client_id']
 
     def begin(self,cid,scope='analytics:read charts:write',**overrides):
@@ -147,7 +147,7 @@ class RemoteMCPTests(unittest.TestCase):
         self.assertEqual(owner.get('/auth/mcp/connections').json()['connections'],[])
 
     def test_remote_transport_tools_and_idempotent_chart_storage(self):
-        owner,uid,w,p,cid,t,*_=self.grant('analytics:read charts:write audit:read')
+        owner,uid,w,p,cid,t,*_=self.grant('analytics:read charts:write audit:read goals:write')
         with TestClient(app.app,base_url=ORIGIN) as client:
             headers={'Authorization':'Bearer '+t['access_token'],'Accept':'application/json, text/event-stream'}
             def rpc(method,params=None):
@@ -181,8 +181,11 @@ class RemoteMCPTests(unittest.TestCase):
             self.assertEqual(opened['trace']['business_outcome'],'not_independently_verified')
             from outcomes import OutcomeGoal
             goal_id=str(uuid.uuid4())
-            app.outcomes.save(p,goal_id,0,OutcomeGoal(title='Checked workflow',workflow='appointment_request',environment='staging',deadline_seconds=30,
-                checks=[{'name':'source_facts','version':1,'method':'source','phase':'before_delivery'}],milestones=['delivery']))
+            goal=OutcomeGoal(title='Checked workflow',workflow='appointment_request',environment='staging',deadline_seconds=30,
+                checks=[{'name':'source_facts','version':1,'method':'source','phase':'before_delivery'}],milestones=['delivery'])
+            args={'id':goal_id,'revision':0,'definition':goal.model_dump(mode='json')}
+            self.assertEqual(call('save_outcome_goal',args)['version'],1)
+            self.assertEqual(call('save_outcome_goal',args)['version'],1)
             self.assertEqual(call('outcome_goals')['goals'][0]['id'],goal_id)
             outcome=call('evaluate_outcomes',{'query':{'goal_id':goal_id,'version':1}})
             self.assertEqual(outcome['counts']['unclassified'],1)
@@ -201,5 +204,18 @@ class RemoteMCPTests(unittest.TestCase):
             self.assertEqual(len(call('saved_charts')['charts']),1)
             changed=rpc('tools/call',{'name':'save_chart','arguments':{**chart,'title':'Changed'}})['result'];self.assertTrue(changed['isError'])
             self.assertEqual(len(call('saved_charts')['charts']),1)
+            with closing(app.connect()) as c,c:c.execute("UPDATE memberships SET role='reader' WHERE workspace=? AND user_id=?",(w,uid))
+            downgraded=rpc('tools/call',{'name':'save_outcome_goal','arguments':{**args,'revision':1}})['result']
+            self.assertTrue(downgraded['isError'])
+
+
+
+    def test_chart_write_scope_cannot_edit_outcome_goals(self):
+        owner,uid,w,p,cid,t,*_=self.grant('audit:read charts:write')
+        definition={'title':'Checked export','workflow':'document_export','environment':'production','deadline_seconds':60,
+            'checks':[{'name':'source_facts','version':1,'method':'source','phase':'before_delivery'}],'milestones':['delivery']}
+        response=self.client.put('/api/outcomes/goals/'+str(uuid.uuid4())+'?project='+p+'&revision=0',headers={'Authorization':'Bearer '+t['access_token']},json=definition)
+        self.assertEqual(response.status_code,403)
+        self.assertEqual(app.outcomes.list(p)['goals'],[])
 
 if __name__=='__main__':unittest.main()

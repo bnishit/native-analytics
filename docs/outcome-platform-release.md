@@ -20,7 +20,7 @@ All items require implementation plus direct evidence. Proposed targets are acce
 |---|---|---|---|
 | 1 Outcomes | Versioned generic goals: task population, deadline, required evidence/checks | API/UI/CLI/MCP tests and two different product workflows | Local engine and surfaces; two-product/live proof pending |
 | 1 Checks | Versioned generic source/code/model/human checks on workflow traces | Contradictions, unknowns, scope isolation and shared projection tests | Local checks and goal-based classification tested |
-| 1 Evidence | Resolve check evidence against scoped immutable receipts, not just pointer presence | Missing/cross-task/wrong-version receipts cannot satisfy required evidence | Pending |
+| 1 Evidence | Resolve check evidence against scoped immutable receipts, not just pointer presence | Missing/cross-task/wrong-version receipts cannot satisfy required evidence | Local receipt resolution and adversarial tests pass; live proof pending |
 | 1 Task accounting | Completion, correctness, delivery and usefulness stay distinct | Mature denominator includes failure, withheld and unclassified; retries never restart clocks | Local engine tested |
 | 1 Outcome screen | Goal → failing tasks → evidence → next action | Real running UI and agent workflow | Local running synthetic UI/CLI/MCP tested; production pending |
 | 2 Instrumentation | Python and Node tracing helpers with nested context and lifecycle | Running apps, background jobs and queue/HTTP propagation tests | Pending |

@@ -57,7 +57,7 @@ def classify(trace,goal,as_of):
         if criterion.phase=='after_delivery' and delivery and any(span['last_seen']<s['last_seen'] for s in delivery):reasons.append('check_before_delivery:'+criterion.name)
         if check['result']=='failed':failed=True;reasons.append('check_failed:'+criterion.name)
         elif check['result']=='unknown':reasons.append('check_unknown:'+criterion.name)
-        if criterion.evidence_required and not check['evidence_present']:reasons.append('check_evidence_missing:'+criterion.name)
+        if criterion.evidence_required and check.get('evidence_status')!='resolved':reasons.append('check_evidence_missing:'+criterion.name)
         if span['last_seen']>deadline:failed=True;reasons.append('check_late:'+criterion.name)
         if criterion.phase=='before_delivery' and delivery and any(s['first_seen']<span['last_seen'] for s in delivery):
             reasons.append('check_after_delivery:'+criterion.name)
@@ -137,7 +137,7 @@ class Outcomes:
         result=self.metadata(project,q,'workflow-outcome-v1')
         result.update(goal=saved,query=req.model_dump(mode='json')|{k:result['query'][k] for k in ['days','start','end','as_of']},
             counts={k:counts[k] for k in ['satisfied','failed','withheld','unclassified','waiting']},mature_denominator=mature,
-            satisfied_fraction=counts['satisfied']/mature if mature and not missing and not release_uncertain and not report['coverage']['invalid_observations'] else None,
+            satisfied_fraction=counts['satisfied']/mature if mature and not missing and not release_uncertain and not report['coverage']['invalid_observations'] and not report['coverage']['invalid_evidence_receipts'] else None,
             coverage={**report['coverage'],'original_clock_missing':missing,'release_excluded':excluded,'release_uncertain':release_uncertain},
             trace_query=report['query'],total=len(rows),tasks=rows[q.offset:q.offset+q.limit],has_more=q.offset+q.limit<len(rows))
         result['limits']+=['Outcomes apply the saved criteria to producer-reported observations, not an independent source read.',

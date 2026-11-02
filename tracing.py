@@ -11,15 +11,42 @@ from product_analytics import Window
 
 STEPS=('receive','queue','processing','model','tool','retrieval','storage','http','response','availability','booking','provider_send','provider_delivery')
 Environment=Literal['production','staging','development','test','local']
-class WorkflowCheck(BaseModel):
+class CheckResult(BaseModel):
     model_config=ConfigDict(extra='forbid')
     name:str=Field(pattern=r'^[a-z][a-z0-9_.-]{0,63}$')
     version:int=Field(ge=1,le=1000000,strict=True)
     result:Literal['passed','failed','unknown']
-    required:StrictBool
     method:Literal['source','code','model','human']
     phase:Literal['before_delivery','after_delivery']
+
+class WorkflowCheck(CheckResult):
+    required:StrictBool
     evidence_ref:UUID4|None=None
+
+class WorkflowEvidence(CheckResult):
+    schema_version:Literal['workflow-evidence-v1']
+    receipt_id:UUID4
+    trace_id:UUID4
+    attempt_id:UUID4
+    span_id:UUID4
+    workflow:str=Field(pattern=r'^[a-z][a-z0-9_.-]{0,63}$')
+    environment:Environment
+    release_sha:str|None=Field(default=None,pattern=r'^[a-f0-9]{40}$')
+    evidence_digest:str=Field(pattern=r'^[a-f0-9]{64}$')
+
+def resolve_evidence(check,facts,at,receipts):
+    reference=check.get('evidence_ref')
+    if reference is None:return 'not_referenced'
+    rows=receipts.get(reference,[])
+    if not rows:return 'missing'
+    signatures={(json.dumps(r['facts'],sort_keys=True),r['ts']) for r in rows}
+    if len(signatures)!=1:return 'conflict'
+    receipt=rows[0];body=receipt['facts']
+    if any(body[k]!=facts.get(k) for k in ['trace_id','attempt_id','span_id','workflow','environment','release_sha']):return 'mismatch'
+    if any(body[k]!=check[k] for k in ['name','version','result','method','phase']):return 'mismatch'
+    if receipt['ts']>at or facts.get('request_started_at_ms') is not None and receipt['ts']*1000<facts['request_started_at_ms']:return 'mismatch'
+    return 'resolved'
+
 
 class SpanObservation(BaseModel):
     model_config=ConfigDict(extra='forbid')
@@ -87,7 +114,7 @@ def summarize_span(rows,labels):
             'outcome_code':ends[0]['facts']['outcome_code'] if ends and not conflict else 'uncertain',
             'milestone':ends[0]['facts'].get('milestone') if ends and not conflict else None,
             'disposition':ends[0]['facts'].get('disposition') if ends and not conflict else None,
-            'checks':[{**{k:v for k,v in check.items() if k!='evidence_ref'},'evidence_present':check.get('evidence_ref') is not None}
+            'checks':[{**{k:v for k,v in check.items() if k not in {'evidence_ref','_evidence_status'}},'evidence_present':check.get('evidence_ref') is not None,'evidence_status':check.get('_evidence_status','not_resolved')}
                       for check in ends[0]['facts'].get('checks') or []] if ends and not conflict else [],
             'first_seen':min(r['ts'] for r in rows),'last_seen':max(r['ts'] for r in rows)}
 
@@ -178,13 +205,22 @@ class Tracing:
         with closing(self.connect()) as c:
             rows=c.execute("SELECT ts,json_extract(properties,'$.afterspan_trace') AS facts FROM events WHERE project=? AND ts>=? AND ts<? AND received<=? AND json_type(properties,'$.afterspan_trace') IS NOT NULL ORDER BY ts,id LIMIT 20001",
                            (project,q.start.timestamp(),q.end.timestamp(),q.as_of.timestamp())).fetchall()
+            evidence_rows=c.execute("SELECT ts,json_extract(properties,'$.afterspan_evidence') AS facts FROM events WHERE project=? AND ts>=? AND ts<? AND received<=? AND json_type(properties,'$.afterspan_evidence') IS NOT NULL ORDER BY ts,id LIMIT 20001",
+                (project,q.start.timestamp(),q.end.timestamp(),q.as_of.timestamp())).fetchall()
             key=c.execute("SELECT value FROM billing_settings WHERE key='receipt_key'").fetchone()[0]
         if len(rows)>20000:raise HTTPException(422,'more than 20,000 observations; shorten the window; no partial report returned')
+        if len(evidence_rows)>20000:raise HTTPException(422,'more than 20,000 evidence receipts; shorten the window')
+        receipts=defaultdict(list);invalid_evidence=0
+        for row in evidence_rows:
+            try:body=WorkflowEvidence.model_validate(json.loads(row['facts'])).model_dump(mode='json')
+            except (ValueError,TypeError):invalid_evidence+=1;continue
+            if body['environment']==q.environment:receipts[body['receipt_id']].append({'ts':row['ts'],'facts':body})
         groups=defaultdict(list);invalid=0;other=0
         for row in rows:
             try:f=SpanObservation.model_validate(json.loads(row['facts'])).model_dump(mode='json')
             except (ValueError,TypeError):invalid+=1;continue
             if f['environment']!=q.environment:other+=1;continue
+            for check in f.get('checks') or []:check['_evidence_status']=resolve_evidence(check,f,row['ts'],receipts)
             groups[f['trace_id']].append({'ts':row['ts'],'facts':f})
         def reference_for(tid):
             return 'trace_'+hmac.new(key.encode(),(project+'\0'+q.environment+'\0'+tid).encode(),hashlib.sha256).hexdigest()[:32]
@@ -203,5 +239,5 @@ class Tracing:
                            'Provider acceptance, provider delivery and booking are separate producer observations. No patient reading or end-to-end business success is inferred.',
                            'Telemetry is best effort. This is not a complete ledger of patient activity.',
                            'Batch inputs are direct links within the same project, environment and frozen window. Missing links remain unknown. Booking and send spans belong once to the batch, never once per linked receipt.']
-        return {**result,**({'linked_inputs':linked_inputs} if detail_reference else {}),'coverage':{'observations_scanned':len(rows),'invalid_observations':invalid,'other_environment_observations':other,
+        return {**result,**({'linked_inputs':linked_inputs} if detail_reference else {}),'coverage':{'observations_scanned':len(rows),'invalid_observations':invalid,'invalid_evidence_receipts':invalid_evidence,'evidence_receipts_scanned':len(evidence_rows),'other_environment_observations':other,
                                     'observed_traces':len(traces),'returned_traces':min(len(traces),q.limit),'has_more':len(traces)>q.limit},'traces':traces if all_traces else traces[:q.limit]}

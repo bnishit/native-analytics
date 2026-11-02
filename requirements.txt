@@ -5,3 +5,4 @@ stripe==14.4.1
 cryptography==50.0.2
 mcp==1.30.0
 opentelemetry-proto==1.45.2
+boto3==1.43.123

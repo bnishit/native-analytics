@@ -525,7 +525,7 @@ metadata; network IPs may belong to NAT/proxies. This service makes no bank/cust
 
 Retention limits disk growth over time, but capacity depends on traffic. Railway compute and storage
 still incur normal infrastructure costs. Usage metering, bounded draft plans and a hosted Stripe adapter exist locally; real Stripe sandbox receipts exist, while live payments and a production billing rollout are unverified. SSO, MFA and multi-replica storage remain absent. Paid plans do not change the single-process storage architecture.
-Volume backups must be configured separately; no backup schedule is claimed by this deployment.
+Volume backups must be configured separately. A default-off operator job can send encrypted copies to private S3-compatible storage and authenticate an isolated readback restore before saving success; see [operations](docs/operations.md). Its current tests are local; no production backup schedule is claimed by this deployment.
 
 ## Optional hosted billing
 

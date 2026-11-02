@@ -106,7 +106,7 @@ still cause gaps; never promise exhaustive lossless logging.
 ## Maintenance
 
 One process, one replica, SQLite WAL on one persistent volume. The outcome platform has a bounded local HTTP capacity benchmark; see docs/capacity-and-access.md. Its burst/query timings are not production capacity or SLA claims. Enterprise SSO/SCIM/MFA are not implemented; agent OAuth is not enterprise identity. Retention runs hourly.
-Configure backups separately. The scripts/backup.py tool is operator-entire-database only, never a scoped customer export or MCP fallback; restore only to a new private isolated path with external workers disabled. See docs/operations.md. Diagnose queue backlog/drops and auth errors first. A producer
+Configure backups separately. The scripts/backup.py tool and optional default-off scheduled S3 job are operator-entire-database only, never scoped customer exports or MCP fallbacks. Escrow the separate backup key before enabling a private destination; authenticated readback restore precedes success and retirement of old verified copies. GET /api/operator/backup is operator-only status, not an export or execution API. Restore only to a new private isolated path with external workers disabled. See docs/operations.md for local versus live schedule evidence. Diagnose queue backlog/drops and auth errors first. A producer
 outage must not stop business requests or automatically retry a payment/write. Never disable
 redaction or authentication to "fix" missing events. Avoid broad raw payload capture.
 

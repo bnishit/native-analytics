@@ -36,7 +36,7 @@ def digest(value):
     return hashlib.sha256(canonical(value).encode()).hexdigest()
 
 
-def verified_release(action, evidence):
+def released_artifact(action, environment):
     receipt, plan = action['receipt'] or {}, action['plan'] or {}
     release = receipt.get('release') or {}
     binding = release.get('artifact_binding') or {}
@@ -52,13 +52,19 @@ def verified_release(action, evidence):
     if (receipt.get('merged') is True and receipt.get('release_status') == 'released'
             and release.get('verified') is True and release.get('released_at') is not None
             and plan.get('artifact_sha256') and receipt.get('merge_sha')
-            and plan.get('measurement_revision') == evidence['measurement_revision']
-            and plan.get('mapping_revision') == evidence['mapping_revision']
             and receipt.get('artifact_sha256') == plan.get('artifact_sha256')
             and (release.get('commit') == receipt.get('merge_sha') or bound_descendant)
             and release.get('artifact_sha256') == plan.get('artifact_sha256')
-            and release.get('environment') == evidence['environment']):
+            and release.get('environment') == environment):
         return {**release, 'base_commit': plan['base_sha']}
+
+
+def verified_release(action, evidence):
+    plan=action['plan'] or {}
+    if not {'measurement_revision','mapping_revision','environment'}<=set(evidence):return None
+    if (plan.get('measurement_revision')==evidence['measurement_revision']
+            and plan.get('mapping_revision')==evidence['mapping_revision']):
+        return released_artifact(action,evidence['environment'])
 
 
 class GoalSource(Model):

@@ -18,15 +18,22 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from remote_auth import OAuthProvider
+from remote_auth import OAuthProvider,SCOPES
 from accounts import Accounts
 from billing import Billing
 from audit import Audit,Observation
-from tracing import Tracing,SpanObservation
+from tracing import WorkflowEvidence,Tracing,SpanObservation
 from retention import Retention
 from product_loop import ProductLoop
 from catalog import Catalog
-from product_analytics import Window,PropertyFilter,ProductAnalytics
+from product_analytics import Window,PropertyFilter,ProductAnalytics,SAFE_EVENT_SQL,PRODUCT_EVENT_SQL
+from outcomes import Outcomes
+from outcome_adapters import INTEGRATIONS
+from otlp import install as install_otlp
+from regressions import Regressions
+from debugging import Debugging
+from release_outcomes import ReleaseOutcomes
+from collection_health import CollectionHealth,CollectionPulse,pipeline_summary
 
 from journeys import JourneyContext,project_journeys,summarize
 
@@ -105,6 +112,10 @@ def init_db():
         OAuthProvider.init_db(c)
         billing.init_db(c)
         ProductAnalytics.init_db(c)
+        CollectionHealth.init_db(c)
+        Outcomes.init_db(c)
+        Regressions.init_db(c)
+        Debugging.init_db(c)
         Catalog.init_db(c)
         Audit.init_db(c)
         ProductLoop.init_db(c)
@@ -117,6 +128,9 @@ def prune():
     cutoff = time.time() - RETENTION_DAYS * 86400
     with closing(connect()) as c, c:
         c.execute('DELETE FROM events WHERE ts < ?', (cutoff,))
+        c.execute('DELETE FROM collection_ingestion WHERE bucket < ?',(cutoff,))
+        c.execute('DELETE FROM regression_objects WHERE expires<=?',(time.time(),))
+        c.execute('DELETE FROM debug_snapshots WHERE expires<=?',(time.time(),))
         c.execute('DELETE FROM people WHERE last_seen < ?', (cutoff,))
         c.execute('DELETE FROM login_limits WHERE window < ?', (time.time()-3600,))
         c.execute('DELETE FROM setup_checks WHERE created < ?', (cutoff,))
@@ -193,6 +207,16 @@ class Event(Model):
 
     @model_validator(mode='after')
     def subject_matches(self):
+        if 'afterspan_health' in self.properties:
+            if self.name!='analytics.pipeline' or self.distinct_id is not None or self.attributes or self.journey is not None or set(self.properties)!={'afterspan_health'}:
+                raise ValueError('health pulses accept only the collection contract')
+            pulse=CollectionPulse.model_validate(self.properties['afterspan_health'])
+            if self.timestamp is None or abs(self.timestamp.timestamp()*1000-pulse.observed_at_ms)>1:raise ValueError('pulse timestamp must match observed clock')
+            self.properties['afterspan_health']=pulse.model_dump(mode='json')
+        if 'afterspan_evidence' in self.properties:
+            if self.name!='evidence.observed' or self.distinct_id is not None or self.attributes or self.journey is not None or set(self.properties)!={'afterspan_evidence'}:
+                raise ValueError('evidence events accept only the evidence contract')
+            self.properties['afterspan_evidence']=WorkflowEvidence.model_validate(self.properties['afterspan_evidence']).model_dump(mode='json')
         if 'afterspan_trace' in self.properties:
             if self.name!='trace.observed' or self.distinct_id is not None or self.attributes or self.journey is not None or set(self.properties)!={'afterspan_trace'}:
                 raise ValueError('trace events accept only the trace contract, without identities or extra properties')
@@ -354,6 +378,7 @@ def writer(request: Request):
     with closing(connect()) as c:
         row=c.execute('SELECT id FROM projects WHERE key_hash=?',(hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
     if not row:raise HTTPException(401,'invalid project write key')
+    request.state.ingest_project=row['id']
     with _limit_lock:
         now=time.monotonic();start,count=_limits.get(row['id'],(now,0))
         if now-start>=60:start,count=now,0
@@ -379,7 +404,13 @@ async def headers_and_size(request,call_next):
             return {'type':'http.disconnect'}
         request._receive=receive
         request._body=bytes(body)
-    response=await call_next(request)
+    try:response=await call_next(request)
+    except Exception:
+        if request.url.path in {'/v1/events','/v1/traces'} and getattr(request.state,'ingest_project',None):
+            collection_health.record_ingestion(request.state.ingest_project,'otlp' if request.url.path=='/v1/traces' else 'native',500)
+        raise
+    if request.url.path in {'/v1/events','/v1/traces'} and getattr(request.state,'ingest_project',None):
+        collection_health.record_ingestion(request.state.ingest_project,'otlp' if request.url.path=='/v1/traces' else 'native',response.status_code,getattr(request.state,'rejected_spans',0))
     response.headers.update({'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer',
                              'X-Robots-Tag':'noindex, nofollow','X-Frame-Options':'DENY',
                              'Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"})
@@ -500,7 +531,11 @@ def create_project(req:Project,request:Request,workspace:str|None=None):
 
 
 def audit_project(c,request,project,action):
-    actor={'id':'operator'} if operator(request) else {'id':'existing-owner'} if session(request.cookies.get('na_session','')) else accounts.principal(request)
+    if credential(request).startswith('as_oauth_'):
+        token=oauth.token(credential(request),'access')
+        if token is None:raise HTTPException(401,'agent access expired or revoked')
+        actor={'id':token.subject,'key_id':'mcp:'+token.grant_id}
+    else:actor={'id':'operator'} if operator(request) else {'id':'existing-owner'} if session(request.cookies.get('na_session','')) else accounts.principal(request)
     workspace=c.execute('SELECT workspace FROM projects WHERE id=?',(project,)).fetchone()['workspace']
     accounts.audit(c,workspace,actor,action,project)
 
@@ -610,6 +645,9 @@ def ingest(req:Batch,project=Depends(writer)):
             c.execute('BEGIN IMMEDIATE')
             return store_events(c,project,req.events)
     except ValueError as exc:raise HTTPException(422,str(exc)) from None
+
+
+install_otlp(app,writer,connect,store_events,Event,RETENTION_DAYS)
 
 
 @app.post('/v1/identify')
@@ -751,7 +789,7 @@ def where(project,q):
 
 
 def product_only(clause):
-    return clause+" AND name NOT IN ('analytics.pipeline','afterspan.setup.checked','trace.observed') AND json_type(properties,'$.afterspan_trace') IS NULL"
+    return clause+' AND '+PRODUCT_EVENT_SQL
 
 
 def percentile(values):
@@ -771,8 +809,7 @@ def aggregate(rows,q):
 def query_data(project,q):
     q=freeze(q)
     clause,params=where(project,q)
-    clause+=" AND name!='trace.observed' AND json_type(properties,'$.afterspan_trace') IS NULL"
-    if q.event is None:clause=product_only(clause)
+    clause+=' AND '+(SAFE_EVENT_SQL if q.event is not None else PRODUCT_EVENT_SQL)
     with closing(connect()) as c:
         count=c.execute('SELECT count(*) FROM events WHERE '+clause,params).fetchone()[0]
         if count>200000:raise HTTPException(422,'query exceeds 200,000 events; shorten the time window')
@@ -817,7 +854,7 @@ def overview(project:str,days:int=7):
                   error_rate=100*(totals['errors'] or 0)/(totals['requests'] or 1))
     series=query_data(project,Query(**q.model_dump(include={'days','start','end','as_of'}),event='http.request' if totals['requests'] else None,interval='hour' if days==1 else 'day',breakdown='operation' if totals['requests'] else None))
     if not totals['requests']:series['breakdown']=[{'label':n['name'],'value':n['count']} for n in names[:20]]
-    return {'totals':totals,'traffic':series,'event_names':names,'pipeline':{**json.loads(pulse['properties']),'received':pulse['received']} if pulse else None,'retention_days':RETENTION_DAYS,'mode':'requests' if totals['requests'] else 'events'}
+    return {'totals':totals,'traffic':series,'event_names':names,'pipeline':{**pipeline_summary(json.loads(pulse['properties'])),'received':pulse['received']} if pulse else None,'retention_days':RETENTION_DAYS,'mode':'requests' if totals['requests'] else 'events'}
 
 
 
@@ -1016,10 +1053,15 @@ Retention(app,products,reader,editor)
 Catalog(app,products,reader,editor)
 
 request_audit=Audit(app,connect,audit_reader,freeze,evidence_metadata,editor)
-workflow_tracing=Tracing(app,connect,audit_reader,freeze,evidence_metadata)
+workflow_tracing=Tracing(app,connect,audit_reader,freeze,evidence_metadata,INTEGRATIONS)
+collection_health=CollectionHealth(app,connect,editor,audit_reader,freeze,evidence_metadata,RETENTION_DAYS)
+outcomes=Outcomes(app,connect,reader,editor,audit_reader,freeze,evidence_metadata,workflow_tracing,request_audit)
 from trace_explorer import TraceExplorer
 trace_explorer=TraceExplorer(app,request_audit,workflow_tracing,audit_reader,freeze,evidence_metadata)
+regressions=Regressions(app,connect,editor,trace_explorer,RETENTION_DAYS,outcomes)
+debugging=Debugging(app,connect,owner,editor,writer,trace_explorer,audit_project,RETENTION_DAYS)
 product_loop=ProductLoop(app,connect,reader,editor,owner,RETENTION_DAYS,store_events=store_events,audit=request_audit)
+release_outcomes=ReleaseOutcomes(app,connect,editor,outcomes,regressions,product_loop,collection_health)
 
 
 @app.get('/.well-known/afterspan')
@@ -1027,9 +1069,12 @@ def capabilities():
     return {'product':'Afterspan','license':'MIT','schema':'/openapi.json','agent_guide':'/llms.txt',
       'analytics':{'catalog':'/api/catalog','funnels':'/api/funnels/analyze','retention':'/api/retention/analyze','unit':'explicit opaque identity; not automatically a person'},
       'product_loop':{'goals':'/api/loop/goals','contract':'committed goals, scoped tracking PRs, independent answer checks and mature observational outcomes','local_mcp':'agent/loop_server.py','production_release_proof':'separate from PR and merge','repo_onboarding':{'sources':'/api/loop/sources','scans':'/api/loop/scans/{UUID}','jobs':'/api/loop/jobs/{UUID}','contract':'afterspan-repo-goal-v2','unit':'declared logged events or observed read requests, not unique people','measurements':['event-outcome-v1','slack-read-outcome-v1'],'credentials':'owner-only encrypted project connections','release':'/api/loop/actions/{id}/release'}},
-      'traces':{'search':'/api/traces/search','open':'/api/traces/open','contracts':['slack-request-v1','workflow-trace-v1'],'scope':'project audit-purpose read key','raw_data':False},
+      'outcomes':{'goals':'/api/outcomes/goals','evaluate':'/api/outcomes/evaluate','contract':'workflow-outcome-v1','scope':'project audit-purpose read; editor writes goal versions','evidence':'producer-reported criteria, not independent business proof'},
+      'traces':{'search':'/api/traces/search','open':'/api/traces/open','contracts':['slack-request-v1','workflow-trace-v1'],'otlp':{'endpoint':'/v1/traces','transport':'OTLP/HTTP protobuf or JSON','content_capture':False,'max_spans':500,'mapping_version':'afterspan-otel-v1'},'scope':'project audit-purpose read key','raw_data':False},
+      'debugging':{'policy':'/api/debug/policy','capture':'/v1/debug','review':'/api/debug/review','default_enabled':False,'scope':'owner capture policy; project editor and separate debug:read for remote content reads','max_capture_window_seconds':86400,'max_retention_seconds':604800,'encrypted':True},
+      'experiments':{'cases':'/api/experiments/cases','datasets':'/api/experiments/datasets','runs':'/api/experiments/runs','compare':'/api/experiments/compare','scope':'project editor; separate experiments:write for remote OAuth','raw_trace_content':False,'deployment_authority':False},
       'audit':{'catalog':'/api/audit/catalog','review':'/api/audit/review','trace':'/api/audit/trace','evaluate':'/api/audit/evaluate','onboarding':'/api/audit/onboarding','quality_metric':'answer-quality-v1','contract':'properties.afterspan_audit / slack-request-v1','scope':'project audit-purpose read key','historical_evidence':'/api/audit/evidence/{UUIDv4}','max_requests':60,'raw_data':False,'overall_readiness_claim':False},
-      'connection':{'transport':'local stdio MCP','bootstrap':'An owner uses connect-audit to issue a private, expiring audit-only connection receipt. No operator token fallback.','launcher':'agent/run_audit.py PRIVATE_RECEIPT','remote_oauth':True,'remote_mcp':'/mcp','consent':'/assets/mcp-connect.html','scopes':['analytics:read','charts:write','audit:read']}}
+      'connection':{'transport':'local stdio MCP','bootstrap':'An owner uses connect-audit to issue a private, expiring audit-only connection receipt. No operator token fallback.','launcher':'agent/run_audit.py PRIVATE_RECEIPT','remote_oauth':True,'remote_mcp':'/mcp','consent':'/assets/mcp-connect.html','scopes':SCOPES}}
 
 
 from remote_mcp import install as install_remote_mcp

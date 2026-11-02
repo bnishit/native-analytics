@@ -13,9 +13,10 @@ from typing import Annotated,Literal
 from fastapi import Depends,HTTPException
 from pydantic import BaseModel,ConfigDict,Field,StrictBool,UUID4,model_validator
 from product_analytics import Window
+from tracing import ModelUsage,TrafficKind
 
 SCHEMA='slack-request-v1'
-TRACE_STEPS=('preparation','parser','model','feature_list','feature_lookup','policy','mutation','readback','slack_delivery','webhook_ack','background','total')
+TRACE_STEPS=('preparation','parser','model','feature_list','feature_lookup','policy','mutation','readback','slack_delivery','webhook_ack','background','total','quality','reply')
 STAGES=('parser','planner','shadow','confirmation','tool','reply','quality')
 Digest=Annotated[str,Field(pattern=r'^[a-f0-9]{64}$')]
 class Observation(BaseModel):
@@ -29,6 +30,7 @@ class Observation(BaseModel):
     release_ref:UUID4|Literal['[redacted]']|None=None
     comparison_version:Literal['canonical-plan-v1']|None=None
     request_kind:Literal['read','write','unknown']|None=None
+    traffic_kind:TrafficKind='unknown'
     command_kind:Literal['list_experiments','list_users','check_user','list_exp_parameters','other']|None=None
     release_sha:Annotated[str,Field(pattern=r'^[a-f0-9]{40}$')]|None=None
     request_started_at_ms:int|None=Field(default=None,ge=0,le=2**53-1,strict=True)
@@ -45,9 +47,14 @@ class Observation(BaseModel):
     duration_ms:float|None=Field(default=None,ge=0,le=86400000,allow_inf_nan=False,strict=True)
     span_ref:UUID4|None=None
     parent_span_ref:UUID4|None=None
-    trace_step:Literal['preparation','parser','model','feature_list','feature_lookup','policy','mutation','readback','slack_delivery','webhook_ack','background','total']|None=None
+    trace_step:Literal['preparation','parser','model','feature_list','feature_lookup','policy','mutation','readback','slack_delivery','webhook_ack','background','total','quality','reply']|None=None
     span_state:Literal['started','succeeded','failed']|None=None
     completion_kind:Literal['processing','delivered']|None=None
+    model_usage:ModelUsage|None=None
+    quality_span_ref:UUID4|None=None
+    reply_span_ref:UUID4|None=None
+    check_evidence_digest:Digest|None=None
+    check_evidence_version:Literal['source-check-v1']|None=None
     tool_environments:list[Literal['production','staging']]|None=Field(default=None,min_length=1,max_length=2)
     check_version:Literal['growthbook-catalog-v1','source-facts-v1']|None=None
     answer_disposition:Literal['verified','withheld','clarification']|None=None
@@ -57,6 +64,14 @@ class Observation(BaseModel):
     unknown_claims:int|None=Field(default=None,ge=0,le=15,strict=True)
     @model_validator(mode='after')
     def quality_counts(self):
+        if self.model_usage is not None:
+            if self.stage!='trace' or self.trace_step!='model' or self.span_state=='started':raise ValueError('model usage belongs to a terminal model trace')
+            if self.model_usage.first_output_ms is not None and (self.duration_ms is None or self.model_usage.first_output_ms>self.duration_ms):raise ValueError('first output must fall within model duration')
+        proof=(self.quality_span_ref,self.check_evidence_digest,self.check_evidence_version)
+        if self.quality_span_ref is not None and self.stage!='quality':raise ValueError('quality operation binding belongs to the quality stage')
+        if any(v is not None for v in proof[1:]) and (self.stage!='quality' or any(v is None for v in proof) or self.check_version is None or self.check_phase!='before_reply'):
+            raise ValueError('source evidence binds a quality operation and pre-reply check version')
+        if self.reply_span_ref is not None and self.stage!='reply':raise ValueError('reply operation binding belongs to the reply stage')
         if self.tool_environments is not None and (self.stage!='tool' or len(set(self.tool_environments))!=len(self.tool_environments)):
             raise ValueError('unique tool target scopes belong to the tool stage')
         trace_fields=(self.span_ref,self.parent_span_ref,self.trace_step,self.span_state,self.completion_kind)
@@ -83,6 +98,13 @@ class Observation(BaseModel):
         return self
 
 MEANINGS={
+ 'traffic_kind':'Explicit trusted-boundary user, synthetic or internal classification. Missing historical values remain unknown; never inferred from message text.',
+ 'model_usage':'Bounded provider/model/template and usage/cost provenance on a terminal model span. Missing cost or streaming timing stays unknown; no content.',
+ 'quality_span_ref':'Optional binding to the actual quality operation. A pointer alone does not establish source evidence. Raw UUID is never exported.',
+ 'reply_span_ref':'Binding from the explicit final reply stage to its actual reply operation. Other accepted Slack posts cannot substitute. Never exported.',
+ 'check_evidence_digest':'Domain-separated scoped producer digest of bounded compared facts. Never exported. Resolution cannot independently verify the HMAC or external source.',
+ 'check_evidence_version':'source-check-v1 binds an immutable quality observation, pre-reply checker version and quality span; old counts alone do not qualify.',
+
  'span_ref':'Fresh random UUIDv4 per operation. Start and terminal events share this span; delivery retries reuse their event IDs. Never exported.',
  'parent_span_ref':'Optional opaque parent span, never exported. An absent parent stays explicitly unobserved.',
  'trace_step':'Allowlisted operation category. Repeated operations get separate spans; no feature, user or message values.',
@@ -202,6 +224,12 @@ def request_groups(rows):
         else:groups[value].append(row)
     return groups,uncorrelated
 
+def trace_groups(group):
+    rows=[r for r in group if r['facts']['stage']=='trace'];grouped=defaultdict(list)
+    for row in rows:grouped[row['facts']['span_ref']].append(row)
+    ordered=sorted(grouped,key=lambda ref:(min(r['ts'] for r in grouped[ref]),ref))
+    return rows,grouped,ordered,{ref:i+1 for i,ref in enumerate(ordered)}
+
 class Audit:
     @staticmethod
     def init_db(c):c.execute('CREATE TABLE IF NOT EXISTS audit_evidence(project TEXT NOT NULL REFERENCES projects(id),id TEXT NOT NULL,payload TEXT NOT NULL,created REAL NOT NULL,PRIMARY KEY(project,id))')
@@ -278,18 +306,15 @@ class Audit:
             fields.append({'property':name,'meaning':MEANINGS[name],'schema':definition,'presence':len(rows)-counts['missing'],'missing':counts['missing'],'null':counts['null'],'redacted':counts['redacted'],'types':dict(counts),'safe_enum_values':[v for v in enums if v!='[redacted]']})
         return {'contract':SCHEMA,'namespace':'properties.afterspan_audit','fields':fields,'coverage':coverage,'versions':self.coverage(rows,key,project),'raw_value_examples':False,'policy':'Only this approved contract is exposed. Arbitrary event/property names, contents, identifiers and digests are not returned.',**self.metadata(project,q,'request-audit-v2')}
     def timeline(self,group):
-        rows=[r for r in group if r['facts']['stage']=='trace']
+        rows,grouped,ordered,labels=trace_groups(group)
         if not rows:return {'availability':'unavailable','spans':[],'missing_steps':list(TRACE_STEPS),'completion':{},'issues':[]}
-        grouped=defaultdict(list)
-        for row in rows:grouped[row['facts']['span_ref']].append(row)
-        ordered=sorted(grouped,key=lambda ref:(min(r['ts'] for r in grouped[ref]),ref))
-        labels={ref:i+1 for i,ref in enumerate(ordered)};spans=[];issues=[]
+        spans=[];issues=[]
         clock,clock_conflict=agreed_fact(group,'request_started_at_ms')
         if clock_conflict:issues.append('request_start_clock_conflict')
         for ref in ordered:
             seen=grouped[ref];facts=[r['facts'] for r in seen];first=facts[0]
             starts=[r for r in seen if r['facts']['span_state']=='started'];ends=[r for r in seen if r['facts']['span_state']!='started']
-            fields=('trace_step','attempt_ref','attempt_number','request_started_at_ms','parent_span_ref','completion_kind','environment','release_sha')
+            fields=('trace_step','attempt_ref','attempt_number','request_started_at_ms','parent_span_ref','completion_kind','environment','release_sha','traffic_kind')
             conflict=any(len({json.dumps(f.get(k)) for f in facts})>1 for k in fields)
             conflict=conflict or len(starts)>1 or len(ends)>1 or bool(starts and ends and starts[0]['ts']>ends[0]['ts'])
             state='conflict' if conflict else 'unclosed' if not ends else 'missing_start' if not starts else ends[0]['facts']['span_state']
@@ -302,7 +327,7 @@ class Audit:
                           'at_ms_from_request_start':round((min(r['ts'] for r in seen)*1000)-first['request_started_at_ms'],3),
                           'duration_ms':ends[0]['facts']['duration_ms'] if len(ends)==1 and not conflict else None,
                           'finished_at_ms_from_request_start':round(ends[0]['ts']*1000-clock,3) if len(ends)==1 and not conflict and clock is not None and not clock_conflict else None,
-                          'completion_kind':first.get('completion_kind')})
+                          'completion_kind':first.get('completion_kind'),'model_usage':ends[0]['facts'].get('model_usage') if len(ends)==1 and not conflict else None})
         completion={}
         for name,step,kind in [('webhook_ack','webhook_ack',None),('processing','total','processing'),('delivery','slack_delivery',None)]:
             selected=[s for s in spans if s['step']==step and s['completion_kind']==kind]
@@ -322,11 +347,13 @@ class Audit:
                 if later_work:completion[name].update(state='incomplete',duration_ms=None,finished_at_ms_from_request_start=None)
         return {'availability':'observed','spans':spans,'missing_steps':[step for step in TRACE_STEPS if not any(s['step']==step for s in spans)],
                 'completion':completion,'issues':sorted(set(issues))}
-    def chain(self,project,key,group,q):
+    def chain(self,project,key,group,q,include_trace_attempts=False):
         trace=self.timeline(group)
-        # Timing evidence never changes comparison eligibility or the seven-stage audit.
+        # Historical comparisons exclude timing rows; outcome adapters count every observed attempt.
         comparison_group=[r for r in group if r['facts']['stage']!='trace']
-        facts=[r['facts'] for r in (comparison_group or group)];group=comparison_group or group;reference=self.ref(key,project,'request',facts[0]['request_ref']);environments={f['environment'] for f in facts}
+        facts=[r['facts'] for r in (comparison_group or group)]
+        group=group if include_trace_attempts else comparison_group or group
+        reference=self.ref(key,project,'request',facts[0]['request_ref']);environments={f['environment'] for f in facts}
         issues=[];slots=defaultdict(list);attempt_ids=defaultdict(set)
         for row in group:
             f=row['facts']
@@ -335,6 +362,7 @@ class Audit:
         if any(len(v)>1 for v in attempt_ids.values()):issues.append('attempt_reference_reused')
         if any(len({r['facts']['attempt_ref'] for r in v})>1 for v in slots.values()):issues.append('attempt_slot_conflict')
         latest=max(slots) if slots else None;observations=slots[latest] if slots else []
+        if include_trace_attempts:observations=[r for r in observations if r['facts']['stage']!='trace'] or observations
         releases={r['facts'].get('release_ref') for r in observations}
         if any(r['facts'].get('diagnostic_code')=='comparison_scope_unavailable' for r in observations):issues.append('comparison_scope_unavailable')
         if len(environments)>1:issues.append('environment_conflict')
@@ -345,7 +373,7 @@ class Audit:
             if row['facts']['stage'] in STAGES:by_stage[row['facts']['stage']].append(row)
         if any(len(v)>1 for v in by_stage.values()):issues.append('duplicate_stage_observations')
         values={}
-        for field in ['request_kind','command_kind','release_sha','request_started_at_ms','comparison_eligible','confirmation_required','tool_required','reply_required']:
+        for field in ['request_kind','traffic_kind','command_kind','release_sha','request_started_at_ms','comparison_eligible','confirmation_required','tool_required','reply_required']:
             values[field],conflict=agreed_fact(observations,field)
             if conflict:issues.append(field+'_conflict')
         stages=[]
@@ -381,7 +409,7 @@ class Audit:
         if ordering!=sorted(ordering):issues.append('stage_time_conflict');comparison='unavailable'
         return {'request':reference,'environment':('conflict' if len(environments)!=1 else next(iter(environments))) if comparison_group else 'unknown',
             'environment_mismatch':bool(comparison_group) and any(env!=q.expected_environment for env in environments),'request_kind':values['request_kind'] or 'unknown',
-            'command_kind':values['command_kind'],'release_sha':values['release_sha'],'request_started_at_ms':values['request_started_at_ms'],
+            'command_kind':values['command_kind'],'traffic_kind':values['traffic_kind'] or 'unknown','release_sha':values['release_sha'],'request_started_at_ms':values['request_started_at_ms'],
             'business_attempts_observed':len(slots),'latest_attempt_number':latest,'missing_attempt_numbers':max(slots)-len(slots) if slots else None,
             'comparison_declared_eligible':declared,'comparison':comparison,'trace':trace,'stages':stages,'issues':sorted(set(issues)),
             'producer_reported_unsafe':any(f.get('proposal_safe') is False for f in facts),'business_state':'not_independently_verified',

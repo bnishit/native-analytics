@@ -87,8 +87,29 @@ def parser():
             if action in ['update','delete']:
                 command.add_argument('--id',required=True);command.add_argument('--revision',required=True,type=int)
     evidence=sub.add_parser('attach-audit-evidence');evidence.add_argument('--project',required=True);evidence.add_argument('--id',required=True);evidence.add_argument('--file',required=True)
-    for name in ['audit-catalog','audit-review','audit-trace','audit-evaluate','audit-onboarding','catalog','describe-property']:
+    for name in ['audit-catalog','audit-review','audit-trace','audit-evaluate','audit-onboarding','catalog','describe-property','outcome-evaluate']:
         command=sub.add_parser(name);command.add_argument('--project',required=True);command.add_argument('--file',required=True)
+    for name in ['outcome-goals','outcome-goal','outcome-save']:
+        command=sub.add_parser(name);command.add_argument('--project',required=True)
+        if name!='outcome-goals':command.add_argument('--id',required=True)
+        if name=='outcome-goal':command.add_argument('--version',required=True,type=int)
+        if name=='outcome-save':command.add_argument('--revision',required=True,type=int);command.add_argument('--file',required=True)
+    for name in ['experiment-list','experiment-get','experiment-save','experiment-compare']:
+        command=sub.add_parser(name);command.add_argument('--project',required=True)
+        if name!='experiment-compare':command.add_argument('--kind',choices=['cases','datasets','runs'],required=True)
+        if name in ['experiment-get','experiment-save']:command.add_argument('--id',required=True)
+        if name=='experiment-get':command.add_argument('--version',type=int,default=1)
+        if name=='experiment-save':command.add_argument('--revision',type=int,default=0)
+        if name in ['experiment-save','experiment-compare']:command.add_argument('--file',required=True)
+    for name in ['collection-health','collection-sources','collection-save']:
+        command=sub.add_parser(name);command.add_argument('--project',required=True)
+        if name!='collection-sources':command.add_argument('--file',required=True)
+        if name=='collection-save':command.add_argument('--revision',required=True,type=int)
+    command=sub.add_parser('outcome-releases');command.add_argument('--project',required=True);command.add_argument('--environment',choices=['production','staging','development','test','local'],required=True);command.add_argument('--offset',type=int,default=0)
+    command=sub.add_parser('outcome-release-compare');command.add_argument('--project',required=True);command.add_argument('--file',required=True)
+    command=sub.add_parser('debug-policy');command.add_argument('--project',required=True);command.add_argument('--file');command.add_argument('--revision',type=int)
+    command=sub.add_parser('debug-review');command.add_argument('--project',required=True);command.add_argument('--file',required=True)
+    sub.add_parser('debug-capture').add_argument('--file',required=True)
     connect=sub.add_parser('connect-audit');connect.add_argument('--project',required=True);connect.add_argument('--label',default='Codex request audit');connect.add_argument('--days',type=int,default=7);connect.add_argument('--output',required=True)
     key=sub.add_parser('create-read-key');key.add_argument('--purpose',choices=['analytics','audit'],default='analytics');key.add_argument('--project',required=True);key.add_argument('--label',required=True);key.add_argument('--days',type=int,default=30);key.add_argument('--output',required=True)
     key=sub.add_parser('read-keys');key.add_argument('--project',required=True)
@@ -191,8 +212,38 @@ def main(argv=None):
                     path+='/'+urllib.parse.quote(args.id,safe='');params['revision']=args.revision
                 if action!='delete':body=json.loads(Path(args.file).read_text())
                 method={'analyze':'POST','save':'POST','update':'PUT','delete':'DELETE'}[action]
-    if command in ['audit-catalog','audit-review','audit-trace','audit-evaluate','audit-onboarding','catalog','describe-property']:
+    if command in ['audit-catalog','audit-review','audit-trace','audit-evaluate','audit-onboarding','catalog','describe-property','outcome-evaluate']:
         path='/api/catalog'+('/describe' if command=='describe-property' else '') if command in ['catalog','describe-property'] else '/api/audit/'+command.split('-')[1];body=json.loads(Path(args.file).read_text());method='POST'
+    if command in ['outcome-goals','outcome-goal','outcome-save']:
+        path='/api/outcomes/goals'
+        if command!='outcome-goals':path+='/'+urllib.parse.quote(args.id,safe='')
+        if command=='outcome-goal':params['version']=args.version
+        if command=='outcome-save':params['revision']=args.revision;body=json.loads(Path(args.file).read_text());method='PUT'
+    if command=='outcome-evaluate':path='/api/outcomes/evaluate';body=json.loads(Path(args.file).read_text());method='POST'
+    if command in ['experiment-list','experiment-get','experiment-save']:
+        path='/api/experiments/'+args.kind
+        if command!='experiment-list':path+='/'+urllib.parse.quote(args.id,safe='')
+        if command=='experiment-get':params['version']=args.version
+        if command=='experiment-save':params['revision']=args.revision;body=private_json(args.file);method='PUT'
+    if command=='experiment-compare':path='/api/experiments/compare';body=private_json(args.file);method='POST'
+    if command in ['collection-health','collection-sources','collection-save']:
+        path='/api/collection/health' if command=='collection-health' else '/api/collection/sources'
+        if command!='collection-sources':body=private_json(args.file);method='POST' if command=='collection-health' else 'PUT'
+        if command=='collection-save':params['revision']=args.revision
+    if command=='outcome-releases':path='/api/outcomes/releases';params['environment']=args.environment;params['offset']=args.offset
+    if command=='outcome-release-compare':path='/api/outcomes/releases/compare';body=private_json(args.file);method='POST'
+    if command=='debug-policy':
+        path='/api/debug/policy'
+        if args.file:
+            if args.revision is None:raise ValueError('policy changes require --revision')
+            body=private_json(args.file);params['revision']=args.revision;method='PUT'
+    if command=='debug-review':path='/api/debug/review';body=private_json(args.file);method='POST'
+    if command=='debug-capture':
+        sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'sdk/python'))
+        from afterspan_experiments import redact_debug
+        body=private_json(args.file)
+        if not isinstance(body.get('content'),dict):raise ValueError('provide selected JSON content')
+        body['content']=redact_debug(body['content']);path='/v1/debug';method='POST'
     if command=='attach-audit-evidence':
         path='/api/audit/evidence/'+urllib.parse.quote(args.id,safe='');body=json.loads(Path(args.file).read_text());method='PUT'
     if command=='assign-existing':
@@ -231,14 +282,14 @@ def main(argv=None):
         if command=='revoke-read-key':method='DELETE';path+='/'+urllib.parse.quote(args.id,safe='')
     for field in ['event' ,'distinct_id','property','value','status','ip','operation','before','before_id','search','offset']:
         if hasattr(args,field) and getattr(args,field) is not None:params[field]=getattr(args,field)
-    key_name='NATIVE_ANALYTICS_WRITE_KEY' if command in ['send','identify'] else 'ANALYTICS_ADMIN_TOKEN'
+    key_name='NATIVE_ANALYTICS_WRITE_KEY' if command in ['send','identify','debug-capture'] else 'ANALYTICS_ADMIN_TOKEN'
     key=os.environ.get(key_name)
     if key_name!='NATIVE_ANALYTICS_WRITE_KEY' and command!='assign-existing':key=os.environ.get('AFTERSPAN_WORKSPACE_KEY') or key
-    if command in ['projects','overview','query','journeys','setup','charts','funnels','segments','retention','analyze-funnel','analyze-segment','analyze-retention','catalog','audit-catalog','audit-review','audit-trace','audit-evaluate','audit-onboarding','loop-goals','loop-status','loop-observe','loop-compare']:
+    if command in ['projects','overview','query','journeys','setup','charts','funnels','segments','retention','analyze-funnel','analyze-segment','analyze-retention','catalog','audit-catalog','audit-review','audit-trace','audit-evaluate','audit-onboarding','outcome-evaluate','outcome-goals','outcome-goal','collection-health','collection-sources','loop-goals','loop-status','loop-observe','loop-compare']:
         key=os.environ.get('AFTERSPAN_READ_KEY') or key
     public=command in ['health','schema','login','complete-login','login-existing']
     session_file=os.environ.get('AFTERSPAN_SESSION_FILE')
-    receipt=SessionReceipt.read(session_file) if session_file and not public and command not in ['send','identify','assign-existing'] else None
+    receipt=SessionReceipt.read(session_file) if session_file and not public and command not in ['send','identify','debug-capture','assign-existing'] else None
     if receipt:
         if private_json(session_file).get('origin',origin)!=origin:raise ValueError('session belongs to another service')
         key=None

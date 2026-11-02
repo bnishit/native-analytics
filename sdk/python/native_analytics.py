@@ -51,17 +51,25 @@ def safe_journey(value):
 
 
 class Collector:
-    def __init__(self,url,key,path,max_queue=100000):
+    def __init__(self,url,key,path,max_queue=100000,*,source=None,environment=None,workflow=None,interval_seconds=60):
         if not url.startswith('https://') and not url.startswith('http://127.0.0.1:'):
             raise ValueError('analytics ingestion requires HTTPS')
         self.url=url.rstrip('/')+'/v1/events';self.key=key;self.path=Path(path);self.max_queue=max_queue
         self.stop=threading.Event();self.thread=None;self.last_pulse=0
+        if source is not None and (not re.fullmatch(r'[a-z][a-z0-9_.-]{0,63}',source) or environment not in {'production','staging','development','test','local'} or type(interval_seconds) is not int or not 10<=interval_seconds<=3600 or workflow is not None and not re.fullmatch(r'[a-z][a-z0-9_.-]{0,63}',workflow)):raise ValueError('invalid collection health configuration')
+        self.health_source=source;self.health_environment=environment;self.health_workflow=workflow;self.pulse_interval=interval_seconds
+        self.instance_id=str(uuid.uuid4());self.process_started_at_ms=int(time.time()*1000);self.pulse_sequence=0
+
         self.path.parent.mkdir(parents=True,exist_ok=True)
         with closing(self.db()) as c,c:
             c.execute('PRAGMA journal_mode=WAL')
             c.executescript('''CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY,payload TEXT NOT NULL,created REAL NOT NULL);
               CREATE TABLE IF NOT EXISTS delivery(id INTEGER PRIMARY KEY CHECK(id=1),last_delivery REAL,dropped INTEGER NOT NULL DEFAULT 0,last_error TEXT);
               INSERT OR IGNORE INTO delivery(id,dropped) VALUES(1,0);''')
+            fields={r[1] for r in c.execute('PRAGMA table_info(delivery)')}
+            for name,definition in [('rejected','INTEGER NOT NULL DEFAULT 0'),('delivery_failures','INTEGER NOT NULL DEFAULT 0'),('evaluator_failures','INTEGER')]:
+                if name not in fields:c.execute('ALTER TABLE delivery ADD COLUMN '+name+' '+definition)
+
 
     def db(self):
         return sqlite3.connect(self.path,timeout=1)
@@ -75,7 +83,8 @@ class Collector:
             properties=safe_properties(properties or {});attributes=safe_properties(attributes or {})
             if not isinstance(properties,dict) or not isinstance(attributes,dict):raise ValueError('properties must be objects')
             if max(len(json.dumps(properties)),len(json.dumps(attributes)))>16000:raise ValueError('properties exceed 16 KB')
-            event={'id':eid,'name':name,'distinct_id':distinct_id,'timestamp':datetime.now(timezone.utc).isoformat(),
+            observed=properties.get('afterspan_health',{}).get('observed_at_ms') if name=='analytics.pipeline' else None
+            event={'id':eid,'name':name,'distinct_id':distinct_id,'timestamp':datetime.fromtimestamp(observed/1000,timezone.utc).isoformat() if observed is not None else datetime.now(timezone.utc).isoformat(),
                    'properties':properties,'attributes':attributes}
             if journey is not None:
                 event['journey']=safe_journey(journey)
@@ -88,6 +97,9 @@ class Collector:
                 c.execute('INSERT INTO outbox VALUES(?,?,?)',(eid,json.dumps(event,allow_nan=False),time.time()))
             return eid
         except Exception:
+            try:
+                with closing(self.db()) as c,c:c.execute("UPDATE delivery SET rejected=rejected+1,last_error='enqueue_failed' WHERE id=1")
+            except sqlite3.Error:pass
             log.exception('analytics local enqueue failed; application request continues')
             return None
 
@@ -100,8 +112,27 @@ class Collector:
     def status(self):
         with closing(self.db()) as c:
             count,oldest=c.execute('SELECT count(*),min(created) FROM outbox').fetchone()
-            last,dropped,error=c.execute('SELECT last_delivery,dropped,last_error FROM delivery WHERE id=1').fetchone()
-        return {'queued':count,'oldest_queued_at':oldest,'last_delivery':last,'dropped':dropped,'last_error':error}
+            last,dropped,error,rejected,failures,evaluators=c.execute('SELECT last_delivery,dropped,last_error,rejected,delivery_failures,evaluator_failures FROM delivery WHERE id=1').fetchone()
+        return {'queued':count,'oldest_queued_at':oldest,'last_delivery':last,'dropped':dropped,'last_error':error,'rejected':rejected,'delivery_failures':failures,'evaluator_failures':evaluators}
+
+    def record_evaluation(self,failed=False):
+        if type(failed) is not bool:raise ValueError('evaluation failure must be a boolean')
+        try:
+            with closing(self.db()) as c,c:c.execute('UPDATE delivery SET evaluator_failures=coalesce(evaluator_failures,0)+? WHERE id=1',(int(failed),))
+        except sqlite3.Error:pass
+
+    def pulse(self):
+        status=self.status()
+        if self.health_source is None:return self.track('analytics.pipeline',properties=status)
+        now=int(time.time()*1000);self.pulse_sequence+=1
+        pulse={'schema_version':'collection-health-v1','source':self.health_source,'environment':self.health_environment,'workflow':self.health_workflow,
+            'instance_id':self.instance_id,'sequence':self.pulse_sequence,'observed_at_ms':now,'process_started_at_ms':self.process_started_at_ms,
+            'interval_seconds':self.pulse_interval,'delivery_mode':'durable','queued':status['queued'],'capacity':self.max_queue,
+            **{k:status[k] for k in ['dropped','rejected','delivery_failures','evaluator_failures']},
+            'oldest_queued_at_ms':int(status['oldest_queued_at']*1000) if status['oldest_queued_at'] is not None else None,
+            'last_delivery_at_ms':int(status['last_delivery']*1000) if status['last_delivery'] is not None else None,
+            'error_code':None if not status['last_error'] else 'queue_full' if status['last_error']=='queue capacity reached' else 'enqueue_failed' if status['last_error']=='enqueue_failed' else 'delivery_failed'}
+        return self.track('analytics.pipeline',properties={'afterspan_health':pulse})
 
     def flush(self):
         with closing(self.db()) as c:rows=c.execute('SELECT id,payload FROM outbox ORDER BY created LIMIT 100').fetchall()
@@ -122,14 +153,14 @@ class Collector:
             return len(rows)
         except Exception as exc:
             # Do not log URLs, keys or provider bodies on network failure.
-            with closing(self.db()) as c,c:c.execute('UPDATE delivery SET last_error=? WHERE id=1',(type(exc).__name__,))
+            with closing(self.db()) as c,c:c.execute('UPDATE delivery SET last_error=?,delivery_failures=delivery_failures+1 WHERE id=1',(type(exc).__name__,))
             return 0
 
     def work(self):
         while not self.stop.is_set():
             try:
-                if time.time()-self.last_pulse>=60:
-                    self.track('analytics.pipeline',properties=self.status());self.last_pulse=time.time()
+                if time.time()-self.last_pulse>=self.pulse_interval:
+                    self.pulse();self.last_pulse=time.time()
                 delivered=self.flush()
             except Exception:
                 delivered=0;log.exception('analytics worker failed; queued events retained')

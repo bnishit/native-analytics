@@ -6,7 +6,9 @@
 
 Funnels, saved behavior/trait segments, linked journeys, retries, event metrics and scoped agent access are included in the core. Self-hosting needs no Stripe account, subscription or commercial quota. Accounts, teams and roles protect your own instance. Optional hosted billing is a separate opt-in; it never gates a core analytics feature.
 
-### Connect an agent remotely
+> Outcome-platform branch: reviewed experiments can now pin a goal version and compare two verified releases against mature, explicitly labelled user-task windows. This is local and unreleased; collection health and encrypted restore have local proof; a 32,000-observation local capacity run and real process crash/retry tests pass; production adoption and operating verification remain pending. See [capacity and access limits](docs/capacity-and-access.md). See [collection health](docs/collection-health.md) and [operations](docs/operations.md). See [release outcomes](docs/release-outcomes.md).
+
+## Connect an agent remotely
 
 Use **your deployment's** `https://YOUR_HOST/mcp` URL with an OAuth-capable Streamable HTTP client. Discover the endpoint and limits at `/.well-known/afterspan`. The server uses the official MCP SDK for OAuth discovery, dynamic public-client registration, S256 PKCE, exact registered redirect validation and token exchange. Tokens are bound to this MCP resource. HTTPS is required except for local loopback development/callbacks.
 
@@ -34,6 +36,16 @@ python -m venv .venv
 Open http://127.0.0.1:8769/app. This loopback preview creates private local email files instead of sending mail. Open your sign-in email from `data/mail` and consume its link. Create a workspace/project, store its producer key privately, and connect your app. Never publish that local mail folder or use local-mail mode on a public service. For a public instance configure HTTPS, secure cookies, email delivery and a persistent volume as described below.
 
 `AFTERSPAN_EDITION=self_hosted` is the default. Usage counts remain useful for server capacity; there are no commercial event, payload, project or seat limits. Request rate, query-size, definition-count and retention bounds still protect the service. This is one process on one SQLite volume, not unlimited infrastructure.
+
+### Generic workflow outcomes — unreleased branch work
+
+[Governed debug snapshots](docs/debugging.md) add default-off, owner-scoped capture windows, SDK redaction before upload, encrypted expiring storage and separately consented editor reads. These are selected reviewed snapshots, not automatic prompt capture.
+
+[Regression cases and experiments](docs/experiments.md) now have a local primary screen, versioned datasets, a Python application-side runner and scoped CLI/MCP surfaces. These remain unreleased; fixed JSON checks do not establish production impact.
+
+The same branch adds [Python/Node workflow context helpers](docs/tracing-sdk.md) and [metadata-only OTLP/HTTP ingestion](docs/otlp.md). Local official-exporter and cross-language tests pass; deployment and live provider adoption remain release gates.
+
+The outcome-platform branch adds versioned goals and required checks over generic workflow tasks, with original-clock deadlines and explicit satisfied/failed/withheld/unclassified/waiting results. Native workflow traces and the existing Slack request stream share the classifier through explicit integration adapters; historical Slack counts alone cannot satisfy a source-evidence requirement. Exact decimal model charges retain sub-microdollar costs rather than rounding them to zero. See [outcome semantics](docs/outcomes.md) and the [full release acceptance matrix](docs/outcome-platform-release.md). This is not a production release or a claim of Langfuse parity.
 
 ### Onboard a repository with existing analytics
 
@@ -410,7 +422,7 @@ FastAPI, SQLite on one persistent volume, plain HTML/CSS/JS and SVG charts. No h
 3. Set `ANALYTICS_PUBLIC_URL` to the service HTTPS origin, `ANALYTICS_DB=/data/analytics.db`,
    `COOKIE_SECURE=true`, `RETENTION_DAYS=90`, `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS=0`.
 4. Configure email delivery as above. Open `/app`, verify the email sign-in link, create a workspace and project, then verify a real collection receipt.
-5. Use the Railway volume backup facility for backups. A persistent volume is not an off-site backup.
+5. Configure Railway/off-site backup retention separately. The unreleased branch also includes an operator-only encrypted consistent SQLite snapshot and isolated restore tool; see [operations](docs/operations.md). Its local tests are not a production recovery claim. A persistent volume is not an off-site backup.
 
 For local development use a writable `ANALYTICS_DB` and `COOKIE_SECURE=false` on localhost only.
 Run `uvicorn app:app --host 127.0.0.1 --port 8080`.

@@ -2,6 +2,8 @@ import base64
 import hashlib
 import json
 import logging
+import os
+from unittest.mock import patch
 import time
 import unittest
 import uuid
@@ -26,7 +28,7 @@ class RemoteMCPTests(unittest.TestCase):
     join=test_workspaces.WorkspaceTests.join
 
     def register(self):
-        r=self.client.post('/register',json={'client_name':'Fresh test agent','redirect_uris':['http://127.0.0.1:19191/callback'],'grant_types':['authorization_code','refresh_token'],'response_types':['code'],'token_endpoint_auth_method':'none','scope':'analytics:read charts:write audit:read'})
+        r=self.client.post('/register',json={'client_name':'Fresh test agent','redirect_uris':['http://127.0.0.1:19191/callback'],'grant_types':['authorization_code','refresh_token'],'response_types':['code'],'token_endpoint_auth_method':'none','scope':'analytics:read charts:write audit:read goals:write experiments:write debug:read collection:write'})
         self.assertEqual(r.status_code,201,r.text);return r.json()['client_id']
 
     def begin(self,cid,scope='analytics:read charts:write',**overrides):
@@ -90,13 +92,14 @@ class RemoteMCPTests(unittest.TestCase):
             'schema_version':'workflow-trace-v1','trace_id':trace_id,'attempt_id':str(uuid.uuid4()),
             'attempt_number':1,'span_id':str(uuid.uuid4()),'workflow':'appointment_request',
             'environment':'staging','step':'provider_send','state':'started'}})
-        with closing(app.connect()) as c,c:app.store_events(c,p,[event])
+        audit=app.Event(name='slack.audit.parser',properties={'afterspan_audit':{'schema_version':'slack-request-v1','stage':'parser','environment':'staging','request_ref':trace_id,'attempt_ref':str(uuid.uuid4()),'attempt_number':1,'context_digest':'a'*64}})
+        with closing(app.connect()) as c,c:app.store_events(c,p,[event,audit])
         h={'Authorization':'Bearer '+t['access_token']}
         self.assertEqual(self.client.post('/api/traces/review',params={'project':p},headers=h,json={'environment':'staging'}).status_code,403)
-        for query in [{},{'event':'trace.observed','breakdown':'afterspan_trace'},{'breakdown':'afterspan_trace'}]:
+        for query in [{'event':'slack.audit.parser','breakdown':'afterspan_audit'},{},{'event':'trace.observed','breakdown':'afterspan_trace'},{'breakdown':'afterspan_trace'},{'breakdown':'afterspan_audit'}]:
             r=self.client.post('/api/query',params={'project':p},headers=h,json=query)
-            self.assertEqual(r.status_code,200,r.text);self.assertEqual(r.json()['total'],0)
-            self.assertNotIn(trace_id,r.text)
+            self.assertEqual(r.status_code,200,r.text);self.assertNotIn('a'*64,r.text);self.assertNotIn(trace_id,r.text)
+            self.assertEqual(r.json()['total'],0)
         r=self.client.post('/api/catalog',params={'project':p},headers=h,json={'event':'trace.observed'})
         self.assertEqual(r.status_code,200,r.text);self.assertNotIn('afterspan_trace',r.text)
         r=self.client.get('/api/overview',params={'project':p},headers=h)
@@ -147,7 +150,7 @@ class RemoteMCPTests(unittest.TestCase):
         self.assertEqual(owner.get('/auth/mcp/connections').json()['connections'],[])
 
     def test_remote_transport_tools_and_idempotent_chart_storage(self):
-        owner,uid,w,p,cid,t,*_=self.grant('analytics:read charts:write audit:read')
+        owner,uid,w,p,cid,t,*_=self.grant('analytics:read charts:write audit:read goals:write experiments:write debug:read collection:write')
         with TestClient(app.app,base_url=ORIGIN) as client:
             headers={'Authorization':'Bearer '+t['access_token'],'Accept':'application/json, text/event-stream'}
             def rpc(method,params=None):
@@ -162,6 +165,11 @@ class RemoteMCPTests(unittest.TestCase):
                 result=rpc('tools/call',{'name':name,'arguments':args})['result']
                 self.assertFalse(result.get('isError'),result);return json.loads(result['content'][0]['text'])
             self.assertEqual(call('connection_status')['project'],p)
+            self.assertEqual(call('collection_sources')['sources'],[])
+            self.assertEqual(call('save_collection_source',{'definition':{'source':'worker','environment':'staging','interval_seconds':60},'revision':0})['revision'],1)
+            health=call('collection_health',{'query':{'environment':'staging'}})
+            self.assertEqual(health['collection_completeness'],'not_established');self.assertIn('pulse_missing',health['sources'][0]['reasons'])
+
             self.assertIn('instructions',call('get_workflow',{'name':'build-dashboard'}))
             self.assertIn('events',call('event_catalog',{'query':{'days':30}}))
             self.assertIn('meanings',call('workflow_trace_catalog'))
@@ -179,6 +187,52 @@ class RemoteMCPTests(unittest.TestCase):
             opened=call('open_trace',{'reference':searched['traces'][0]['reference'],'query':searched['query']})
             self.assertTrue(opened['trace']['has_gaps'])
             self.assertEqual(opened['trace']['business_outcome'],'not_independently_verified')
+            self.assertFalse(call('debug_capture_policy')['active'])
+            with patch.dict(os.environ,{'AFTERSPAN_CONNECTION_KEY':base64.urlsafe_b64encode(b'k'*32).decode()}):
+                policy={'enabled':True,'workflow':'appointment_request','environment':'staging','privacy_reviewed':True}
+                response=owner.put('/api/debug/policy?project='+p+'&revision=0',headers=CSRF,json=policy)
+                self.assertEqual(response.status_code,200,response.text)
+                from debugging import DebugSnapshot
+                facts=trace_event.properties['afterspan_trace'];snapshot_id=str(uuid.uuid4())
+                capture=DebugSnapshot(id=snapshot_id,policy_revision=1,privacy_reviewed=True,kind='context',content={'chosen':'public fixture'},**{k:facts[k] for k in ['trace_id','attempt_id','span_id','workflow','environment']})
+                app.debugging.capture(p,capture)
+                fresh=call('search_traces',{'query':{'environment':'staging'}})
+                debug_query={**fresh['query'],'reference':fresh['traces'][0]['reference']}
+                listed=call('review_debug_snapshots',{'query':debug_query})
+                self.assertEqual(listed['snapshots'][0]['id'],snapshot_id);self.assertNotIn('content',listed['snapshots'][0])
+                debugged=call('review_debug_snapshots',{'query':{**debug_query,'snapshot_id':snapshot_id}})
+                self.assertEqual(debugged['content'],{'chosen':'public fixture'});self.assertNotIn(facts['trace_id'],json.dumps(debugged))
+                self.assertEqual(client.put('/api/debug/policy?project='+p+'&revision=1',headers={'Authorization':'Bearer '+t['access_token']},json=policy).status_code,403)
+
+            from outcomes import OutcomeGoal
+            goal_id=str(uuid.uuid4())
+            goal=OutcomeGoal(title='Checked workflow',workflow='appointment_request',environment='staging',deadline_seconds=30,
+                checks=[{'name':'source_facts','version':1,'method':'source','phase':'before_delivery'}],milestones=['delivery'])
+            args={'id':goal_id,'revision':0,'definition':goal.model_dump(mode='json')}
+            self.assertEqual(call('save_outcome_goal',args)['version'],1)
+            self.assertEqual(call('save_outcome_goal',args)['version'],1)
+            self.assertEqual(call('outcome_goals')['goals'][0]['id'],goal_id)
+            self.assertEqual(call('released_artifacts',{'environment':'staging'})['releases'],[])
+            outcome=call('evaluate_outcomes',{'query':{'goal_id':goal_id,'version':1}})
+            self.assertEqual(outcome['counts']['unclassified'],1)
+            self.assertIsNone(outcome['satisfied_fraction'])
+
+            case_id=str(uuid.uuid4());dataset_id=str(uuid.uuid4())
+            case={'title':'Reviewed read request','privacy_reviewed':True,'input':{'request':'list experiments in production'},'expected':{'count':2}}
+            saved=call('save_experiment_object',{'kind':'cases','id':case_id,'definition':case})
+            self.assertEqual(saved['version'],1)
+            self.assertEqual(call('save_experiment_object',{'kind':'cases','id':case_id,'definition':case})['sha256'],saved['sha256'])
+            self.assertNotIn('input',call('experiment_objects',{'kind':'cases'})['items'][0]['definition'])
+            dataset={'title':'Read requests','cases':[{'id':case_id,'version':1}]}
+            call('save_experiment_object',{'kind':'datasets','id':dataset_id,'definition':dataset})
+            ids=[]
+            for variant,count in [('baseline',3),('candidate',2)]:
+                run_id=str(uuid.uuid4());ids.append(run_id)
+                definition={'dataset':dataset_id,'dataset_version':1,'variant':variant,'release_sha':'a'*40,'evaluator_runner_sha256':'b'*64,'privacy_reviewed':True,'results':[{'id':case_id,'version':1,'output':{'count':count},'duration_ms':10}]}
+                call('save_experiment_object',{'kind':'runs','id':run_id,'definition':definition})
+            compared=call('compare_experiments',{'baseline':ids[0],'candidate':ids[1]})
+            self.assertTrue(compared['eligible_for_review']);self.assertFalse(compared['deployment_authorized'])
+
             batch_event=app.Event(name='trace.observed',properties={'afterspan_trace':{
                 **trace_event.properties['afterspan_trace'],'trace_id':str(uuid.uuid4()),'span_id':str(uuid.uuid4()),
                 'step':'processing','receipt_count':1,'linked_trace_ids':[trace_event.properties['afterspan_trace']['trace_id']]}})
@@ -192,5 +246,48 @@ class RemoteMCPTests(unittest.TestCase):
             self.assertEqual(len(call('saved_charts')['charts']),1)
             changed=rpc('tools/call',{'name':'save_chart','arguments':{**chart,'title':'Changed'}})['result'];self.assertTrue(changed['isError'])
             self.assertEqual(len(call('saved_charts')['charts']),1)
+            with closing(app.connect()) as c,c:c.execute("UPDATE memberships SET role='reader' WHERE workspace=? AND user_id=?",(w,uid))
+            downgraded=rpc('tools/call',{'name':'save_outcome_goal','arguments':{**args,'revision':1}})['result']
+            self.assertTrue(downgraded['isError'])
+            downgraded=rpc('tools/call',{'name':'experiment_objects','arguments':{'kind':'cases'}})['result']
+            self.assertTrue(downgraded['isError'])
+            self.assertTrue(rpc('tools/call',{'name':'debug_capture_policy','arguments':{}})['result']['isError'])
+
+
+
+    def test_release_measurement_needs_both_diagnostic_and_experiment_scopes(self):
+        for scope in ['audit:read','experiments:write']:
+            owner,uid,w,p,cid,t,*_=self.grant(scope)
+            response=self.client.get('/api/outcomes/releases?project='+p+'&environment=staging',headers={'Authorization':'Bearer '+t['access_token']})
+            self.assertEqual(response.status_code,403)
+        owner,uid,w,p,cid,t,*_=self.grant('audit:read experiments:write')
+        response=self.client.get('/api/outcomes/releases?project='+p+'&environment=staging',headers={'Authorization':'Bearer '+t['access_token']})
+        self.assertEqual(response.status_code,200,response.text)
+
+    def test_chart_write_scope_cannot_edit_outcome_goals(self):
+        owner,uid,w,p,cid,t,*_=self.grant('audit:read charts:write')
+        definition={'title':'Checked export','workflow':'document_export','environment':'production','deadline_seconds':60,
+            'checks':[{'name':'source_facts','version':1,'method':'source','phase':'before_delivery'}],'milestones':['delivery']}
+        response=self.client.put('/api/outcomes/goals/'+str(uuid.uuid4())+'?project='+p+'&revision=0',headers={'Authorization':'Bearer '+t['access_token']},json=definition)
+        self.assertEqual(response.status_code,403)
+        self.assertEqual(app.outcomes.list(p)['goals'],[])
+        self.assertEqual(self.client.get('/api/debug/policy?project='+p,headers={'Authorization':'Bearer '+t['access_token']}).status_code,403)
+        self.assertEqual(self.client.get('/api/experiments/cases?project='+p,headers={'Authorization':'Bearer '+t['access_token']}).status_code,403)
+
+
+    def test_collection_writes_need_separate_scope_and_current_editor_membership(self):
+        owner,uid,w,p,cid,t,*_=self.grant('audit:read')
+        definition={'source':'worker','environment':'staging','interval_seconds':60}
+        headers={'Authorization':'Bearer '+t['access_token']}
+        self.assertEqual(self.client.get('/api/collection/sources?project='+p,headers=headers).status_code,200)
+        self.assertEqual(self.client.put('/api/collection/sources?project='+p,headers=headers,json=definition).status_code,403)
+        owner,uid,w,p,cid,t,*_=self.grant('audit:read collection:write');headers={'Authorization':'Bearer '+t['access_token']}
+        self.assertEqual(self.client.put('/api/collection/sources?project='+p,headers=headers,json=definition).status_code,200)
+        self.assertEqual(self.client.get('/api/collection/sources?project=other-project',headers=headers).status_code,403)
+        with closing(app.connect()) as c,c:c.execute("UPDATE memberships SET role='reader' WHERE workspace=? AND user_id=?",(w,uid))
+        self.assertEqual(self.client.put('/api/collection/sources?project='+p+'&revision=1',headers=headers,json={**definition,'enabled':False}).status_code,403)
+        self.assertEqual(self.client.get('/api/collection/sources?project='+p,headers=headers).status_code,200)
+        self.client.post('/revoke',data={'client_id':cid,'token':t['access_token']}).raise_for_status()
+        self.assertEqual(self.client.get('/api/collection/sources?project='+p,headers=headers).status_code,401)
 
 if __name__=='__main__':unittest.main()

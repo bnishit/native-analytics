@@ -85,3 +85,22 @@ test('deployment whitespace does not change endpoint, key or source',async()=>{
  await client.track('test.event');
  assert.deepEqual(captured,{url:'https://example.test/v1/events',auth:'Bearer write-key',source:'shelf'});
 });
+
+test('collection health exposes retained delivery failures and callback errors do not escape',async()=>{
+ const client=createAnalytics({url:'https://analytics.example',writeKey:'synthetic-key',fetch:async()=>new Response('',{status:503}),onError:()=>{throw Error('private callback error')}});
+ await client.track('export.completed');
+ assert.equal(client.status().queued,1);assert.equal(client.status().last_error,'delivery_failed');assert.ok(client.status().oldest_queued_at);
+ await client.track('bad event that normalizes','identity',Object.fromEntries(Array.from({length:65},(_,i)=>['field'+i,'x'.repeat(2000)])));
+ assert.equal(client.status().rejected,1);
+});
+
+test('typed memory-queue pulse preserves explicit evaluator status and exact clock',async()=>{
+ const events:Array<any>=[];const client=createAnalytics({url:'https://analytics.example',writeKey:'synthetic-key',health:{source:'export_worker',environment:'staging',workflow:'document_export'},fetch:async(_,options)=>{const sent=JSON.parse(String(options?.body)).events;events.push(...sent);return new Response(JSON.stringify({accepted:sent.length,duplicates:0}))}});
+ await client.pulse();let pulse=events[0].properties.afterspan_health;assert.equal(pulse.delivery_mode,'memory');assert.equal(pulse.evaluator_failures,null);assert.equal(pulse.error_code,null);
+ client.recordEvaluation(true);await client.pulse();pulse=events[1].properties.afterspan_health;assert.equal(pulse.evaluator_failures,1);assert.equal(pulse.sequence,2);assert.equal(Date.parse(events[1].timestamp),pulse.observed_at_ms);assert.equal(events[1].properties.source,undefined);
+ assert.equal(client.status().queued,0);
+});
+test('native model count metrics survive but raw inputs and string impostors stay redacted',()=>{
+ const result=safeProperties({input_count:2,output_count:3,input:'private prompt',input_count_text:'private value'}) as any;
+ assert.equal(result.input_count,2);assert.equal(result.input,'[redacted]');assert.equal(result.input_count_text,'[redacted]');assert.equal(result.output_count,3);const impostor=safeProperties({input_count:'private value',output_count:'private value'}) as any;assert.equal(impostor.input_count,'[redacted]');assert.equal(impostor.output_count,'[redacted]');
+});

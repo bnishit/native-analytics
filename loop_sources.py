@@ -1,4 +1,3 @@
-import base64
 import hashlib
 import http.client
 import json
@@ -12,7 +11,7 @@ from typing import Annotated, Literal
 from loop_onboarding import EventOutcome
 
 from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from private_storage import storage_cipher
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator, model_validator
 
@@ -116,16 +115,6 @@ def _secret(secret):
     return value
 
 
-def _cipher():
-    try:
-        value = base64.b64decode(os.environ.get('AFTERSPAN_CONNECTION_KEY', ''), altchars=b'-_', validate=True)
-        if len(value) != 32:
-            raise ValueError()
-        return AESGCM(value)
-    except (ValueError, TypeError):
-        raise HTTPException(503, 'Private connection storage is not configured') from None
-
-
 def _aad(project, id, revision, kind):
     return _json([project, id, revision, kind]).encode()
 
@@ -147,7 +136,7 @@ class Connections:
 
     def put(self, project, id, expected_revision, kind, config, secret):
         config = _config(kind, config)
-        value, cipher = _secret(secret), _cipher()
+        value, cipher = _secret(secret), storage_cipher()
         if not isinstance(id, str) or not re.fullmatch(_UUID, id) or type(expected_revision) is not int or expected_revision < 0:
             raise HTTPException(422, 'Invalid connection revision')
         with closing(self.connect()) as c, c:
@@ -177,7 +166,7 @@ class Connections:
             raise HTTPException(404, 'Connection not found')
         if row['status'] != 'configured' or kind is not None and row['kind'] != kind:
             raise HTTPException(409, 'Connection is unavailable')
-        cipher = _cipher()
+        cipher = storage_cipher()
         try:
             value = row['secret']
             secret = cipher.decrypt(value[:12], value[12:], _aad(project, id, row['revision'], row['kind'])).decode()

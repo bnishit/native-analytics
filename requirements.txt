@@ -4,3 +4,4 @@ pydantic>=2.9,<3
 stripe==14.4.1
 cryptography==50.0.2
 mcp==1.30.0
+opentelemetry-proto==1.45.2

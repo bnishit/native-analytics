@@ -43,4 +43,8 @@ def search_traces(query:dict)->dict:
 def open_trace(reference:str,query:dict)->dict:
     """Open one safe trace reference with its frozen search query. Includes parent-linked timings and evidence gaps, never raw messages or independent business proof."""
     return request('open',{**query,'reference':reference},'traces')
+@mcp.tool(annotations=READ)
+def evaluate_outcomes(query:dict)->dict:
+    """Evaluate saved goal_id/version using original task clocks, required checks and deadline. Reuse the frozen query. Missing, withheld and waiting work remain explicit."""
+    return request('evaluate',query,'outcomes')
 if __name__=='__main__':mcp.run(transport='stdio')

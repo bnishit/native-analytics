@@ -33,7 +33,11 @@ def main():
     npm = Path(shutil.which('npm')).resolve()
     with tempfile.TemporaryDirectory(prefix='afterspan-installed-sdk-') as directory:
         root = Path(directory)
-        clean = {'PATH': os.environ['PATH'], 'HOME': str(root), 'TMPDIR': str(root), 'npm_config_cache': str(root / 'npm-cache')}
+        user_config, global_config = root / 'empty-user-config', root / 'empty-global-config'
+        user_config.write_text(''); global_config.write_text('')
+        clean = {'PATH': os.environ['PATH'], 'TMPDIR': str(root), 'PIP_CONFIG_FILE': os.devnull,
+                 'npm_config_userconfig': str(user_config), 'npm_config_globalconfig': str(global_config),
+                 'npm_config_cache': str(root / 'npm-cache')}
         version = run([node, '--version'], root, env=clean).stdout.strip()
         assert int(version.split('.')[0][1:]) >= 24
         run([sys.executable, '-m', 'build', '--wheel', '--no-isolation', REPO / 'sdk/python', '--outdir', root], root)

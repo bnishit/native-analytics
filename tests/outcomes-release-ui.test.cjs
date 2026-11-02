@@ -3,7 +3,7 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const vm=require('node:vm');
 function context(extra={}){
- const c=vm.createContext({panel:(title,body)=>title+' '+body,esc:v=>String(v??'').replaceAll('<','&lt;'),fmt:String,...extra});
+ const c=vm.createContext({project:'app',location:{hash:''},URLSearchParams,panel:(title,body)=>title+' '+body,esc:v=>String(v??'').replaceAll('<','&lt;'),fmt:String,...extra});
  vm.runInContext(fs.readFileSync('static/outcomes.js','utf8'),c);return c;
 }
 test('model cost never turns absent observations or missing amounts into free success',()=>{
@@ -37,4 +37,64 @@ test('decimal provider cost stays visible below one micro-dollar',()=>{
  assert.match(html,/\$0\.000000037125 measured/);assert.match(html,/\$0\.000000012375 per satisfied/);assert.doesNotMatch(html,/Unknown per/);
  const tiny=vm.runInContext('outcomeModelCost('+JSON.stringify({model_spans:1,cost_known_spans:1,cost_unknown_spans:0,measured_usd:'0.000000000001',per_satisfied_task_usd:'0',per_satisfied_task_below_display_precision:true,per_satisfied_task_rounded:true})+')',c);
  assert.match(tiny,/&lt;\$0\.000000000000000001/);assert.match(tiny,/rounded/);
+});
+
+test('release evidence distinguishes pending checks, owner adoption and final identity',()=>{
+ const c=context();
+ const pending=vm.runInContext('releaseEvidenceMarkup({status:"pending"},true)',c);
+ assert.match(pending,/Checking source and deployment/);assert.doesNotMatch(pending,/Adopt this evidence/);
+ const proposal={schema:'external-release-proposal-v1',status:'requires_owner_adoption',id:'proposal',proposal_sha256:'a'.repeat(64),evidence:{source:{repository:'owner/app',pr_number:12,commit:'b'.repeat(40),changed_files:1,manifest:[{path:'src/<unsafe>.ts',before:null,after:{mode:'100644',sha:'c'.repeat(40)}}]},deployment:{environment:'production',released_at:'2026-11-03T00:00:00Z'}},limits:['Identity only. No merge or deployment permission.']};
+ const editor=vm.runInContext('releaseEvidenceMarkup('+JSON.stringify(proposal)+',false)',c);
+ assert.match(editor,/An owner must adopt/);assert.doesNotMatch(editor,/id="release-evidence-adopt"/);assert.doesNotMatch(editor,/<unsafe>/);
+ const owner=vm.runInContext('releaseEvidenceMarkup('+JSON.stringify(proposal)+',true)',c);
+ assert.match(owner,/I reviewed this exact source and deployment evidence/);assert.match(owner,/Adopt this evidence/);assert.match(owner,/No merge or deployment permission/);
+ const saved=vm.runInContext('releaseEvidenceMarkup('+JSON.stringify({...proposal,schema:'external-release-receipt-v1',status:'adopted'})+',true)',c);
+ assert.match(saved,/Saved provider identity evidence/);assert.doesNotMatch(saved,/id="release-evidence-adopt"/);
+});
+
+test('release writes reconcile stable IDs and never replay after an uncertain read',async()=>{
+ const calls=[];const c=context({url:path=>path,api:async(path,body,method)=>{calls.push({path,body,method});return {schema:'external-release-receipt-v1',status:'adopted',proposal_id:'p',proposal_sha256:'h'}}});
+ await vm.runInContext('reconcileReleaseWrite("/receipt/id","/receipt/id/adopt",{proposal_id:"p",proposal_sha256:"h"},"POST")',c);
+ assert.equal(calls.length,1);assert.equal(calls[0].body,undefined);
+ c.api=async(path,body,method)=>{calls.push({path,body,method});if(!body)throw Object.assign(Error('missing'),{status:404});return {schema:'external-release-receipt-v1',status:'adopted',proposal_id:'p',proposal_sha256:'h'}};
+ calls.length=0;
+ await vm.runInContext('reconcileReleaseWrite("/receipt/id","/receipt/id/adopt",{proposal_id:"p",proposal_sha256:"h"},"POST")',c);
+ assert.equal(calls.length,2);assert.equal(calls[1].path,'/receipt/id/adopt');assert.equal(calls[1].method,'POST');assert.equal(calls[1].body.proposal_id,'p');
+ calls.length=0;c.api=async()=>{calls.push('read');throw Object.assign(Error('unknown'),{status:503})};
+ await assert.rejects(vm.runInContext('reconcileReleaseWrite("/receipt/id","/receipt/id/adopt",{},"POST")',c));assert.deepEqual(calls,['read']);
+ calls.length=0;c.api=async()=>{calls.push('read');return {schema:'external-release-receipt-v1',status:'adopted',proposal_id:'different',proposal_sha256:'h'}};
+ await assert.rejects(vm.runInContext('reconcileReleaseWrite("/receipt/id","/receipt/id/adopt",{proposal_id:"p",proposal_sha256:"h"},"POST")',c));assert.deepEqual(calls,['read']);
+});
+
+test('shared browser transport retains HTTP status for safe write reconciliation',async()=>{
+ const source=fs.readFileSync('static/app.js','utf8'),start=source.indexOf('async function api('),end=source.indexOf('\nfunction url(',start);
+ const c=vm.createContext({fetch:async()=>new Response(JSON.stringify({detail:'evidence changed'}),{status:409}),Response,$:()=>({})});
+ vm.runInContext(source.slice(start,end),c);
+ try{await vm.runInContext('api("/receipt")',c);assert.fail('must reject')}catch(error){assert.equal(error.status,409);assert.equal(error.message,'evidence changed')}
+});
+
+test('a reconciled release write retains its original project when the screen changes',async()=>{
+ const calls=[],c=context({project:'first'});
+ c.url=(path,extra={})=>path+'?project='+(extra.project||c.project);
+ c.api=async(path,body)=>{calls.push(path);if(!body){c.project='second';throw Object.assign(Error('missing'),{status:404})}return {schema:'external-release-receipt-v1',status:'adopted',proposal_id:'p',proposal_sha256:'h'}};
+ await vm.runInContext('reconcileReleaseWrite("/receipt/id","/receipt/id/adopt",{proposal_id:"p",proposal_sha256:"h"},"POST")',c);
+ assert.deepEqual(calls,['/receipt/id?project=first','/receipt/id/adopt?project=first']);
+});
+
+function routeContext(hash){
+ const location={hash},content={innerHTML:''},calls=[];
+ const c=context({location,tab:'outcomes',workspace:'legacy',days:1,pendingPlan:null,journeyEnvironment:'',traceParams:()=>({}),renderVersion:1,canEdit:()=>false,$:selector=>selector==='#content'?content:null,api:async path=>{calls.push(path);return {goals:[]}},url:path=>path,history:{replaceState:(_state,_title,next)=>{location.hash=next}}});
+ const app=fs.readFileSync('static/app.js','utf8'),start=app.indexOf('function rememberView('),end=app.indexOf('\nconst fmt=',start);
+ vm.runInContext(app.slice(start,end),c);return {c,location,calls};
+}
+test('an owner proposal link survives the actual initial rememberView call',async()=>{
+ const {c,location}=routeContext('#project=app&view=outcomes&release_proposal=proposal-id');
+ vm.runInContext('rememberView()',c);assert.equal(new URLSearchParams(location.hash.slice(1)).get('release_proposal'),'proposal-id');
+});
+test('project switching clears old evidence before rememberView rewrites the route',async()=>{
+ const {c,location}=routeContext('#project=first&view=outcomes&release_proposal=old-id');
+ vm.runInContext('releaseEvidenceProject="first";releaseProposalSelection="old-id";project="second";rememberView()',c);
+ await vm.runInContext('outcomesView(1)',c);
+ assert.equal(new URLSearchParams(location.hash.slice(1)).get('release_proposal'),null);
+ assert.equal(vm.runInContext('releaseProposalSelection',c),'');
 });

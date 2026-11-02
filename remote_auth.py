@@ -13,9 +13,9 @@ from mcp.server.auth.provider import AccessToken,AuthorizationCode,AuthorizeErro
 from mcp.shared.auth import OAuthClientInformationFull,OAuthToken
 from pydantic import BaseModel,ConfigDict,Field
 
-SCOPES=['analytics:read','charts:write','audit:read','goals:write','experiments:write','debug:read','collection:write']
+SCOPES=['analytics:read','charts:write','audit:read','goals:write','experiments:write','debug:read','collection:write','releases:write']
 
-EDITOR_SCOPES={'charts:write','goals:write','experiments:write','debug:read','collection:write'}
+EDITOR_SCOPES={'charts:write','goals:write','experiments:write','debug:read','collection:write','releases:write'}
 
 class Decision(BaseModel):
     model_config=ConfigDict(extra='forbid')
@@ -153,12 +153,13 @@ class OAuthProvider:
         chart=path=='/api/charts' or bool(re.fullmatch(r'/api/charts/[0-9a-f-]{36}',path))
         goal_write=request.method=='PUT' and bool(re.fullmatch(r'/api/outcomes/goals/[0-9a-f-]{36}',path))
         release_view=request.method=='GET' and path=='/api/outcomes/releases' or request.method=='POST' and path=='/api/outcomes/releases/compare'
+        release_evidence=(request.method=='GET' and (path=='/api/outcomes/release-sources' or bool(re.fullmatch(r'/api/outcomes/releases/[0-9a-f-]{36}',path)))) or (request.method in {'GET','PUT'} and bool(re.fullmatch(r'/api/outcomes/release-proposals/[0-9a-f-]{36}',path)))
         experiment=bool(re.fullmatch(r'/api/experiments/(cases|datasets|runs)(/[0-9a-f-]{36})?',path)) and (request.method=='GET' or request.method=='PUT' and bool(re.fullmatch(r'/api/experiments/(cases|datasets|runs)/[0-9a-f-]{36}',path))) or path=='/api/experiments/compare' and request.method=='POST' or release_view
         debug=request.method=='GET' and path=='/api/debug/policy' or request.method=='POST' and path=='/api/debug/review'
-        scope='collection:write' if collection_write else 'debug:read' if debug else 'experiments:write' if experiment else 'goals:write' if goal_write else 'audit:read' if audit else 'charts:write' if chart and request.method!='GET' else 'analytics:read'
+        scope='releases:write' if release_evidence else 'collection:write' if collection_write else 'debug:read' if debug else 'experiments:write' if experiment else 'goals:write' if goal_write else 'audit:read' if audit else 'charts:write' if chart and request.method!='GET' else 'analytics:read'
         if release_view and not {'audit:read','experiments:write'}<=set(token.scopes):raise HTTPException(403,'release comparisons require audit and experiment access')
         if chart and request.method not in {'GET','POST','PUT'}:raise HTTPException(403,'agent access cannot remove charts')
-        if project!=token.project or scope not in token.scopes or not (path in allowed or audit or chart or goal_write or experiment or debug or collection_write) or role=='owner' or role=='editor' and not (chart or goal_write or experiment or debug or collection_write):
+        if project!=token.project or scope not in token.scopes or not (path in allowed or audit or chart or goal_write or experiment or debug or collection_write or release_evidence) or role=='owner' or role=='editor' and not (chart or goal_write or experiment or debug or collection_write or release_evidence):
             raise HTTPException(403,'agent scope does not allow this action')
 
     def install(self,app):

@@ -107,6 +107,10 @@ def parser():
         if name=='collection-save':command.add_argument('--revision',required=True,type=int)
     command=sub.add_parser('outcome-releases');command.add_argument('--project',required=True);command.add_argument('--environment',choices=['production','staging','development','test','local'],required=True);command.add_argument('--offset',type=int,default=0)
     command=sub.add_parser('outcome-release-compare');command.add_argument('--project',required=True);command.add_argument('--file',required=True)
+    for name in ['release-sources','release-prepare','release-proposal','release-evidence','release-adopt']:
+        command=sub.add_parser(name);command.add_argument('--project',required=True)
+        if name!='release-sources':command.add_argument('--id',required=True,type=uuid.UUID)
+        if name in ['release-prepare','release-adopt']:command.add_argument('--file',required=True)
     command=sub.add_parser('debug-policy');command.add_argument('--project',required=True);command.add_argument('--file');command.add_argument('--revision',type=int)
     command=sub.add_parser('debug-review');command.add_argument('--project',required=True);command.add_argument('--file',required=True)
     sub.add_parser('debug-capture').add_argument('--file',required=True)
@@ -232,6 +236,11 @@ def main(argv=None):
         if command=='collection-save':params['revision']=args.revision
     if command=='outcome-releases':path='/api/outcomes/releases';params['environment']=args.environment;params['offset']=args.offset
     if command=='outcome-release-compare':path='/api/outcomes/releases/compare';body=private_json(args.file);method='POST'
+    if command=='release-sources':path='/api/outcomes/release-sources'
+    if command in ['release-prepare','release-proposal']:path='/api/outcomes/release-proposals/'+str(args.id)
+    if command=='release-prepare':body=private_json(args.file);method='PUT'
+    if command in ['release-evidence','release-adopt']:path='/api/outcomes/releases/'+str(args.id)
+    if command=='release-adopt':path+='/adopt';body=private_json(args.file);method='POST'
     if command=='debug-policy':
         path='/api/debug/policy'
         if args.file:
@@ -293,6 +302,7 @@ def main(argv=None):
     if receipt:
         if private_json(session_file).get('origin',origin)!=origin:raise ValueError('session belongs to another service')
         key=None
+    if command=='release-adopt' and not receipt:raise ValueError('release evidence adoption requires an owner account session in AFTERSPAN_SESSION_FILE')
     if command in ['create-agent-key','create-workspace','accept-invite']:key=None
     if not public and not key and not receipt:raise ValueError('set a scoped key or AFTERSPAN_SESSION_FILE')
     if hasattr(args,'output') and Path(args.output).exists():raise ValueError('private receipt already exists')

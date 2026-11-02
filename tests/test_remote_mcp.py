@@ -8,7 +8,7 @@ import time
 import unittest
 import uuid
 from contextlib import closing
-from urllib.parse import parse_qs,urlsplit
+from urllib.parse import parse_qs,parse_qsl,urlsplit
 
 from fastapi.testclient import TestClient
 import app
@@ -28,7 +28,7 @@ class RemoteMCPTests(unittest.TestCase):
     join=test_workspaces.WorkspaceTests.join
 
     def register(self):
-        r=self.client.post('/register',json={'client_name':'Fresh test agent','redirect_uris':['http://127.0.0.1:19191/callback'],'grant_types':['authorization_code','refresh_token'],'response_types':['code'],'token_endpoint_auth_method':'none','scope':'analytics:read charts:write audit:read goals:write experiments:write debug:read collection:write'})
+        r=self.client.post('/register',json={'client_name':'Fresh test agent','redirect_uris':['http://127.0.0.1:19191/callback'],'grant_types':['authorization_code','refresh_token'],'response_types':['code'],'token_endpoint_auth_method':'none','scope':'analytics:read charts:write audit:read goals:write experiments:write debug:read collection:write releases:write'})
         self.assertEqual(r.status_code,201,r.text);return r.json()['client_id']
 
     def begin(self,cid,scope='analytics:read charts:write',**overrides):
@@ -252,6 +252,7 @@ class RemoteMCPTests(unittest.TestCase):
             downgraded=rpc('tools/call',{'name':'experiment_objects','arguments':{'kind':'cases'}})['result']
             self.assertTrue(downgraded['isError'])
             self.assertTrue(rpc('tools/call',{'name':'debug_capture_policy','arguments':{}})['result']['isError'])
+            self.check_release_tools_use_real_protocol_and_keep_owner_adoption_separate(client)
 
 
 
@@ -263,6 +264,60 @@ class RemoteMCPTests(unittest.TestCase):
         owner,uid,w,p,cid,t,*_=self.grant('audit:read experiments:write')
         response=self.client.get('/api/outcomes/releases?project='+p+'&environment=staging',headers={'Authorization':'Bearer '+t['access_token']})
         self.assertEqual(response.status_code,200,response.text)
+
+    def test_release_preparation_needs_new_consent_and_cannot_adopt(self):
+        _,_,_,project,_,old,*_=self.grant('audit:read experiments:write')
+        headers={'Authorization':'Bearer '+old['access_token']}
+        self.assertEqual(self.client.get('/api/outcomes/release-sources?project='+project,headers=headers).status_code,403)
+        self.assertEqual(self.client.put('/api/outcomes/release-proposals/'+str(uuid.uuid4())+'?project='+project,headers=headers,json={}).status_code,403)
+        _,_,_,project,_,approved,*_=self.grant('releases:write')
+        headers={'Authorization':'Bearer '+approved['access_token']}
+        sources=self.client.get('/api/outcomes/release-sources?project='+project,headers=headers)
+        self.assertEqual(sources.status_code,200,sources.text);self.assertEqual(sources.json(),{'connections':[]})
+        request={'proposal_id':str(uuid.uuid4()),'proposal_sha256':'a'*64}
+        denied=self.client.post('/api/outcomes/releases/'+str(uuid.uuid4())+'/adopt?project='+project,headers=headers,json=request)
+        self.assertIn(denied.status_code,[401,403])
+
+    def check_release_tools_use_real_protocol_and_keep_owner_adoption_separate(self,client):
+        from pydantic import SecretStr
+        from loop_github import GitHub
+        from test_release_evidence import SourceProofTests
+        owner,uid,workspace,project,_,token,*_=self.grant('releases:write')
+        fixture=SourceProofTests();fixture.setUp()
+        repo=app.product_loop.onboarding;target={key:str(uuid.uuid4()) for key in ('project_id','service_id','environment_id')}
+        def github(client,method,path,**kwargs):
+            if client.read_guard:client.read_guard()
+            return fixture.g._request(method,path,**kwargs)
+        def railway(host,method,path,secret,body):
+            self.assertEqual((host,method,path),('backboard.railway.app','POST','/graphql/v2'))
+            self.assertEqual(body['variables'],{'serviceId':target['service_id'],'environmentId':target['environment_id']})
+            return {'data':{'serviceInstance':{'latestDeployment':{'id':str(uuid.UUID(int=1)),**{'projectId':target['project_id'],'serviceId':target['service_id'],'environmentId':target['environment_id']},'environment':{'id':target['environment_id'],'name':'production'},'status':'SUCCESS','createdAt':'2026-01-02T00:00:00Z','statusUpdatedAt':'2026-01-02T00:00:01Z','meta':{'commitHash':'c'*40}}}}}
+        with patch.dict(os.environ,{'AFTERSPAN_CONNECTION_KEY':base64.urlsafe_b64encode(b'x'*32).decode()}),patch.object(GitHub,'_request',github),patch('loop_sources._request',side_effect=railway):
+            gh=repo.connections.put(project,str(uuid.uuid4()),0,'github',{'repository':'org/app'},SecretStr('synthetic'))
+            rail=repo.connections.put(project,str(uuid.uuid4()),0,'railway',target,SecretStr('synthetic'))
+            headers={'Authorization':'Bearer '+token['access_token'],'Accept':'application/json, text/event-stream'}
+            def rpc(method,params):
+                response=client.post('/mcp',headers=headers,json={'jsonrpc':'2.0','id':1,'method':method,'params':params})
+                self.assertEqual(response.status_code,200,response.text);return response.json()['result']
+            rpc('initialize',{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'release-fixture','version':'1'}})
+            names={tool['name'] for tool in rpc('tools/list',{})['tools']}
+            self.assertTrue({'release_sources','prepare_release_evidence','release_proposal','release_evidence'}<=names)
+            self.assertNotIn('adopt_release_evidence',names)
+            def call(name,args):
+                result=rpc('tools/call',{'name':name,'arguments':args});self.assertFalse(result.get('isError'),result)
+                return json.loads(result['content'][0]['text'])
+            self.assertEqual(len(call('release_sources',{})['connections']),2)
+            proposal_id=str(uuid.uuid4());definition={'github_connection_id':gh['id'],'railway_connection_id':rail['id'],'pr_number':192,'environment':'production'}
+            queued=call('prepare_release_evidence',{'id':proposal_id,'definition':definition});self.assertEqual(queued['status'],'pending')
+            proposal=call('release_proposal',{'id':proposal_id});self.assertEqual(proposal['status'],'requires_owner_adoption')
+            route=dict(parse_qsl(urlsplit(proposal['owner_review_url']).fragment));self.assertEqual(route['project'],project);self.assertEqual(route['release_proposal'],proposal_id)
+            self.assertEqual(proposal['evidence']['source']['manifest'][0]['after']['mode'],'100755')
+            receipt_id=str(uuid.uuid4());body={'proposal_id':proposal_id,'proposal_sha256':proposal['proposal_sha256']}
+            denied=client.post('/api/outcomes/releases/'+receipt_id+'/adopt?project='+project,headers=headers,json=body);self.assertIn(denied.status_code,[401,403])
+            adopted=owner.post('/api/outcomes/releases/'+receipt_id+'/adopt?project='+project,headers=CSRF,json=body);self.assertEqual(adopted.status_code,200,adopted.text)
+            final=call('release_evidence',{'id':receipt_id});self.assertEqual(final['adopted_by'],uid);self.assertNotIn('private patch',json.dumps(final))
+            with closing(app.connect()) as connection,connection:connection.execute("UPDATE memberships SET role='reader' WHERE workspace=? AND user_id=?",(workspace,uid))
+            self.assertTrue(rpc('tools/call',{'name':'release_sources','arguments':{}})['isError'])
 
     def test_chart_write_scope_cannot_edit_outcome_goals(self):
         owner,uid,w,p,cid,t,*_=self.grant('audit:read charts:write')

@@ -331,9 +331,10 @@ class RepoOnboarding:
                 raise HTTPException(409, 'receipt ID belongs to different input')
             return json.loads(row['receipt'])
 
-    def save(self, project, id, kind, payload, receipt):
+    def save(self, project, id, kind, payload, receipt, guard=None):
         with closing(self.loop.connect()) as c, c:
             c.execute('BEGIN IMMEDIATE')
+            if guard:guard(c)
             row = c.execute('SELECT * FROM loop_repo_receipts WHERE project=? AND id=?', (project, id)).fetchone()
             if row:
                 if row['kind'] != kind or row['input_sha256'] != digest(payload):

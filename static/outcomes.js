@@ -1,5 +1,77 @@
 'use strict';
 let outcomeSelection='',outcomeReport=null;
+const initialReleaseParams=new URLSearchParams(location.hash.slice(1));
+let releaseEvidenceProject=initialReleaseParams.get('project')||'',releaseProposalSelection=initialReleaseParams.get('release_proposal')||'',releaseReceiptSelection=initialReleaseParams.get('release_receipt')||'',releaseEvidenceVersion=0;
+function releaseEvidenceParams(){return tab==='outcomes'&&releaseEvidenceProject===project?{...(releaseProposalSelection?{release_proposal:releaseProposalSelection}:{}),...(releaseReceiptSelection?{release_receipt:releaseReceiptSelection}:{})}:{}}
+function releaseEvidenceEntry(){return canEdit()?panel('Verify a deployed change','<p>Read the exact merged source and current successful deployment. An owner adopts the evidence; this cannot merge or deploy code.</p><button id="release-evidence-open">Verify an existing deployment</button><div id="release-evidence-panel"></div>'):''}
+function releaseEvidenceMarkup(value,owner){
+ if(value.status==='pending')return '<p>Checking source and deployment. No release evidence is confirmed yet.</p><button id="release-evidence-poll">Check progress</button>';
+ if(['failed','interrupted'].includes(value.status))return '<p>The evidence check did not finish. No release is verified.</p><button id="release-evidence-poll">Check or retry the same request</button>';
+ const proposal=value.schema==='external-release-proposal-v1'&&value.status==='requires_owner_adoption',saved=value.schema==='external-release-receipt-v1'&&value.status==='adopted';
+ if(!proposal&&!saved)return '<p>No verified release evidence is available.</p>';
+ const source=value.evidence.source,deployment=value.evidence.deployment;
+ return `<h3>${saved?'Saved provider identity evidence':'Review the exact deployment evidence'}</h3><p>${esc(source.repository)} · <a href="https://github.com/${esc(source.repository)}/pull/${esc(source.pr_number)}" target="_blank" rel="noopener">Open change #${esc(source.pr_number)}</a> · ${esc(deployment.environment)} · commit ${esc(source.commit)}</p><p>${fmt(source.changed_files)} changed files · deployed ${esc(new Date(deployment.released_at).toLocaleString())}. Provider identity is separate from code review and answer quality.</p><details><summary>Inspect the complete file manifest</summary><ul>${source.manifest.map(file=>`<li>${esc(file.path)} · ${file.before?'previous mode '+esc(file.before.mode):'added'} → ${file.after?'mode '+esc(file.after.mode):'removed'}<br>Before ${esc(file.before?.sha||'absent')} · after ${esc(file.after?.sha||'absent')}</li>`).join('')}</ul></details>${value.limits.map(limit=>`<p class="small muted">${esc(limit)}</p>`).join('')}${proposal?(owner?'<form id="release-evidence-approval"><label><input name="reviewed" type="checkbox" required> I reviewed this exact source and deployment evidence.</label><button id="release-evidence-adopt" class="primary">Adopt this evidence</button></form>':'<p>An owner must adopt this exact evidence using their signed-in account.</p>'):''}`;
+}
+async function reconcileReleaseWrite(readPath,writePath,body,method,targetProject=project){
+ const validate=value=>{
+  if(method==='POST'&&value.schema==='external-release-receipt-v1'&&(value.proposal_id!==body.proposal_id||value.proposal_sha256!==body.proposal_sha256))throw Error('This release ID belongs to different evidence.');
+  if(method==='PUT'&&value.schema==='external-release-proposal-v1'){
+   const canonical=v=>JSON.stringify(Object.keys(v).sort().map(key=>[key,v[key]]));
+   if(canonical(value.input)!==canonical(body))throw Error('This proposal ID belongs to a different request.');
+  }
+  return value;
+ };
+ try{const existing=validate(await api(url(readPath,{project:targetProject})));if(!['failed','interrupted'].includes(existing.status))return existing}
+ catch(error){if(error.status!==404)throw error}
+ return validate(await api(url(writePath,{project:targetProject}),body,method));
+}
+async function releaseEvidenceView(version){
+ const generation=++releaseEvidenceVersion;
+ const targetProject=project,selectedReceipt=releaseReceiptSelection,selectedProposal=releaseProposalSelection;
+ const target=$('#release-evidence-panel');target.innerHTML='<p>Reading saved provider targets…</p>';
+ let submitted=null,busy=false;
+ const current=()=>version===renderVersion&&generation===releaseEvidenceVersion&&targetProject===project;
+ const show=value=>{
+  if(!current())return;
+  target.innerHTML=releaseEvidenceMarkup(value,isOwner())+'<p id="release-evidence-message" role="status"></p><button id="release-evidence-new">Start a new evidence check</button>';
+  $('#release-evidence-new').onclick=()=>{releaseProposalSelection='';releaseReceiptSelection='';rememberView();releaseEvidenceView(version).catch(showError)};
+  const poll=$('#release-evidence-poll');
+  if(poll)poll.onclick=async()=>{if(busy||!current())return;busy=true;poll.disabled=true;try{const path='/api/outcomes/release-proposals/'+releaseProposalSelection;show(submitted?await reconcileReleaseWrite(path,path,submitted,'PUT',targetProject):await api(url(path,{project:targetProject})))}catch(error){if(current())$('#release-evidence-message').textContent=error.message}finally{busy=false;if(current()&&$('#release-evidence-poll'))$('#release-evidence-poll').disabled=false}};
+  const approval=$('#release-evidence-approval');
+  if(approval)approval.onsubmit=async event=>{
+   event.preventDefault();if(busy||!current()||!approval.elements.reviewed.checked)return;busy=true;$('#release-evidence-adopt').disabled=true;
+   releaseReceiptSelection||=crypto.randomUUID();rememberView();
+   const path='/api/outcomes/releases/'+releaseReceiptSelection;
+   try{show(await reconcileReleaseWrite(path,path+'/adopt',{proposal_id:value.id,proposal_sha256:value.proposal_sha256},'POST',targetProject))}
+   catch(error){if(current())$('#release-evidence-message').textContent=error.message+' The same evidence ID is kept for checking or retrying.'}
+   finally{busy=false;if(current()&&$('#release-evidence-adopt'))$('#release-evidence-adopt').disabled=false}
+  };
+ };
+ if(selectedReceipt){try{show(await api(url('/api/outcomes/releases/'+selectedReceipt,{project:targetProject})));return}catch(error){if(error.status!==404||!selectedProposal)throw error}}
+ if(!current())return;
+ if(selectedProposal){show(await api(url('/api/outcomes/release-proposals/'+selectedProposal,{project:targetProject})));return}
+ const sources=await api(url('/api/outcomes/release-sources',{project:targetProject}));if(!current())return;
+ const configured=kind=>sources.connections.filter(source=>source.kind===kind&&source.status==='configured');
+ const github=configured('github'),railway=configured('railway');
+ if(!github.length||!railway.length){target.innerHTML='<p>This project needs configured GitHub and Railway targets. Connect them in Goal loop first. No provider permission is granted by this screen.</p>';return}
+ const options=list=>list.map(source=>`<option value="${esc(source.id)}">${esc(source.target.repository||'Railway service '+source.target.service_id.slice(0,8))}</option>`).join('');
+ target.innerHTML=`<form id="release-evidence-request"><label>GitHub repository<select name="github_connection_id">${options(github)}</select></label><label>Merged change number<input name="pr_number" type="number" min="1" max="2147483647" required></label><label>Target branch<input name="base" value="main" required maxlength="151"></label><label>Railway deployment target<select name="railway_connection_id">${options(railway)}</select></label><label>Environment<select name="environment">${environmentOptions('production')}</select></label><p>Afterspan resolves the exact commits and checks the complete change. Only the current successful deployment is supported.</p><button class="primary">Check source and deployment</button></form><p id="release-evidence-message" role="status"></p>`;
+ const form=$('#release-evidence-request'),id=crypto.randomUUID();
+ form.onsubmit=async event=>{
+  event.preventDefault();if(busy||!current())return;busy=true;
+  submitted={...Object.fromEntries(new FormData(form)),pr_number:Number(form.elements.pr_number.value),base_sha:null,head_sha:null,commit:null,merge_topology:null};
+  releaseProposalSelection=id;releaseReceiptSelection='';rememberView();
+  for(const element of form.elements)element.disabled=true;
+  try{const path='/api/outcomes/release-proposals/'+id;show(await reconcileReleaseWrite(path,path,submitted,'PUT',targetProject))}
+  catch(error){if(current()){target.innerHTML='<p>No result was inferred. Check the saved proposal before starting another request.</p><button id="release-evidence-poll">Check saved proposal</button><p id="release-evidence-message" role="status"></p>';$('#release-evidence-message').textContent=error.message;$('#release-evidence-poll').onclick=async()=>{if(busy||!current())return;busy=true;$('#release-evidence-poll').disabled=true;try{const path='/api/outcomes/release-proposals/'+id;show(await reconcileReleaseWrite(path,path,submitted,'PUT',targetProject))}catch(next){if(current())$('#release-evidence-message').textContent=next.message}finally{busy=false;if(current()&&$('#release-evidence-poll'))$('#release-evidence-poll').disabled=false}}}}
+  finally{busy=false}
+ };
+}
+function bindReleaseEvidence(version){
+ const button=$('#release-evidence-open');if(!button)return;
+ button.onclick=()=>releaseEvidenceView(version).catch(showError);
+ if(releaseProposalSelection||releaseReceiptSelection)releaseEvidenceView(version).catch(showError);
+}
 function outcomeReason(reason){return reason==='partial_answer_not_completed'?'Only part of the request was answered':reason.replaceAll('_',' ')}
 function outcomeCounts(report){
  return Object.entries(report.counts).map(([name,count])=>`<div><strong>${fmt(count)}</strong><span>${esc(name)}</span></div>`).join('');
@@ -26,11 +98,11 @@ async function outcomeReleaseView(version,goal){
  const environment=goal.definition.environment;
  const [catalog,runs]=await Promise.all([api(url('/api/outcomes/releases',{environment})),api(url('/api/experiments/runs'))]);if(version!==renderVersion)return;
  const bound=runs.items.filter(r=>r.outcome_goal?.id===goal.id&&r.outcome_goal.version===goal.version&&r.outcome_goal.sha256===goal.sha256);
- if(catalog.releases.length<2||bound.length<2){$('#outcome-release-panel').innerHTML='<p>Comparison needs two provider-verified release receipts and two runs whose dataset pins this goal version. Prepare the reviewed cases in Experiments and verify the releases through the existing Goal loop. Missing evidence cannot be replaced by a declared commit.</p>';return}
+ if(catalog.releases.length<2||bound.length<2){$('#outcome-release-panel').innerHTML='<p>Comparison needs two provider-verified release receipts and two runs whose dataset pins this goal version. Prepare the reviewed cases in Experiments and use Verify an existing deployment on this screen. Missing evidence cannot be replaced by a declared commit.</p>';return}
  let releases=catalog.releases,hasMore=catalog.has_more,offset=catalog.offset+catalog.limit;
  const options=()=>releases.map(r=>`<option value="${esc(r.action)}">${esc(r.repository||'Application')} · ${esc(r.commit.slice(0,8))} · ${esc(new Date(r.released_at).toLocaleString())}</option>`).join('');
  const runOptions='<option value="">Choose a matching run</option>'+bound.map(r=>`<option value="${esc(r.id)}">${esc(r.definition.variant)} · ${esc(r.definition.release_sha.slice(0,8))} · ${esc(r.dataset_title||'Dataset')} v${r.definition.dataset_version}</option>`).join('');
- $('#outcome-release-panel').innerHTML=`<p>This joins fixed-case checks to reviewed deployment receipts and later user-task observations. It neither merges nor deploys anything. Windows use up to ${days} days, bounded by the verified deployments and goal deadline.</p><form id="outcome-release-form"><label>Baseline deployment<select name="baseline_release_action">${options()}</select></label><label>Candidate deployment<select name="release_action">${options()}</select></label><label>Baseline experiment<select name="baseline_run" required>${runOptions}</select></label><label>Candidate experiment<select name="candidate_run" required>${runOptions}</select></label><button class="primary">Compare bound outcomes</button></form><button id="outcome-older-releases" ${hasMore?'':'hidden'}>Load older verified deployments</button><div id="outcome-release-result"></div>`;
+ $('#outcome-release-panel').innerHTML=`<p>This joins fixed-case checks to provider-verified deployment receipts and later user-task observations. It neither merges nor deploys anything. Windows use up to ${days} days, bounded by the verified deployments and goal deadline.</p><form id="outcome-release-form"><label>Baseline deployment<select name="baseline_release_action">${options()}</select></label><label>Candidate deployment<select name="release_action">${options()}</select></label><label>Baseline experiment<select name="baseline_run" required>${runOptions}</select></label><label>Candidate experiment<select name="candidate_run" required>${runOptions}</select></label><button class="primary">Compare bound outcomes</button></form><button id="outcome-older-releases" ${hasMore?'':'hidden'}>Load older verified deployments</button><div id="outcome-release-result"></div>`;
  const form=$('#outcome-release-form');
  const sync=()=>{const candidate=releases.find(r=>r.action===form.elements.release_action.value),baseline=releases.find(r=>r.action===form.elements.baseline_release_action.value);const candidateRun=bound.find(r=>r.definition.release_sha===candidate?.commit),baselineRun=bound.find(r=>r.definition.release_sha===baseline?.commit&&r.definition.dataset===candidateRun?.definition.dataset&&r.definition.dataset_version===candidateRun?.definition.dataset_version);form.elements.candidate_run.value=candidateRun?.id||'';form.elements.baseline_run.value=baselineRun?.id||''};
  form.elements.baseline_release_action.value=(releases.find(r=>r.commit===releases[0].base_commit)||releases[1]).action;sync();
@@ -39,22 +111,24 @@ async function outcomeReleaseView(version,goal){
  form.onsubmit=async e=>{e.preventDefault();try{const values=Object.fromEntries(new FormData(form)),base=releases.find(r=>r.action===values.baseline_release_action),release=releases.find(r=>r.action===values.release_action),query={...values,outcome_goal:{id:goal.id,version:goal.version,sha256:goal.sha256},...outcomeReleaseWindows(base,release,goal.definition.deadline_seconds,days)};const r=await api(url('/api/outcomes/releases/compare'),query);if(version===renderVersion){$('#outcome-release-result').innerHTML=outcomeReleaseMarkup(r);for(const button of document.querySelectorAll('[data-release-trace]'))button.onclick=()=>{traceReference=button.dataset.releaseTrace;traceQuery={...r[button.dataset.releasePhase].trace_query,traffic_kind:'user'};tab='traces';render()}}}catch(error){showError(error)}};
 }
 async function outcomesView(version){
+ if(releaseEvidenceProject!==project){releaseEvidenceProject=project;const params=new URLSearchParams(location.hash.slice(1));releaseProposalSelection=params.get('project')===project?params.get('release_proposal')||'':'';releaseReceiptSelection=params.get('project')===project?params.get('release_receipt')||'':''}
  const listed=await api(url('/api/outcomes/goals'));if(version!==renderVersion)return;
  if(!listed.goals.length){
-  $('#content').innerHTML=panel('Define a useful result','<p>No outcome goal is saved for this project. Set the workflow, deadline, required checks and completion evidence. Tasks will be judged against that version.</p>')+outcomeGoalForm();bindOutcomeGoalForm();return;
+  $('#content').innerHTML=panel('Define a useful result','<p>No outcome goal is saved for this project. Set the workflow, deadline, required checks and completion evidence. Tasks will be judged against that version.</p>')+releaseEvidenceEntry()+outcomeGoalForm();bindOutcomeGoalForm();bindReleaseEvidence(version);return;
  }
  const selected=listed.goals.find(g=>g.id===outcomeSelection)||listed.goals[0];outcomeSelection=selected.id;
  const report=await api(url('/api/outcomes/evaluate'),{goal_id:selected.id,version:selected.version,days});if(version!==renderVersion)return;outcomeReport=report;
  $('#content').innerHTML=panel('Outcome goal',`<label>Goal<select id="outcome-goal">${listed.goals.map(g=>`<option value="${esc(g.id)}" ${g.id===selected.id?'selected':''}>${esc(g.definition.title)} · v${g.version}</option>`).join('')}</select></label><p>${esc(selected.definition.workflow)} · ${esc(selected.definition.environment)} · ${fmt(selected.definition.deadline_seconds)} second deadline · ${esc(selected.definition.traffic_kind||'all')} traffic · ${fmt(selected.definition.min_sample_size||25)} mature tasks needed for a release comparison</p><p>Criteria: ${selected.definition.checks.map(c=>`${esc(c.name)} v${c.version} (${esc(c.method)})`).join(', ')}. Required milestones: ${selected.definition.milestones.map(esc).join(', ')}.</p>`)+
  panel('Observed task results',`<div class="trace-evidence">${outcomeCounts(report)}</div><p>${fmt(report.mature_denominator)} mature observed tasks · satisfied fraction ${report.satisfied_fraction===null?'unavailable':fmt(report.satisfied_fraction*100)+'%'}. Waiting tasks have not reached the deadline. Withheld and unclassified mature tasks stay in the denominator.</p><p>${fmt(report.coverage.traffic_excluded||0)} tasks excluded by traffic kind; ${fmt(report.coverage.traffic_unknown||0)} have unknown kind. Unknown population labels prevent a clean fraction.</p><p>These results apply declared criteria to producer evidence. They do not establish independent business correctness or causation.</p>`)+
  outcomeModelCost(report.model_cost)+
- (canEdit()?panel('Did a reviewed release help?','<button id="outcome-release-open">Compare a reviewed deployment</button><div id="outcome-release-panel"></div>'):'')+
+ (canEdit()?panel('Did a release help?','<button id="outcome-release-open">Compare verified deployments</button><div id="outcome-release-panel"></div>'):'')+releaseEvidenceEntry()+
  panel('Tasks to inspect',report.tasks.length?`<table><thead><tr><th>Task trace</th><th>Outcome</th><th>Evidence</th></tr></thead><tbody>${report.tasks.map(t=>`<tr><td><a href="#${new URLSearchParams({workspace,project,view:'traces',days,trace:t.trace,trace_query:JSON.stringify(report.trace_query)})}">${esc(t.trace)}</a></td><td>${esc(t.state)}</td><td>${t.reasons.map(r=>esc(outcomeReason(r))).join(', ')||'Declared criteria satisfied'} · ${fmt(t.attempts)} attempts</td></tr>`).join('')}</tbody></table><p>${report.total>report.tasks.length?'More tasks exist; use frozen API/MCP pagination to inspect the full set.':''}</p>`:'<p>No task traces are observed in this entry window. This does not prove no tasks occurred.</p>')+
  panel('Evidence window',`<p>Task entries: ${esc(report.snapshot.start)} → ${esc(report.snapshot.end)}. Receipts through ${esc(report.snapshot.as_of)}.</p>${report.limits.map(l=>`<p class="small muted">${esc(l)}</p>`).join('')}`)+outcomeGoalForm();
  $('#outcome-goal').onchange=()=>{outcomeSelection=$('#outcome-goal').value;render()};
  if($('#outcome-release-open'))$('#outcome-release-open').onclick=()=>outcomeReleaseView(version,selected).catch(showError);
  for(const a of $('#content').querySelectorAll('a[href^="#"]'))a.onclick=e=>{e.preventDefault();const p=new URLSearchParams(a.hash.slice(1));traceReference=p.get('trace');traceQuery=JSON.parse(p.get('trace_query'));tab='traces';render()};
  bindOutcomeGoalForm();
+ bindReleaseEvidence(version);
 }
 function outcomeGoalForm(){
  if(!canEdit())return '';

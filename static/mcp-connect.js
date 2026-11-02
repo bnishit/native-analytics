@@ -1,6 +1,6 @@
 'use strict';
 const el=id=>document.getElementById(id);
-const labels={'collection:write':'Declare or change expected collection sources and reporting intervals','debug:read':'Read selected redacted debug content (editor access; no capture-policy changes)','experiments:write':'Read reviewed test inputs/results and manage regression experiments','goals:write':'Create and version workflow outcome goals','analytics:read':'Read aggregate analytics and saved charts','charts:write':'Create saved charts','audit:read':'Read privacy-safe request traces, checks and collection health'};
+const labels={'releases:write':'Read provider targets and prepare deployment evidence (editor access; owner adoption required; no merge or deploy)','collection:write':'Declare or change expected collection sources and reporting intervals','debug:read':'Read selected redacted debug content (editor access; no capture-policy changes)','experiments:write':'Read reviewed test inputs/results and manage regression experiments','goals:write':'Create and version workflow outcome goals','analytics:read':'Read aggregate analytics and saved charts','charts:write':'Create saved charts','audit:read':'Read privacy-safe request traces, checks and collection health'};
 let version=0;
 async function api(path,body,method){
   const r=await fetch(path,{method:method||(body?'POST':'GET'),headers:{'Content-Type':'application/json','X-Native-CSRF':'1'},body:body?JSON.stringify(body):undefined,cache:'no-store'});

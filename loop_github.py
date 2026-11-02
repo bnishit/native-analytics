@@ -310,6 +310,79 @@ class GitHub:
             result[node["path"]] = node
         return tree_sha, result
 
+    def external_release_pins(self, request):
+        """Resolve a merged PR for review; the full verifier still checks every binding."""
+        pr = self._get('/pulls/' + str(request['pr_number']))
+        head = pr.get('head', {}).get('sha'); commit = pr.get('merge_commit_sha')
+        if pr.get('merged') is not True or any(not isinstance(s, str) or not _SHA.fullmatch(s) for s in (head, commit)):
+            _fail('The merged PR source pins are unavailable')
+        merged = self._commit(commit); parents = merged.get('parents', [])
+        if len(parents) not in (1, 2) or any(not isinstance(p, dict) or not _SHA.fullmatch(str(p.get('sha', ''))) for p in parents):
+            _fail('Unsupported merge parent topology')
+        return {**request, 'base_sha':parents[0]['sha'], 'head_sha':head, 'commit':commit,
+                'merge_topology':'single_parent' if len(parents)==1 else 'two_parent'}
+
+    def external_release_source(self, pins):
+        """Read-only identity proof; does not attest reviews, checks or release authority."""
+        self._pin(self.repository, pins['base'], pins['commit'])
+        repository_id = self._identity()
+        pr = self._get('/pulls/' + str(pins['pr_number']))
+        if (pr.get('number') != pins['pr_number'] or pr.get('merged') is not True
+                or pr.get('merge_commit_sha') != pins['commit'] or pr.get('base', {}).get('ref') != pins['base']):
+            _fail('The exact merged PR could not be verified')
+        for side, sha in [('base', pins['base_sha']), ('head', pins['head_sha'])]:
+            ref = pr.get(side, {})
+            if (ref.get('sha') != sha or ref.get('repo', {}).get('id') != repository_id
+                    or ref.get('repo', {}).get('full_name') != self.repository):
+                _fail('The PR repository or source binding changed')
+        merged = self._commit(pins['commit']); head = self._commit(pins['head_sha'])
+        parents = [pins['base_sha']] if pins['merge_topology'] == 'single_parent' else [pins['base_sha'], pins['head_sha']]
+        if ([p.get('sha') for p in merged.get('parents', [])] != parents
+                or merged['tree']['sha'] != head['tree']['sha']):
+            _fail('The merged tree or parent lineage differs')
+        try:
+            merged_at = datetime.fromisoformat(pr['merged_at'].replace('Z', '+00:00'))
+            if merged_at.tzinfo is None or merged_at > datetime.now(timezone.utc):raise ValueError()
+        except (KeyError, ValueError, TypeError, AttributeError):
+            _fail('The merge timestamp is invalid')
+        count = pr.get('changed_files')
+        if type(count) is not int or not 1 <= count <= 200:_fail('The complete PR manifest exceeds supported bounds', 422)
+        rows = []
+        for page in range(1, (count + 99) // 100 + 2):
+            part = self._request('GET', '/pulls/' + str(pins['pr_number']) + '/files?per_page=100&page=' + str(page))
+            expected = min(100, max(0, count - (page - 1) * 100))
+            if not isinstance(part, list) or len(part) != expected or any(not isinstance(r, dict) for r in part):
+                _fail('The PR manifest is incomplete')
+            rows.extend(part)
+        base_tree, before = self._tree(pins['base_sha']); head_tree, after = self._tree(pins['head_sha'])
+        project = lambda nodes: {p: {k:n[k] for k in ('type','mode','sha')} for p,n in nodes.items() if n['type'] != 'tree'}
+        before, after = project(before), project(after)
+        changed = {p for p in before.keys() | after.keys() if before.get(p) != after.get(p)}
+        covered = set(); names = set()
+        for row in rows:
+            path = row.get('filename'); status = row.get('status')
+            if not isinstance(path, str) or path in names or path not in changed:_fail('The PR manifest differs from the full tree change')
+            names.add(path); paths = [path]
+            if status == 'renamed':
+                old = row.get('previous_filename')
+                if old not in before or old in after or path in before or path not in after: _fail('Invalid renamed file evidence')
+                paths.append(old)
+            elif status == 'added':
+                if path in before or path not in after:_fail('Invalid added file evidence')
+            elif status == 'removed':
+                if path not in before or path in after:_fail('Invalid removed file evidence')
+            elif status == 'modified':
+                if path not in before or path not in after:_fail('Invalid modified file evidence')
+            else:_fail('Unsupported PR change kind')
+            expected = before[path] if status == 'removed' else after[path]
+            if row.get('sha') != expected['sha'] or any(p in covered for p in paths):_fail('The PR blob or path evidence conflicts')
+            covered.update(paths)
+        if covered != changed:_fail('The PR manifest omits a tree change')
+        manifest = [{'path':p, 'before':before.get(p), 'after':after.get(p)} for p in sorted(changed)]
+        return {'repository':self.repository,'repository_id':repository_id, **{k:pins[k] for k in ('pr_number','base','base_sha','head_sha','commit','merge_topology')},
+                'merged_at':merged_at.isoformat(),'base_tree':base_tree,'head_tree':head_tree,
+                'manifest':manifest,'manifest_sha256':_digest(manifest),'changed_files':count}
+
     def scan(self, commit, base):
         self._pin(self.repository, base, commit)
         repository_id = self._identity()

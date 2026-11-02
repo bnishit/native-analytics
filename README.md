@@ -41,7 +41,7 @@ Open http://127.0.0.1:8769/app. This loopback preview creates private local emai
 
 [Governed debug snapshots](docs/debugging.md) add default-off, owner-scoped capture windows, SDK redaction before upload, encrypted expiring storage and separately consented editor reads. These are selected reviewed snapshots, not automatic prompt capture.
 
-[Regression cases and experiments](docs/experiments.md) have a primary screen, versioned datasets, a Python application-side runner and scoped CLI/MCP surfaces. Fixed JSON checks do not establish production impact.
+[Regression cases and experiments](docs/experiments.md) have a primary screen, versioned datasets, a Python application-side runner and scoped CLI/MCP surfaces. Fixed JSON checks do not establish production impact. In Outcomes, an editor can prepare exact GitHub/Railway deployment evidence and an owner can adopt its immutable proof. This read-only provider path keeps source identity separate from review, CI and release permission; see [release evidence and outcome windows](docs/release-outcomes.md).
 
 The platform includes [Python/Node workflow context helpers](docs/tracing-sdk.md) and [metadata-only OTLP/HTTP ingestion](docs/otlp.md). Cross-language tests pass locally. Explicit model-span helpers record bounded usage, exact-cost provenance and first meaningful output without retaining content; existing tracers can reuse the shared observation helper. The official exporter and Tracker provider metadata have bounded live proof. An exact-channel Tracker pilot also records real streamed first output; other channels and its parser remain non-streaming. Broader integrations remain separately tracked.
 
@@ -454,7 +454,7 @@ Use opaque user IDs. Identity is producer-asserted; an IP is not a person and a 
 
 ## Python / FastAPI integration
 
-Install the Python SDK with `python -m pip install ./sdk/python` from a reviewed source checkout, or install its built wheel in your application environment. All companion modules are bundled; no service dependencies are required. See [SDK installation and tracing](docs/tracing-sdk.md) for artifact checks and proposed pinned Git installs. Install the ASGI middleware **after** other middleware:
+Install the Python SDK from a reviewed pinned Git revision or its built wheel in your application environment. All companion modules are bundled; no service dependencies are required. See [SDK installation and tracing](docs/tracing-sdk.md) for artifact checks and verified pinned Git installs. Install the ASGI middleware **after** other middleware:
 
 ```python
 from native_analytics import install
@@ -646,7 +646,7 @@ keys in the private file so you can inspect/recover the cloud project without lo
 
 ## TypeScript / Next.js / serverless
 
-Build the server-only ESM SDK with `npm ci` and `npm pack`, then install the resulting tarball in your application. Import `createAnalytics` and `WorkflowTracer` from `@afterspan/sdk`; standalone model adapters can import `@afterspan/sdk/model`. JavaScript and TypeScript declarations are bundled. Neither package name is claimed to be published to a registry. See [SDK installation and tracing](docs/tracing-sdk.md). It uses native `fetch` and `crypto`, with zero runtime dependencies. Instantiate `createAnalytics({url,writeKey,source})`.
+Install the server-only ESM SDK from a reviewed pinned Git revision or its built tarball. Import `createAnalytics` and `WorkflowTracer` from `@afterspan/sdk`; standalone model adapters can import `@afterspan/sdk/model`. JavaScript and TypeScript declarations are bundled. Neither package name is claimed to be published to a registry. See [SDK installation and tracing](docs/tracing-sdk.md). It uses native `fetch` and `crypto`, with zero runtime dependencies. Instantiate `createAnalytics({url,writeKey,source})`.
 Use `after(() => client.track('save.completed', opaqueUserId, {kind:'article'}))` on Next.js,
 or your platform's `waitUntil`. `identify`, `flush`, and `status` are also available.
 Stable IDs survive its two bounded delivery attempts. Its 500-event in-memory queue is

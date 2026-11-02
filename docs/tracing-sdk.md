@@ -9,8 +9,8 @@ The Python distribution is `afterspan-sdk`; the server-only ESM Node package is 
 Pinned Git installation is verified at the released commit below in fresh consumers. Node also passed a production `--omit=dev` lockfile install with a fresh cache and SSH disabled. Python preserves the existing flat-module imports. No registry account or publication is needed. npm Git installation runs the reviewed `prepare` build and downloads its pinned build dependencies.
 
 ```sh
-python -m pip install 'afterspan-sdk @ git+https://github.com/bnishit/native-analytics.git@28460050dcfaea8de1a45be95078875f0a24ee5d#subdirectory=sdk/python'
-npm install 'git+https://github.com/bnishit/native-analytics.git#28460050dcfaea8de1a45be95078875f0a24ee5d'
+python -m pip install 'afterspan-sdk @ git+https://github.com/bnishit/native-analytics.git@fdb555569f20abbe21efc215c3178b4a374e6962#subdirectory=sdk/python'
+npm install 'git+https://github.com/bnishit/native-analytics.git#fdb555569f20abbe21efc215c3178b4a374e6962'
 ```
 
 ### Build and verify artifacts locally
@@ -129,7 +129,7 @@ No prompt, output, refusal text, tool arguments or raw provider error is retaine
 
 ## Responses and Messages observation
 
-The source SDK also exposes `observe_responses` / `observeResponses` for parsed OpenAI Responses objects and events, and `observe_anthropic` / `observeAnthropic` for parsed Anthropic Messages objects and events. These methods are available on an open model span and the standalone observer. They require an updated artifact; the older pinned Git installation above does not include them. These are explicit observers, not automatic provider/framework wrappers. They add no provider dependency or transport.
+The pinned SDK also exposes `observe_responses` / `observeResponses` for parsed OpenAI Responses objects and events, and `observe_anthropic` / `observeAnthropic` for parsed Anthropic Messages objects and events. These methods are available on an open model span and the standalone observer. The Git installation above includes both methods; earlier SDK revisions require an update. These are explicit observers, not automatic provider/framework wrappers. They add no provider dependency or transport.
 
 ```python
 with tracer.span('model') as span:
@@ -155,7 +155,7 @@ Messages usage replaces cumulative output counts; repeated totals do not add tok
 
 Neither format reports USD cost through these methods. Record a separate exact amount with its real provenance only when available. A provider update cannot relabel prior estimated token counts as provider-reported. Invalid accounting clears uncertain counts and increments the same existing diagnostic counter. These observers retain no prompt, response, reasoning text, function name or tool argument. The caller must surface provider errors and incomplete streams; recording their usage never marks the span or task successful.
 
-The contract tests and fresh installed-package consumers use synthetic provider-shaped events. They assert both language outputs against the local service, including cached input, cumulative output, unknown cost and private-content omission. This is not proof of a direct OpenAI/Anthropic network request or another deployed customer integration.
+The contract tests and fresh installed-package consumers use synthetic provider-shaped events. They assert both language outputs against the local service, including cached input, cumulative output, unknown cost and private-content omission. Separately, two bounded synthetic streaming requests through the existing production producer’s OpenRouter-compatible Responses and Messages endpoints completed with expected output, reported input/output totals of 6/1 each, and first-output timings of 518.294 and 381.246 ms. These calls used the reviewed compiled standalone observer without changing the producer’s installed dependency. They prove gateway-format observation, not native OpenAI/Anthropic endpoints, framework-wide coverage, a second customer integration or a latency estimate. Fresh Python/Node Git installs at the pin above verified the new exports; wheel/tarball consumers separately verified service ingestion.
 
 Provider contracts: [OpenAI Responses usage types](https://github.com/openai/openai-python/blob/main/src/openai/types/responses/response_usage.py), [Responses event types](https://github.com/openai/openai-python/blob/main/src/openai/types/responses/response_stream_event.py), [Anthropic cumulative streaming usage](https://platform.claude.com/docs/en/build-with-claude/streaming), and [cached-input accounting](https://platform.claude.com/docs/en/build-with-claude/prompt-caching). These are the documented mapping sources, not a claim of all-provider support.
 

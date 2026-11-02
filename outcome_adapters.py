@@ -1,7 +1,7 @@
 """Project validated integrations into one outcome shape without a second event stream."""
 from audit import ReviewQuery,request_groups,trace_groups,available
 
-CHECKS={'source-facts-v1':('source_facts',1),'growthbook-catalog-v1':('growthbook_catalog',1)}
+CHECKS={'source-facts-v1':('source_facts',1),'growthbook-catalog-v1':('growthbook_catalog',1),'growthbook-catalog-v2':('growthbook_catalog',2)}
 WORKFLOWS={'read':'slack_read_request','write':'slack_write_request','unknown':'slack_request_unknown'}
 INTEGRATIONS=[{'contract':'workflow-trace-v1','workflows':'Producer-declared workflow handles','checks':'Versioned criteria declared by the producer and saved goal.'},
     {'contract':'slack-request-v1','workflows':list(WORKFLOWS.values()),
@@ -42,7 +42,7 @@ def project_slack(audit,project,key,group,q,chain=None):
             evidence='missing' if not proof else 'resolved' if f['check_evidence_version']=='source-check-v1' and phase=='before_delivery' and span['state']=='succeeded' and bound(checked,f['quality_span_ref'],'quality') else 'mismatch'
             span['checks']=[{'name':definition[0],'version':definition[1],'method':'source','phase':phase,'required':True,
                 'result':{'succeeded':'passed','failed':'failed'}.get(f.get('reported_outcome'),'unknown'),'evidence_present':proof,'evidence_status':evidence}]
-            span['disposition']={'withheld':'withheld','clarification':'clarification'}.get(f.get('answer_disposition'))
+            span['disposition']={'withheld':'withheld','clarification':'clarification','partial':'partial'}.get(f.get('answer_disposition'))
     replies=[r for r in group if r['facts']['stage']=='reply' and r['facts'].get('attempt_number')==latest]
     if len(replies)==1 and replies[0]['facts'].get('reply_span_ref'):
         reply=replies[0];ref=reply['facts']['reply_span_ref'];parent=operation(ref)
@@ -57,7 +57,7 @@ def project_slack(audit,project,key,group,q,chain=None):
             elif any(any(r['facts'].get(k)!=reply['facts'].get(k) for k in BINDINGS) for r in groups[raw]):issues.append('final_delivery_scope_conflict')
             elif next(s for s in row['stages'] if s['stage']=='reply')['required'] is not True:issues.append('final_reply_requirement_unknown')
             else:
-                child['milestone']='delivery';child['disposition']={'verified':'delivered','withheld':'withheld','clarification':'clarification'}.get(checked['facts'].get('answer_disposition')) if checked else None
+                child['milestone']='delivery';child['disposition']={'verified':'delivered','withheld':'withheld','clarification':'clarification','partial':'partial'}.get(checked['facts'].get('answer_disposition')) if checked else None
     completion=timing.get('completion',{}).get('processing',{})
     totals=[s for s in spans if s['step']=='total' and s['attempt_number']==latest]
     if totals and completion.get('state') in {'succeeded','failed'}:

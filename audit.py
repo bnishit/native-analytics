@@ -56,12 +56,12 @@ class Observation(BaseModel):
     check_evidence_digest:Digest|None=None
     check_evidence_version:Literal['source-check-v1']|None=None
     tool_environments:list[Literal['production','staging']]|None=Field(default=None,min_length=1,max_length=2)
-    check_version:Literal['growthbook-catalog-v1','source-facts-v1']|None=None
-    answer_disposition:Literal['verified','withheld','clarification']|None=None
+    check_version:Literal['growthbook-catalog-v1','growthbook-catalog-v2','source-facts-v1']|None=None
+    answer_disposition:Literal['verified','withheld','clarification','partial']|None=None
     check_phase:Literal['before_reply','after_reply']|None=None
-    checked_claims:int|None=Field(default=None,ge=0,le=15,strict=True)
-    mismatched_claims:int|None=Field(default=None,ge=0,le=15,strict=True)
-    unknown_claims:int|None=Field(default=None,ge=0,le=15,strict=True)
+    checked_claims:int|None=Field(default=None,ge=0,le=16,strict=True)
+    mismatched_claims:int|None=Field(default=None,ge=0,le=16,strict=True)
+    unknown_claims:int|None=Field(default=None,ge=0,le=16,strict=True)
     @model_validator(mode='after')
     def quality_counts(self):
         if self.model_usage is not None:
@@ -89,9 +89,10 @@ class Observation(BaseModel):
         if self.stage!='quality':
             if self.check_version is not None or self.answer_disposition is not None or self.check_phase is not None or any(v is not None for v in counts):raise ValueError('quality fields belong to the quality stage')
         elif self.check_version is not None:
-            if any(v is None for v in counts) or self.mismatched_claims>self.checked_claims or self.checked_claims+self.unknown_claims>15:raise ValueError('inconsistent quality counts')
+            if any(v is None for v in counts) or self.mismatched_claims>self.checked_claims or self.checked_claims+self.unknown_claims>(16 if self.check_version=='growthbook-catalog-v2' else 15):raise ValueError('inconsistent quality counts')
             outcome='unknown' if self.unknown_claims or not self.checked_claims else 'failed' if self.mismatched_claims else 'succeeded'
             if self.reported_outcome!=outcome:raise ValueError('quality outcome must match counts')
+        if self.answer_disposition=='partial' and (self.check_version!='growthbook-catalog-v2' or self.reported_outcome!='unknown' or not self.checked_claims or not self.unknown_claims or self.mismatched_claims):raise ValueError('partial catalog answer requires checked facts and incomplete request scope')
         if self.answer_disposition=='verified' and (self.check_version is None or self.reported_outcome!='succeeded'):
             raise ValueError('verified disposition requires a successful source check')
         if (self.answer_disposition is None)!=(self.check_phase is None):raise ValueError('disposition and check phase belong together')
@@ -113,9 +114,9 @@ MEANINGS={
  'command_kind':'Bounded parsed read-command category. Missing in older producers; never infer it from reply text or a source check.',
  'release_sha':'Exact producer Git revision. Missing or conflicting revisions cannot qualify a release-bound request outcome.',
  'request_started_at_ms':'Verified incoming event time when valid, otherwise server handling start, Unix milliseconds. It survives business retries; message sends never restart this clock.',
- 'answer_disposition':'Producer reports verified answer, withheld factual answer, or clarification. Source-check counts refer to the candidate, not a replacement reply.',
+ 'answer_disposition':'Producer reports verified answer, withheld factual answer, clarification, or an explicitly partial answer. Partial delivery cannot satisfy a complete task goal. Source-check counts refer to the candidate, not a replacement reply.',
  'check_phase':'Producer-declared before_reply or after_reply. Timestamps must agree; missing historical phase stays unknown.',
- 'check_version':'source-facts-v1 is a bounded producer check of displayed facts against a declared source; its exact criteria belong to the repo goal. growthbook-catalog-v1: producer-side deterministic check of the exact rendered catalog answer against a separate uncached GrowthBook read. Not a second model vote or an independent Afterspan source fetch.',
+ 'check_version':'source-facts-v1 is a bounded producer check of displayed facts against a declared source; its exact criteria belong to the repo goal. growthbook-catalog-v1: producer-side deterministic check of the exact rendered catalog answer against a separate uncached GrowthBook read. growthbook-catalog-v2 adds producer-side original-request scope and bounded paginated coverage checks; it does not reinterpret v1 observations. Not a second model vote or an independent Afterspan source fetch.',
  'checked_claims':'Number of candidate facts checked against the repo-declared source criteria. growthbook-catalog-v1 checks catalog row presence, source version, enabled state and Identity $in entry count; never usage or eligibility.',
  'mismatched_claims':'Checked rows which disagreed with the source. Nonzero forces failed; never averaged into a clean pass.',
  'unknown_claims':'Rows not checkable, including changed or missing source versions. Missing checks and unsupported answers remain unknown.',
@@ -179,7 +180,7 @@ class QualityGoal(BaseModel):
     safe_test:str=Field(min_length=1,max_length=1000)
     metric:Literal['answer-quality-v1']
     environment:Literal['production','staging']
-    verifier:Literal['growthbook-catalog-v1','source-facts-v1','unconfigured']
+    verifier:Literal['growthbook-catalog-v1','growthbook-catalog-v2','source-facts-v1','unconfigured']
     tracking:QualityTracking
 
 class GoalQuery(ReviewQuery):

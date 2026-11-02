@@ -10,7 +10,7 @@ type Method = 'source'|'code'|'model'|'human';
 type Phase = 'before_delivery'|'after_delivery';
 type Result = 'passed'|'failed'|'unknown';
 type Milestone = 'completion'|'delivery'|'usefulness';
-type Disposition = 'delivered'|'withheld'|'clarification';
+type Disposition = 'delivered'|'withheld'|'clarification'|'partial';
 export interface TraceContext {
  traceId:string; attemptId:string; attemptNumber:number; workflow:string; environment:Environment;
  requestStartedAtMs:number; releaseSha?:string; spanId?:string; sampled:boolean; trafficKind?:TrafficKind;
@@ -83,7 +83,7 @@ export class WorkflowTracer {
  }
  async span<T>(step:Step,run:(span:Span)=>Promise<T>|T,options:{milestone?:Milestone;disposition?:Disposition}={}):Promise<T>{
   const context=current.getStore();if(!context)throw Error('Start or continue a task first');
-  if(!steps.has(step)||options.milestone!==undefined&&!['completion','delivery','usefulness'].includes(options.milestone)||options.disposition!==undefined&&(!['delivered','withheld','clarification'].includes(options.disposition)||step!=='response'))throw Error('Invalid span declaration');
+  if(!steps.has(step)||options.milestone!==undefined&&!['completion','delivery','usefulness'].includes(options.milestone)||options.disposition!==undefined&&(!['delivered','withheld','clarification','partial'].includes(options.disposition)||step!=='response'))throw Error('Invalid span declaration');
   const child=validate({...context,spanId:randomBytes(8).toString('hex')});const span=new Span(this,child,context.spanId?mappedId(context.traceId,context.spanId):undefined,step);
   return current.run(child,async()=>{
    const started=performance.now();let state='succeeded',code='none';this.emit('trace.observed',{afterspan_trace:{...span.facts(),state:'started'}});

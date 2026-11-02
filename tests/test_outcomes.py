@@ -110,6 +110,14 @@ class OutcomeTests(unittest.TestCase):
         r=self.evaluate();self.assertEqual(r['counts']['unclassified'],1);self.assertEqual(r['satisfied_fraction'],.5)
         self.fixture.tid=str(uuid.uuid4());self.task(self.check('failed'))
         r=self.evaluate();self.assertEqual(r['counts']['failed'],1);self.assertEqual(r['mature_denominator'],3)
+    def test_partial_delivery_stays_unclassified_even_when_all_declared_facts_pass(self):
+        self.task(disposition='partial')
+        result=self.evaluate()
+        self.assertEqual(result['counts']['satisfied'],0)
+        self.assertEqual(result['counts']['unclassified'],1)
+        self.assertEqual(result['mature_denominator'],1)
+        self.assertIn('partial_answer_not_completed',result['tasks'][0]['reasons'])
+
     def test_withheld_and_missing_evidence_never_pass(self):
         self.task(disposition='withheld');self.assertEqual(self.evaluate()['counts']['withheld'],1)
         self.fixture.tid=str(uuid.uuid4());self.task(self.check(evidence_ref=None))

@@ -81,6 +81,7 @@ def classify(trace,goal,as_of):
         if span['last_seen']>deadline:failed=True;reasons.append('milestone_late:'+milestone)
     for span in spans:
         if span['disposition']=='withheld':withheld=True
+        if span['disposition']=='partial':reasons.append('partial_answer_not_completed')
         if span['disposition']=='clarification':reasons.append('clarification_not_completed')
     return ('failed' if failed else 'withheld' if withheld else 'unclassified' if reasons else 'satisfied'),sorted(set(reasons))
 

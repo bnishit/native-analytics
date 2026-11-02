@@ -43,3 +43,11 @@ Receipts use existing immutable, idempotent event storage and retention. Require
 ## Release measurement
 
 Goals can select a traffic population and minimum mature comparison sample. Unknown labels never become normal users. Outcomes can join a pinned goal/dataset experiment to two stored verified deployments and frozen mature user-task windows. Reported model cost includes failed and retried mature tasks; missing cost stays unknown. See [release outcomes](release-outcomes.md) for exact bindings, access, limits and interfaces. Normal-use outcome improvement remains unproven.
+
+## Partial answers and checker versions
+
+A delivered response can be useful and still leave part of the request unfinished. Native workflow producers may declare response disposition `partial`; the outcome cannot satisfy the goal: it is `unclassified` with `partial_answer_not_completed` when no explicit failed check or missed deadline takes precedence, even if every declared factual check passes. It remains in the mature denominator. This is producer-reported incompleteness, not Afterspan judging the text.
+
+The Slack adapter keeps `growthbook-catalog-v1` as `growthbook_catalog` version 1. `growthbook-catalog-v2` maps to version 2: the producer additionally binds the original supported list request, status filter, maximum/total intent and validated paginated coverage. V2 allows at most 15 displayed row checks plus one scope check. Missing scope contributes an unknown check; a source-checked partial response is not an overall pass. A version-1 observation cannot satisfy a version-2 goal, and existing goals are not silently changed. The same generic outcome engine supports other products' own versioned criteria.
+
+Tracker's bounded catalog reader may inspect up to ten pages of 100 raw rows. Page counts, offsets, totals, continuation and duplicate identities must agree. Reaching that bound is partial coverage. Full source coverage is distinct from showing the full result list, and neither establishes feature usage or effective eligibility. These source changes require their own deployment and live readback; historical validation traces retain their old semantics.

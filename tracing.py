@@ -108,7 +108,7 @@ class SpanObservation(BaseModel):
 
     request_started_at_ms:int|None=Field(default=None,ge=0,le=4102444800000,strict=True)
     milestone:Literal['completion','delivery','usefulness']|None=None
-    disposition:Literal['delivered','withheld','clarification']|None=None
+    disposition:Literal['delivered','withheld','clarification','partial']|None=None
     checks:list[WorkflowCheck]|None=Field(default=None,min_length=1,max_length=20)
     model_usage:ModelUsage|None=None
 

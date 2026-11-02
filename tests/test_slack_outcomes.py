@@ -98,6 +98,26 @@ class SlackOutcomeTests(unittest.TestCase):
     def test_a_different_checker_version_does_not_satisfy_the_goal(self):
         self.fixture(quality_changes={'check_version':'growthbook-catalog-v1'});r=self.evaluate()
         self.assertEqual(r['counts']['unclassified'],1);self.assertIn('check_missing_or_conflicting:source_facts',r['tasks'][0]['reasons'])
+    def test_catalog_scope_version_is_explicit_and_cannot_relabel_historical_checks(self):
+        self.goal['checks']=[{'name':'growthbook_catalog','version':2,'method':'source','phase':'before_delivery','evidence_required':True}]
+        self.goal_id=str(uuid.uuid4())
+        self.f.owner.put('/api/outcomes/goals/'+self.goal_id+'?project='+self.f.p['id']+'&revision=0',headers=CSRF,json=self.goal).raise_for_status()
+        self.fixture(quality_changes={'check_version':'growthbook-catalog-v2','checked_claims':16})
+        r=self.evaluate();self.assertEqual(r['counts']['satisfied'],1,r)
+        trace=self.f.owner.post('/api/traces/open?project='+self.f.p['id'],headers=CSRF,json={**r['trace_query'],'reference':r['tasks'][0]['trace']}).json()['trace']
+        self.assertEqual(trace['checks'][0]['version'],2)
+        with closing(app.connect()) as c,c:
+            c.execute("UPDATE events SET properties=json_set(properties,'$.afterspan_audit.check_version','growthbook-catalog-v1','$.afterspan_audit.checked_claims',1) WHERE project=? AND json_extract(properties,'$.afterspan_audit.stage')='quality'",(self.f.p['id'],))
+        self.assertEqual(self.evaluate()['counts']['satisfied'],0)
+
+    def test_partial_catalog_delivery_never_satisfies_a_complete_scope_goal(self):
+        self.goal['checks']=[{'name':'growthbook_catalog','version':2,'method':'source','phase':'before_delivery','evidence_required':True}]
+        self.goal_id=str(uuid.uuid4())
+        self.f.owner.put('/api/outcomes/goals/'+self.goal_id+'?project='+self.f.p['id']+'&revision=0',headers=CSRF,json=self.goal).raise_for_status()
+        self.fixture(quality_changes={'check_version':'growthbook-catalog-v2','checked_claims':15,'unknown_claims':1,'reported_outcome':'unknown','answer_disposition':'partial'})
+        r=self.evaluate();self.assertEqual(r['counts']['satisfied'],0,r);self.assertEqual(r['counts']['unclassified'],1,r)
+        self.assertIn('partial_answer_not_completed',r['tasks'][0]['reasons'])
+
     def test_retry_does_not_restart_the_original_task_deadline(self):
         self.offset=11;self.fixture();r=self.evaluate();self.assertEqual(r['counts']['failed'],1)
         self.assertIn('check_late:source_facts',r['tasks'][0]['reasons'])

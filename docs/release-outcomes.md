@@ -1,6 +1,6 @@
 # Experiments, verified releases and observed outcomes
 
-The shared comparison path is included in the early outcome-platform release. Local synthetic fixtures prove its bindings and accounting; production user improvement has not been established.
+The shared comparison path is included in the early outcome-platform release. Local synthetic fixtures prove its bindings and accounting. A production-stored three-case comparison now also exercises real old/current Tracker source locally; production user improvement has not been established. Those retrospective runs have no user-goal binding and cannot qualify the already-deployed release.
 
 ## Owner flow
 

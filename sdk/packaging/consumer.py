@@ -20,6 +20,15 @@ with tracer.task('package_probe', 'test', traffic_kind='synthetic'):
         span.model_usage(provider='openai', model='fixture/model')
         span.observe_openai({'choices': [{'delta': {'content': 'private-content-sentinel'}}]})
         span.model_usage(input_count=4, output_count=2, usage_source='provider_reported', cost_usd_decimal='0.000000254', cost_source='provider_reported')
+    with tracer.span('model') as span:
+        span.model_usage(provider='openai', model='fixture/responses')
+        span.observe_responses({'type':'response.output_text.delta','delta':'private-content-sentinel'})
+        span.observe_responses({'type':'response.completed','response':{'usage':{'input_tokens':10,'output_tokens':4,'input_tokens_details':{'cached_tokens':6},'output_tokens_details':{'reasoning_tokens':2}}}})
+    with tracer.span('model') as span:
+        span.model_usage(provider='anthropic', model='fixture/messages')
+        span.observe_anthropic({'type':'message_start','message':{'usage':{'input_tokens':3,'cache_creation_input_tokens':7,'cache_read_input_tokens':10,'output_tokens':1}}})
+        span.observe_anthropic({'type':'content_block_delta','delta':{'type':'text_delta','text':'private-content-sentinel'}})
+        for count in [2,5,5]:span.observe_anthropic({'type':'message_delta','usage':{'output_tokens':count}})
     with tracer.span('processing', milestone='completion') as span:
         result = 2 + 2
         assert result == 4

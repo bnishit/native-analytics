@@ -40,7 +40,7 @@ class ModelObservation:
         self.started=self.clock() if started_at_ms is None else started_at_ms
         if type(self.started) not in {int,float} or not math.isfinite(self.started) or self.started<0:raise ValueError('invalid model clock')
         self.data=_validated({'provider':provider,'model':model,'template_version':template_version})
-        self.first=None;self.closed=False;self.rejected_updates=0
+        self.first=None;self.closed=False;self.rejected_updates=0;self._anthropic_input={}
     def record(self,**fields):
         if self.closed:raise ValueError('model observation is closed')
         self.data=_validated({**self.data,**fields})
@@ -73,9 +73,62 @@ class ModelObservation:
                 fields.update(cost_usd_decimal=cost if isinstance(cost,str) else None,cost_source='provider_reported' if isinstance(cost,str) else None)
             self.record(**fields);return True
         except (ValueError,TypeError,AttributeError):
-            self.rejected_updates+=1
-            self.data={k:v for k,v in self.data.items() if k not in _ACCOUNTING}
-            return False
+            return self._reject()
+    def _reject(self):
+        self.rejected_updates+=1
+        self.data={k:v for k,v in self.data.items() if k not in _ACCOUNTING}
+        self._anthropic_input={}
+        return False
+    def _provider_usage(self,value,fields):
+        if _field(value,'model') is not None:fields['model']=_field(value,'model')
+        if any(k in fields for k in _COUNTS):
+            if self.data.get('usage_source')!='provider_reported':
+                fields={**{k:None for k in _COUNTS},**fields}
+            combined={**self.data,**fields}
+            fields['usage_source']='provider_reported' if any(combined.get(k) is not None for k in _COUNTS) else None
+        self.record(**fields)
+        return True
+    def observe_responses(self,event):
+        """Observe parsed Responses objects/events; transport owns completion/errors."""
+        if self.closed:raise ValueError('model observation is closed')
+        try:
+            kind=_field(event,'type')
+            if kind in {'response.output_text.delta','response.refusal.delta','response.function_call_arguments.delta'}:
+                delta=_field(event,'delta')
+                if isinstance(delta,str) and delta:self.first_output()
+            item=_field(event,'item')
+            if kind=='response.output_item.added' and _field(item,'type')=='function_call' and isinstance(_field(item,'name'),str) and _field(item,'name'):self.first_output()
+            value=_field(event,'response') if kind in {'response.created','response.in_progress','response.completed','response.incomplete','response.failed'} else event if _field(event,'object')=='response' else None
+            fields={};usage=_field(value,'usage')
+            if usage is not None:
+                fields=dict(input_count=_field(usage,'input_tokens'),output_count=_field(usage,'output_tokens'),cache_read_count=_field(_field(usage,'input_tokens_details'),'cached_tokens'),reasoning_count=_field(_field(usage,'output_tokens_details'),'reasoning_tokens'))
+            return self._provider_usage(value,fields)
+        except (ValueError,TypeError,AttributeError):return self._reject()
+    def observe_anthropic(self,event):
+        """Observe Messages objects/events. Cumulative counts replace, never add."""
+        if self.closed:raise ValueError('model observation is closed')
+        try:
+            kind=_field(event,'type');delta=_field(event,'delta');block=_field(event,'content_block')
+            if kind=='content_block_delta':
+                key={'text_delta':'text','input_json_delta':'partial_json'}.get(_field(delta,'type'))
+                if key and isinstance(_field(delta,key),str) and _field(delta,key):self.first_output()
+            if kind=='content_block_start':
+                key={'text':'text','tool_use':'name'}.get(_field(block,'type'))
+                if key and isinstance(_field(block,key),str) and _field(block,key):self.first_output()
+            value=_field(event,'message') if kind=='message_start' else event if kind in {'message','message_delta'} else None
+            fields={};usage=_field(value,'usage');components=dict(self._anthropic_input)
+            if usage is not None:
+                for key in ['input_tokens','cache_creation_input_tokens','cache_read_input_tokens']:
+                    count=_field(usage,key)
+                    if count is not None:
+                        if type(count) is not int or not 0<=count<=1000000000:raise ValueError('invalid model usage count')
+                        components[key]=count
+                fields['input_count']=sum(components.values()) if len(components)==3 else None
+                for target,key in [('cache_read_count','cache_read_input_tokens'),('output_count','output_tokens')]:
+                    if _field(usage,key) is not None:fields[target]=_field(usage,key)
+            self._provider_usage(value,fields);self._anthropic_input=components
+            return True
+        except (ValueError,TypeError,AttributeError):return self._reject()
     def snapshot(self):
         return {**self.data,**({'first_output_ms':self.first} if self.first is not None else {})}
     def close(self):

@@ -87,6 +87,12 @@ class Span:
     def observe_openai(self,chunk,exact_cost_usd=None):
         if self.closed or self._model is None:raise ValueError('declare model identity on an open model span first')
         return self._model.observe_openai(chunk,exact_cost_usd)
+    def observe_responses(self,event):
+        if self.closed or self._model is None:raise ValueError('declare model identity on an open model span first')
+        return self._model.observe_responses(event)
+    def observe_anthropic(self,event):
+        if self.closed or self._model is None:raise ValueError('declare model identity on an open model span first')
+        return self._model.observe_anthropic(event)
     def model_result(self,duration):
         if self._model is None:return None
         result=self._model.close();self.tracer.model_metadata_errors+=self._model.rejected_updates

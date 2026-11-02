@@ -66,6 +66,8 @@ export class Span {
  }
  firstOutput(){if(this.closed||!this.model)throw Error('Declare model identity on an open model span first');return this.model.firstOutput()}
  observeOpenAI(chunk:unknown,exactCostUsd?:string){if(this.closed||!this.model)throw Error('Declare model identity on an open model span first');return this.model.observeOpenAI(chunk,exactCostUsd)}
+ observeResponses(event:unknown){if(this.closed||!this.model)throw Error('Declare model identity on an open model span first');return this.model.observeResponses(event)}
+ observeAnthropic(event:unknown){if(this.closed||!this.model)throw Error('Declare model identity on an open model span first');return this.model.observeAnthropic(event)}
  modelResult(duration:number){
   if(!this.model)return;
   const result=this.model.close();this.tracer.modelMetadataErrors+=this.model.rejectedUpdates;

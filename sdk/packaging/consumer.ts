@@ -7,3 +7,7 @@ void tracer.task({ workflow: 'typed_probe', environment: 'test', context }, () =
   span.check('source_facts', 'unknown', { execution: 'not_run', reasonCode: 'evidence_absent' });
   return observation.snapshot();
 }));
+
+observation.observeResponses({type:'response.created'});
+observation.observeAnthropic({type:'ping'});
+void tracer.span('model',span=>{span.modelUsage({provider:'example',model:'fixture/model'});span.observeResponses({});span.observeAnthropic({});});

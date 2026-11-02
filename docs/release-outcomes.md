@@ -1,6 +1,6 @@
 # Experiments, verified releases and observed outcomes
 
-This outcome-platform branch is unreleased. The local synthetic fixture proves the shared comparison path, not a production improvement.
+The shared comparison path is included in the early outcome-platform release. Local synthetic fixtures prove its bindings and accounting; production user improvement has not been established.
 
 ## Owner flow
 

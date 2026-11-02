@@ -4,7 +4,7 @@
 
 Build and successfully test all four areas of the requested platform, deploy them to production, verify real supported flows, and update the public site and maintained documentation. This document tracks the full objective; a working subset does not complete it.
 
-The existing production baseline is Afterspan 7621fb7 and Tracker 0db0c2e. The outcome-platform branch is unreleased. Existing analytics, journey, audit, team and product-loop evidence remains valid within its recorded scope.
+Afterspan PR #26 is merged as bac4cd762d978165da63f3bf0b17206adcf1de56 and deployed successfully as bcfd264d-71c9-44d8-8c83-6d4e10bed407, then restarted and verified as 8f4af5cc-c0cb-43f6-849c-96534b8e72a3 at the same commit. Tracker PR #189 is merged as a1b4b81969819d8fe11e5b8d9af2303a900ce3d1 and deployed successfully as 918b68b1-c790-4041-9c84-4e930d2ea16c. Both deployed trees match their independently reviewed trees. This is an early release; the full objective remains open. Existing analytics, journey, audit, team and product-loop evidence remains valid within its recorded scope.
 
 ## User story and ownership
 
@@ -18,25 +18,25 @@ All items require implementation plus direct evidence. Proposed targets are acce
 
 | Area | Required behavior | Completion evidence | Current state |
 |---|---|---|---|
-| 1 Outcomes | Versioned generic goals: task population, deadline, required evidence/checks | API/UI/CLI/MCP tests and two different product workflows | Local engine and surfaces; two-product/live proof pending |
+| 1 Outcomes | Versioned generic goals: task population, deadline, required evidence/checks | API/UI/CLI/MCP tests and two different product workflows | Local engine/surfaces and two live Tracker validations; second-product adoption pending |
 | 1 Checks | Versioned generic source/code/model/human checks on workflow traces | Contradictions, unknowns, scope isolation and shared projection tests | Local checks and goal-based classification tested |
-| 1 Evidence | Resolve check evidence against scoped immutable receipts, not just pointer presence | Missing/cross-task/wrong-version receipts cannot satisfy required evidence | Local receipt resolution and adversarial tests pass; live proof pending |
-| 1 Task accounting | Completion, correctness, delivery and usefulness stay distinct | Mature denominator includes failure, withheld and unclassified; retries never restart clocks | Local engine tested |
-| 1 Outcome screen | Goal → failing tasks → evidence → next action | Real running UI and agent workflow | Local running synthetic UI/CLI/MCP tested; production pending |
+| 1 Evidence | Resolve check evidence against scoped immutable receipts, not just pointer presence | Missing/cross-task/wrong-version receipts cannot satisfy required evidence | Local adversarial tests and real Tracker bound source-check readback pass |
+| 1 Task accounting | Completion, correctness, delivery and usefulness stay distinct | Mature denominator includes failure, withheld and unclassified; retries never restart clocks | Local engine and bounded live declared-criteria result tested |
+| 1 Outcome screen | Goal → failing tasks → evidence → next action | Real running UI and agent workflow | Local UI and live primary trace browser, scoped CLI and official stdio MCP reads tested; broader adoption pending |
 | 2 Instrumentation | Python and Node tracing helpers with nested context and lifecycle | Running apps, background jobs and queue/HTTP propagation tests | Local Python/Node helpers; cross-language HTTP carrier and async isolation tested; live adoption pending |
-| 2 Interoperability | OpenTelemetry ingestion with explicit safe mapping and W3C propagation | Official exporter → production ingestion → trace readback | Local official HTTP exporter / protobuf / JSON / gzip tested; production pending |
-| 2 Model evidence | Provider/model and prompt version, token usage, cost and streaming timing | Bounds/unit tests and real provider observations; no invented cost | Local metadata contract and trace UI tested; provider/live proof pending |
+| 2 Interoperability | OpenTelemetry ingestion with explicit safe mapping and W3C propagation | Official exporter → production ingestion → trace readback | Local protobuf/JSON/gzip tests and official exporter production-service readback pass |
+| 2 Model evidence | Provider/model and prompt version, token usage, cost and streaming timing | Bounds/unit tests and real provider observations; no invented cost | Three real OpenRouter model calls with tokens, cache, template and exact reported charges observed; streaming first-output timing unproven |
 | 2 Privacy | Content off by default; explicit governed redacted debugging content | Consent/access/retention tests and secret/PII adversarial cases | Local default-off owner policy, pre-upload/server redaction, encrypted expiring snapshots, scoped reads and durable budget tested; production pending |
 | 3 Regression cases | Sanitized immutable cases from failures; versioned datasets and checks | Trace-to-case readback and no raw secret transfer | Local versioned fixtures/datasets, privacy checks and trace link tested; live proof pending |
 | 3 Experiments | Same cases/check versions, candidate/baseline, per-case differences | Real controlled experiment, regression failure and reproducibility | Local callback baseline/candidate via CLI/MCP/UI; pinned facts, missing counts and negative control pass; production pending |
 | 3 Release loop | Approved change → checks → exact release → normal-use outcome window | Existing policy preserved; exact deployment and outcome evidence | Local exact-goal/dataset/run, two verified releases and mature user-window comparison tested; production pending |
-| 4 Collection health | Queue, drop, rejection, delay, stale evidence and evaluator failure visibility | Fault injection plus real health UI/API/MCP readback | Local typed source pulses/expectations, backend counters, scoped UI/API/CLI/MCP and release comparison guards tested; live/fault proof pending |
-| 4 Recovery | Durable delivery where promised; restart/retry/duplicate behavior | Process restart, outage recovery and no duplicate business writes | Local real-process outage/crash/ambiguous acknowledgement and duplicate recovery tested; production volume/restart proof pending |
+| 4 Collection health | Queue, drop, rejection, delay, stale evidence and evaluator failure visibility | Fault injection plus real health UI/API/MCP readback | Local fault tests pass; live declared Tracker source reports observed health over a 90-second window; completeness remains not established |
+| 4 Recovery | Durable delivery where promised; restart/retry/duplicate behavior | Process restart, outage recovery and no duplicate business writes | Local crash/outage/ambiguous-ACK tests and production restart/state/duplicate/fresh-delivery proof pass |
 | 4 Capacity | Declare operating envelope and measure it | Repeatable ingestion/query load results with hardware and dataset scope | Local 32,000-observation real-HTTP seed/mixed load measured with hardware/runtime and exact readback; production capacity is unclaimed |
-| 4 Restore | Consistent encrypted/scoped backup and tested isolated restoration | Restored events/definitions/outcomes and subsequent ingestion proof | Local operator-only encrypted consistent snapshot and isolated actual-schema restore tested; production/off-site proof pending |
-| 4 Access | Scope/role/revocation/redaction cover new surfaces; enterprise controls addressed explicitly | Unauthorized/cross-project tests; SSO/MFA readiness assessed without unsupported claims | Local scope/role/revocation/privacy tests pass; identity/readiness limits explicitly assessed; live checks pending |
-| Release | Full service/SDK/UI checks, independent review, production rollout | Current CI, release IDs, live supported paths and limits | Pending |
-| Documentation | Landing, README, discovery, skills and technical guides match behavior | Running navigation/install flow and accurate capability claims | Pending |
+| 4 Restore | Consistent encrypted/scoped backup and tested isolated restoration | Restored events/definitions/outcomes and subsequent ingestion proof | Pre/post-release encrypted production snapshots restored; both frozen outcome reports and new isolated ingestion/dedup verified; scheduled recovery remains pending |
+| 4 Access | Scope/role/revocation/redaction cover new surfaces; enterprise controls addressed explicitly | Unauthorized/cross-project tests; SSO/MFA readiness assessed without unsupported claims | Local scope/role/revocation/privacy tests and live anonymous/producer/cross-project denials pass; scoped API/CLI/stdio reads work; remaining OAuth/privacy-policy/revocation live checks pending |
+| Release | Full service/SDK/UI checks, independent review, production rollout | Current CI, release IDs, live supported paths and limits | Both PR CIs/reviews pass and both deployments match; remaining acceptance below |
+| Documentation | Landing, README, discovery, skills and technical guides match behavior | Running navigation/install flow and accurate capability claims | Landing desktop/mobile checked; maintained docs now distinguish deployed source from bounded live proof |
 
 ## Integration principles
 
@@ -50,9 +50,25 @@ All items require implementation plus direct evidence. Proposed targets are acce
 
 ## Current evidence
 
-The first local unit extends workflow terminal observations with bounded versioned checks and exposes them through the shared trace projection and UI. Step success is preserved separately. Duplicate check names, start-time checks, raw reason text and invalid evidence references are rejected. Evidence UUIDs are not returned by diagnostic readers. Conflicting terminal checks do not become a pass.
+The four areas have implemented source and local tests: 484 service tests, 32 UI tests and 22 Node SDK tests pass. Both release PRs passed cloud CI and independent product/engineering review. Real Tracker and official-exporter observations provide the bounded live evidence below. The acceptance matrix still requires the remaining adoption, streaming, normal-user outcome and operating proof; local or synthetic results do not close those gates. See [outcome semantics](outcomes.md).
 
-Versioned generic goals and deadline-based outcome classification now have local API/UI/CLI/MCP implementations. Real running synthetic UI and CLI checks match the regression cases. SDK/OTLP integration, reviewed datasets/experiments and governed debug snapshots now have local tested implementations. The release still requires two-product/live provider proof, collection health, operating proof, independent review and production verification. See [outcome semantics](outcomes.md).
+## Bounded live evidence (2026-11-02)
+
+An authorized read-only natural-language request in a private validation channel produced one synthetic-labelled Tracker trace. Real OpenRouter calls took 1.606, 2.244 and 3.093 seconds and reported 0.001452, 0.0003044 and 0.0023768 USD respectively: exact total 0.0041332 USD. The source checker compared 15 displayed claims in 368 ms with no mismatch or unknown claim, then Slack accepted the final reply at 9.734 seconds from the request clock. Processing completed at 10.001 seconds. The bound source check resolved on the actual quality operation, before its reply/send child. The configured validation goal classified that one mature task as satisfied. This is not a normal-user success rate.
+
+The actual reply disclosed its limit: only the first 100 experiments were checked and 15 enabled entries were shown. This verifies the shown facts, not a complete answer to the user's broader request. No human reading, full eligibility, subjective usefulness or causal improvement is established. Product goals need explicit answer-scope/completeness criteria before using this check as a proxy for whole-task fulfillment.
+
+The typed Tracker collector reported observed health with no current reason codes over one live 90-second window. Collection completeness remains not_established. The old comparison scope is unavailable for this live-agent route; it is not a hidden source-check failure or proof of an independent shadow plan.
+
+After the production restart, a second real read-only request compared configured targeting parameters in production and staging. Two source claims passed with no mismatch or unknown; evidence resolved before Slack delivery. The matching source-facts validation goal was satisfied under its declared criteria. Reported model cost was 0.00221975 USD. This does not establish effective user eligibility or equivalence of every targeting rule.
+
+The exact audit windows for these two synthetic validation requests passed the existing latency reviewer: two measured replies, no missing reply, median 9,785 ms, p95/max 9,836 ms, no observed 20-second diagnostic threshold breach. With only two validation samples this is not a production SLA or a normal-user latency estimate. Official stdio MCP search/open/evaluate and scoped CLI evaluation reproduced the production API's frozen report using the existing audit key, with no operator fallback or grant expansion. This did not exercise a new remote OAuth client.
+
+Production restart and pre/post-release encrypted snapshot/isolated outcome reproduction are recorded in [operations](operations.md). No external worker or HTTP listener started on the restored copy; provider-connection decryption was not tested and no restoration was promoted.
+
+A separate official OpenTelemetry Python exporter reached the production service in an isolated synthetic project, retained two nested spans and declared exact model metadata, deduplicated identical re-exports, omitted content and preserved anonymous/producer/cross-project access denials. This is not a second customer-product adoption. Password sign-in also returned a 180-day account session. Secrets and backup keys remain outside this repository.
+
+Still required for the full acceptance: second-product adoption; real streaming first-output evidence; live reviewed experiment/release and mature normal-user outcome windows; scheduled recovery readiness; remaining live scope/revocation/privacy checks. Prompt management, continuous evaluator scheduling, annotation queues, alerting and enterprise identity remain product gaps rather than shipped parity claims.
 
 ## Competitive assessment (2026-11-02)
 

@@ -1,6 +1,6 @@
 # Operating evidence and recovery
 
-This outcome-platform work is unreleased. A healthy HTTP endpoint and a persistent disk do not prove complete collection or recoverability.
+The early outcome-platform release includes the tools below. A healthy HTTP endpoint and a persistent disk do not prove complete collection or recoverability.
 
 ## Encrypted operator snapshots
 
@@ -23,7 +23,19 @@ A backup can contain data erased since its creation and grants revoked afterward
 
 ## Current local proof
 
-Six tests cover committed WAL, encryption, isolated destination permissions, overwrite refusal, wrong keys, archive corruption/truncation/extra bytes/reordering, real CLI backup/restore in separate processes, and the actual app schema. The app test restores pinned datasets, exact release receipts and workflow evidence, reproduces the same frozen outcome-report fingerprint, accepts a new event in the restored database and still denies unauthenticated reads. This uses synthetic fixtures and fake local credentials. Production snapshots, off-site retention and real recovery timings remain pending.
+Six tests cover committed WAL, encryption, isolated destination permissions, overwrite refusal, wrong keys, archive corruption/truncation/extra bytes/reordering, real CLI backup/restore in separate processes, and the actual app schema. The app test restores pinned datasets, exact release receipts and workflow evidence, reproduces the same frozen outcome-report fingerprint, accepts a new event in the restored database and still denies unauthenticated reads. This uses synthetic fixtures and fake local credentials. A separate production-database snapshot and isolated restore were verified on 2 November; see the release evidence below. Scheduled off-site retention and full application recovery remain pending.
+
+## Production snapshot evidence (2026-11-02)
+
+Before deploying the platform, the reviewed tool read a consistent snapshot from the production SQLite volume. The encrypted archive was copied through bounded, hash-checked transport ranges to a private operator store outside that service. Its separate key and archive remain private. An isolated restore authenticated all frames and passed SQLite consistency and foreign-key checks: 131,153,920 database bytes, 105.84 seconds for the successful capture/transfer/restore operation. No application, email, billing or provider worker was started against that copy; it was never promoted.
+
+Two earlier large streaming transfers failed and remain failed evidence, not successful backups. The bounded transfer retried only ranges and did not replay business work. This one checked recovery point is not a scheduled backup service, erasure-retention policy, a recovery-time guarantee.
+
+## Post-release restore and restart evidence (2026-11-02)
+
+A second snapshot captured the deployed platform after both live Tracker validations. Its 131,817,472-byte database restored in isolation; capture, bounded transfer and initial restore took 125.94 seconds. A separate process cleared all inherited service credentials, blocked external sockets, started no listener or lifecycle workers, and used in-memory API dispatch against only that restored copy. Both complete frozen production outcome reports matched, including counts, tasks, goals, evidence, cost and coverage—not merely their query fingerprints. The original account and isolated-project producer credentials still worked. One new synthetic event was accepted; repeating it was a duplicate. SQLite consistency and foreign keys passed. No outbound network attempt occurred and the copy was never promoted. Provider-connection secret decryption was not exercised.
+
+Separately, production Afterspan was explicitly redeployed at the same reviewed commit: deployment bcfd264d-71c9-44d8-8c83-6d4e10bed407 became 8f4af5cc-c0cb-43f6-849c-96534b8e72a3, with a changed runtime identity. One saved chart, one profile with traits, both validation goals, complete frozen outcome contents and retained trace contents survived. Identical OTLP re-export remained deduplicated and scoped audit keys still worked. A fresh real read-only Tracker comparison arrived after the restart, resolved its source check and was accepted by Slack. This is bounded volume/restart/delivery proof, not a lossless-collection guarantee or recovery-time SLA.
 
 ## Collection trust remains separate
 

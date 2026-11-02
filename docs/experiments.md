@@ -1,4 +1,4 @@
-# Regression cases and experiments (unreleased outcome-platform branch)
+# Regression cases and experiments
 
 ## User flow
 

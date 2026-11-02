@@ -30,6 +30,15 @@ await tracer.task({workflow:'package_probe',environment:'test',trafficKind:'synt
   await tracer.span('processing',span=>{assert.equal(2+2,4);span.check('arithmetic','passed',{method:'code',evidenceDigest:createHash('sha256').update('4').digest('hex'),execution:'completed'});span.check('source_facts','unknown',{execution:'not_run',reasonCode:'evidence_absent'});},{milestone:'completion'});
   await tracer.span('response',()=>{},{milestone:'delivery',disposition:'delivered'});
 });
+for (const cancel of [false,true]) {
+  const result=await tracer.response({workflow:cancel?'package_stream_cancel':'package_stream_complete',environment:'test',trafficKind:'synthetic'},()=>{
+    const chunks=tracer.stream('model',async function*(span){span.modelUsage({provider:'example',model:'fixture/stream'});span.firstOutput();yield new TextEncoder().encode('private-content-sentinel');});
+    const iterator=chunks[Symbol.asyncIterator]();
+    return new Response(new ReadableStream({async pull(controller){const next=await iterator.next();if(next.done)controller.close();else controller.enqueue(next.value)},async cancel(){await iterator.return?.()}},{highWaterMark:0}));
+  });
+  if(cancel){const reader=result.response.body.getReader();await reader.read();await reader.cancel();assert.equal(await result.finished,'cancelled')}
+  else{assert.equal(await result.response.text(),'private-content-sentinel');assert.equal(await result.finished,'completed')}
+}
 await tracer.flush();assert.equal(client.status().queued,0);
 assert.ok(!JSON.stringify(events).includes('private-content-sentinel'));
 assert.ok(events.some(e=>e.properties.afterspan_trace?.model_usage?.first_output_ms>=0));

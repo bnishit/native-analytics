@@ -163,6 +163,44 @@ Provider contracts: [OpenAI Responses usage types](https://github.com/openai/ope
 
 Tracker imports `ModelObservation` from the pinned `@afterspan/sdk/model` package in production, replacing its identical copied helper while keeping one existing request trace stream. Runtime import and one actual source-checked Slack reply verified model usage, cost and two streamed first-output timings. This does not exercise the full native workflow tracer, other providers/frameworks or a second product; see [release evidence](outcome-platform-release.md).
 
+## Node streaming responses
+
+An HTTP handler can return a streaming `Response` before its model or body has finished. A plain `task` callback closes when the callback returns; use the source SDK's `response` helper to keep the request trace open through actual consumption. This helper requires the updated artifact; the older pin above predates it.
+
+```typescript
+const {response, finished} = await tracer.response(
+  {workflow:'library_answer', environment:'production'},
+  async () => {
+    const chunks = tracer.stream('model', async function* (span) {
+      span.modelUsage({provider:'example', model:requestedModel});
+      for await (const text of createProviderStream()) {
+        if (text) span.firstOutput();
+        yield new TextEncoder().encode(text);
+      }
+    });
+    const iterator = chunks[Symbol.asyncIterator]();
+    return new Response(new ReadableStream({
+      async pull(controller) {
+        const next = await iterator.next();
+        if (next.done) controller.close();
+        else controller.enqueue(next.value);
+      },
+      async cancel() { await iterator.return?.(); }
+    }, {highWaterMark:0}));
+  }
+);
+after(async () => { await finished; await tracer.flush(); });
+return response;
+```
+
+`after` is the host's background-completion hook, not an SDK export. Register it while the request lifecycle is active; a host that requires registration before returning the handler response should register inside that handler and retain the returned `finished` promise. The provider must abort its in-flight request when the application or consumer cancels; returning an iterator may wait for a pending provider read. The SDK never retries that request.
+
+`response` returns the body without reading it ahead. Its root processing span stays open while the consumer reads; a child response span times handler return through body EOF, failure or cancellation. Status, status text, headers and bytes are preserved. A bodyless response completes at handler return. HTTP status 400 or higher, or `Response.error()`, records a failed transport response; it does not rewrite the response. The returned `finished` promise resolves to `completed`, `failed` or `cancelled`. Handler exceptions still reject `response` with the original error; body/cleanup exceptions still reach the original stream consumer. A consumer that never reads or cancels leaves the trace unfinished. The application owns deadlines and host lifecycle registration.
+
+`stream(step, factory, options)` captures the current parent context at invocation, but starts the span and calls the factory only on first iteration. It restores that context across asynchronous reads and nested calls, forwards items unchanged and calls the source iterator's return on early exit. Normal EOF succeeds; an early return cancels; source or cleanup errors fail. No yielded value, response header, body, cancellation reason or error text is retained. Existing manual model usage/check methods work on its span.
+
+These are local observation boundaries, not proof of remote HTTP receipt or human reading. Neither helper automatically declares a completion/delivery/usefulness milestone, a passed check or a satisfied goal. Active trace emission is nonblocking through the existing bounded collector; final background flush is best effort. Collector failure never reruns the handler, stream factory or business operation. Node's queue is still in memory. Application adapters must bind any account erasure identity themselves; do not attach raw user identifiers or leave private account traces outside the account's erasure scope.
+
 ## HTTP and queue handoff
 
 Inside a span, call `inject()` and send its W3C `traceparent` and bounded `baggage` as headers or queue metadata. At a trusted internal boundary, Python `extract(headers, trusted=True)` or Node `extract(headers, true)` validates that carrier, then pass the returned context to `task`. Public headers are untrusted by default. Do not forward arbitrary baggage or credentials. Invalid carriers return no context; the application chooses whether to start a separate task or reject its own request.

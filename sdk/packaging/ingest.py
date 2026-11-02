@@ -15,7 +15,18 @@ try:
         assert response.status_code == 200, response.text
         assert response.json()['accepted'] == len(events), response.text
     traces = fixture.client.post('/api/traces/review?project=alpha', headers=fixture.admin, json={'environment': 'test'}).json()['traces']
-    assert len(traces) == 2, traces
+    assert len(traces) == 4, traces
+    streamed={trace['workflow']:trace for trace in traces if trace['workflow'].startswith('package_stream_')}
+    assert set(streamed)=={'package_stream_complete','package_stream_cancel'}
+    for name,trace in streamed.items():
+        expected='cancelled' if name.endswith('cancel') else 'succeeded'
+        assert all(span['state']==expected for span in trace['spans']), trace
+        assert trace['business_outcome']=='not_established'
+        model=next(span for span in trace['spans'] if span['step']=='model')
+        assert 0<=model['model_usage']['first_output_ms']<=model['duration_ms']
+        assert all(span['milestone'] is None and span['disposition'] is None for span in trace['spans'])
+    traces=[trace for trace in traces if trace['workflow']=='package_probe']
+    assert len(traces)==2
     assert all(trace['completion']['response']['state'] == 'succeeded' for trace in traces)
     assert all(trace['checks'][0]['evidence_status'] == 'resolved' for trace in traces)
     assert all(trace['checks'][0]['execution'] == 'completed' for trace in traces)
@@ -26,6 +37,6 @@ try:
         assert usage['fixture/messages']['input_count']==20 and usage['fixture/messages']['output_count']==5, usage
         assert usage['fixture/messages']['cache_read_count']==10, usage
         assert all(usage[key]['first_output_ms'] is not None and usage[key]['cost_usd_decimal'] is None for key in ['fixture/responses','fixture/messages']), usage
-    print(json.dumps({'ingested_languages': 2, 'traces': len(traces)}))
+    print(json.dumps({'ingested_languages': 2, 'traces': len(traces)+len(streamed), 'stream_lifecycles': len(streamed)}))
 finally:
     fixture.tearDown()

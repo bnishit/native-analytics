@@ -1,6 +1,6 @@
 # Versioned workflow outcomes
 
-This capability is on the outcome-platform branch and has not been released to production.
+This capability is included in the early outcome-platform release. Implementation, deployment and live acceptance are separate; see the [release evidence and open gates](outcome-platform-release.md).
 
 ## Owner flow
 
@@ -32,7 +32,7 @@ Goals default to `contract: workflow-trace-v1` for any producer-declared workflo
 
 The Slack adapter maps read/write requests to `slack_read_request` / `slack_write_request`. Its source checks are `source_facts` v1 and `growthbook_catalog` v1, method source, phase before_delivery. A check qualifies only on a real, complete quality operation with matching request, attempt, original clock, environment and release. The immutable quality observation must include a source-check-v1 digest binding. Historical counts, an unrelated pointer or a closed model span cannot substitute. The digest is a producer attestation over the compared facts, not an independent server-side source fetch or HMAC verification.
 
-Final delivery requires an explicit reply operation bound to exactly one matching accepted Slack send. An interim message, dev-log output or multiple ambiguous sends cannot qualify. Unknown traffic, missing required reports, conflicting clocks/releases and parent cycles stay unknown. Original-clock deadlines and latest-attempt quality apply to both contracts. The adapter is local branch work; real Tracker delivery and deployment remain release gates.
+Final delivery requires an explicit reply operation bound to exactly one matching accepted Slack send. An interim message, dev-log output or multiple ambiguous sends cannot qualify. Unknown traffic, missing required reports, conflicting clocks/releases and parent cycles stay unknown. Original-clock deadlines and latest-attempt quality apply to both contracts. Tracker delivery is verified for two production validation requests; broader user coverage remains a release gate.
 
 ## Evidence receipts
 
@@ -42,4 +42,4 @@ Receipts use existing immutable, idempotent event storage and retention. Require
 
 ## Release measurement
 
-Goals can select a traffic population and minimum mature comparison sample. Unknown labels never become normal users. Outcomes can join a pinned goal/dataset experiment to two stored verified deployments and frozen mature user-task windows. Reported model cost includes failed and retried mature tasks; missing cost stays unknown. See [release outcomes](release-outcomes.md) for exact bindings, access, limits and interfaces. This branch remains unreleased.
+Goals can select a traffic population and minimum mature comparison sample. Unknown labels never become normal users. Outcomes can join a pinned goal/dataset experiment to two stored verified deployments and frozen mature user-task windows. Reported model cost includes failed and retried mature tasks; missing cost stays unknown. See [release outcomes](release-outcomes.md) for exact bindings, access, limits and interfaces. Normal-use outcome improvement remains unproven.

@@ -64,7 +64,7 @@ Existing Slack request spans appear immediately through the adapter; no re-inges
 
 Check safe search before paging, frozen readback, mixed environments, cross-project denial, redaction, failed/missing starts, unknown terminals and overlapping parent/child timing. Verify the real UI and both MCP tools against retained production data. Synthetic tests are not live traffic.
 
-Future independent work: OTLP/W3C propagation with an explicit privacy mapping, richer model usage/cost semantics, sampling/retention controls, trace-derived alerts and saved queries. These require their own contracts and scale evidence; they are not implied by this release. No heyAnaya integration is part of this work.
+Further work includes broader provider/framework wrappers, real streaming first-output evidence, trace-derived alerts, saved queries and production scale evidence. Current OTLP/W3C, bounded model metadata and sampling contracts are described below; they do not establish that broader coverage. No heyAnaya integration is part of this work.
 
 ## Answer checks before delivery
 
@@ -74,14 +74,14 @@ Send `answer_disposition` (`verified`, `withheld`, `clarification`) together wit
 
 Tool reads may compare environments. The request `environment` stays fixed; optional unique `tool_environments` on its aggregate tool stage records production/staging read targets. Traces calls these “Read target environments”; they do not change request filtering or authorize cross-project access. Historical request-environment conflicts remain conflicts. Aggregate tool duration sums measured calls and is not request elapsed time.
 
-## Generic workflow checks (outcome-platform branch; unreleased)
+## Generic workflow checks
 
-Terminal workflow observations can carry up to 20 versioned checks. Each declares a code-owned name, integer version, `passed`/`failed`/`unknown` result, required boolean, source/code/model/human method, and producer-declared before/after delivery phase. An optional opaque evidence UUID is accepted but not returned to diagnostic readers; only its presence is shown. No raw reason, model output or source body is accepted.
+Terminal workflow observations can carry up to 20 versioned checks. Each declares a code-owned name, integer version, `passed`/`failed`/`unknown` result, required boolean, source/code/model/human method, and producer-declared before/after delivery phase. An optional opaque evidence UUID is accepted but not returned to diagnostic readers; its presence and safe resolution status are shown without the UUID or digest. No raw reason, model output or source body is accepted.
 
 A successfully completed model span can carry a failed source check. Conflicting terminal checks invalidate the span rather than selecting the favorable result. Only the latest observed attempt's checks are projected into its trace; historical attempts do not clear current failures. Failed checks appear in failed trace searches, and required unknown checks leave evidence gaps. Code-owned check names can be searched without searching private content.
 
-These are producer evaluations, not independent service verification or completed user outcomes. Missing checks cannot establish goal completeness; the generic goal and outcome evaluator remains part of the tracked platform release.
+These are producer evaluations, not independent service verification or completed user outcomes. Missing checks cannot establish goal completeness; the [generic outcome evaluator](outcomes.md) applies the exact required criteria from a saved goal version.
 
-## Context helpers (unreleased)
+## Context helpers
 
-The outcome-platform branch adds Python and Node workflow helpers over the same event contract. See [SDK integration and delivery limits](tracing-sdk.md). Cross-language propagation is locally tested. The branch also adds [OTLP/HTTP intake](otlp.md) with metadata-only model usage. Production rollout remains a separate release gate.
+The outcome platform includes Python and Node workflow helpers over the same event contract. See [SDK integration and delivery limits](tracing-sdk.md). Cross-language propagation is locally tested. It also includes [OTLP/HTTP intake](otlp.md) with metadata-only model usage. The official exporter also passed a production-service check in an isolated synthetic project; this is separate from real-product adoption.

@@ -1,4 +1,4 @@
-# Workflow SDKs (unreleased outcome-platform branch)
+# Workflow SDKs
 
 A developer wraps a task and its timed steps. Nested calls and concurrent async tasks keep separate context. The helpers emit the existing strict workflow contract, not user content. A completed function is not a correct answer or useful outcome: declare checks and goal milestones separately.
 
@@ -46,7 +46,7 @@ Inside a span, call `inject()` and send its W3C `traceparent` and bounded `bagga
 
 Keep the same context through a continuation. For an actual business retry use Python `context.retry()` or Node `retryContext(context)`: it retains the original request clock and trace ID, creates a new attempt ID and increments the attempt number. Never use it for delivery retries. Unsampled (`00`) context propagates but exports no observations; status counts those omissions.
 
-Both helpers use full W3C IDs and one deterministic SHA-256 mapping into the existing UUID workflow store. The namespace is `afterspan-otel-v1`, followed by a NUL and full trace ID; span mapping adds another NUL and the full span ID. The first 16 digest bytes are normalized to UUIDv4 bits. This prevents lossy span-ID padding and keeps Python/Node identities identical. It does not yet mean that an OTLP endpoint is deployed.
+Both helpers use full W3C IDs and one deterministic SHA-256 mapping into the existing UUID workflow store. The namespace is `afterspan-otel-v1`, followed by a NUL and full trace ID; span mapping adds another NUL and the full span ID. The first 16 digest bytes are normalized to UUIDv4 bits. This prevents lossy span-ID padding and keeps Python/Node identities identical. The mapping alone is not deployment evidence; the separate official-exporter production check is recorded in [release evidence](outcome-platform-release.md).
 
 ## Evidence and limits
 

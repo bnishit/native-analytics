@@ -6,7 +6,7 @@
 
 Funnels, saved behavior/trait segments, linked journeys, retries, event metrics and scoped agent access are included in the core. Self-hosting needs no Stripe account, subscription or commercial quota. Accounts, teams and roles protect your own instance. Optional hosted billing is a separate opt-in; it never gates a core analytics feature.
 
-> Outcome-platform branch: reviewed experiments can now pin a goal version and compare two verified releases against mature, explicitly labelled user-task windows. This is local and unreleased; collection health and encrypted restore have local proof; a 32,000-observation local capacity run and real process crash/retry tests pass; production adoption and operating verification remain pending. See [capacity and access limits](docs/capacity-and-access.md). See [collection health](docs/collection-health.md) and [operations](docs/operations.md). See [release outcomes](docs/release-outcomes.md).
+> Early outcome-platform release: versioned goals, checked traces, reviewed experiments, collection health and encrypted restore are included. Backend and Tracker are deployed; two real read-only Tracker validation flows and an isolated official-exporter check pass. The complete four-area acceptance is still open: second-product adoption, streaming/provider breadth, normal-use release evidence and the remaining operating checks are pending. See [release evidence and open gates](docs/outcome-platform-release.md), [capacity and access limits](docs/capacity-and-access.md), and [operations](docs/operations.md).
 
 ## Connect an agent remotely
 
@@ -37,15 +37,15 @@ Open http://127.0.0.1:8769/app. This loopback preview creates private local emai
 
 `AFTERSPAN_EDITION=self_hosted` is the default. Usage counts remain useful for server capacity; there are no commercial event, payload, project or seat limits. Request rate, query-size, definition-count and retention bounds still protect the service. This is one process on one SQLite volume, not unlimited infrastructure.
 
-### Generic workflow outcomes — unreleased branch work
+### Generic workflow outcomes
 
 [Governed debug snapshots](docs/debugging.md) add default-off, owner-scoped capture windows, SDK redaction before upload, encrypted expiring storage and separately consented editor reads. These are selected reviewed snapshots, not automatic prompt capture.
 
-[Regression cases and experiments](docs/experiments.md) now have a local primary screen, versioned datasets, a Python application-side runner and scoped CLI/MCP surfaces. These remain unreleased; fixed JSON checks do not establish production impact.
+[Regression cases and experiments](docs/experiments.md) have a primary screen, versioned datasets, a Python application-side runner and scoped CLI/MCP surfaces. Fixed JSON checks do not establish production impact.
 
-The same branch adds [Python/Node workflow context helpers](docs/tracing-sdk.md) and [metadata-only OTLP/HTTP ingestion](docs/otlp.md). Local official-exporter and cross-language tests pass; deployment and live provider adoption remain release gates.
+The platform includes [Python/Node workflow context helpers](docs/tracing-sdk.md) and [metadata-only OTLP/HTTP ingestion](docs/otlp.md). Cross-language tests pass locally. The official exporter and Tracker provider metadata also have bounded live proof; broader adoption remains pending.
 
-The outcome-platform branch adds versioned goals and required checks over generic workflow tasks, with original-clock deadlines and explicit satisfied/failed/withheld/unclassified/waiting results. Native workflow traces and the existing Slack request stream share the classifier through explicit integration adapters; historical Slack counts alone cannot satisfy a source-evidence requirement. Exact decimal model charges retain sub-microdollar costs rather than rounding them to zero. See [outcome semantics](docs/outcomes.md) and the [full release acceptance matrix](docs/outcome-platform-release.md). This is not a production release or a claim of Langfuse parity.
+The outcome platform includes versioned goals and required checks over generic workflow tasks, with original-clock deadlines and explicit satisfied/failed/withheld/unclassified/waiting results. Native workflow traces and the existing Slack request stream share the classifier through explicit integration adapters; historical Slack counts alone cannot satisfy a source-evidence requirement. Exact decimal model charges retain sub-microdollar costs rather than rounding them to zero. See [outcome semantics](docs/outcomes.md) and the [full release acceptance matrix](docs/outcome-platform-release.md). This early release does not establish Langfuse parity or complete user-outcome coverage.
 
 ### Onboard a repository with existing analytics
 
@@ -322,10 +322,10 @@ The development script sets `AFTERSPAN_MAIL_MODE=local` only with a loopback ori
 Choose the smallest connection needed:
 
 - **Analytics only:** an expiring project aggregate read key, `AFTERSPAN_READ_KEY`, and `agent/server.py`. Twelve stdio tools: `overview`, `query_metric`, `journey_summary`, `setup_status`, `saved_charts`, `saved_funnels`, `saved_segments`, `analyze_funnel`, `analyze_segment`, `event_catalog`, `retention_report`, `saved_retention`. No write tools or operator fallback.
-- **Request audit only:** an audit-purpose read receipt and `agent/run_audit.py`, exposing six scoped tools for catalog, reviews, traces, evaluations and onboarding. Use this when an agent must not see arbitrary event/property names or raw records.
+- **Request audit only:** an audit-purpose read receipt and `agent/run_audit.py`, exposing scoped diagnostic tools for catalog, reviews, traces, evaluations and onboarding. Use this when an agent must not see arbitrary event/property names or raw records.
 - **Setup or team operations:** an owner creates a workspace role key in **Workspace & team**, or with `create-agent-key`. Configure `AFTERSPAN_WORKSPACE_KEY` and `AFTERSPAN_WORKSPACE`. Use editor for project setup, owner only for explicitly authorized team management. Keys expire in 1–90 days and are stored hashed. The effective role never exceeds the issuer's current membership. A workspace key cannot sign in as an account, create workspaces, accept invites, or issue further workspace keys. An owner-scoped workspace key can issue project service/read credentials through the API or CLI; store their receipts privately.
 
-The workspace bridge exposes 42 tools for scoped team operations, optional billing, product definitions, explicit meanings, audit attestations and product loops. It uses only the selected workspace key and has no operator fallback. Inviting sends email and requires the human's specific recipient and role authorization. Role changes and removals likewise require a specific human request. The fixed-project loop bridge exposes 16 tools for repo discovery, tracking actions and outcome receipts. Owner credential connection, goal adoption and policy grants stay in the private CLI or owner UI. Tool annotations identify writes; the service enforces roles regardless of agent instructions.
+The workspace bridge exposes scoped team operations, optional billing, product definitions, explicit meanings, audit attestations and product loops. It uses only the selected workspace key and has no operator fallback. Inviting sends email and requires the human's specific recipient and role authorization. Role changes and removals likewise require a specific human request. The fixed-project loop bridge supports repo discovery, tracking actions and outcome receipts. Owner credential connection, goal adoption and policy grants stay in the private CLI or owner UI. Tool annotations identify writes; the service enforces roles regardless of agent instructions.
 
 Provisioning is available through the same scoped API and JSON CLI. Secret-producing CLI commands require a mode-600 private receipt file rather than printing keys:
 
@@ -422,7 +422,7 @@ FastAPI, SQLite on one persistent volume, plain HTML/CSS/JS and SVG charts. No h
 3. Set `ANALYTICS_PUBLIC_URL` to the service HTTPS origin, `ANALYTICS_DB=/data/analytics.db`,
    `COOKIE_SECURE=true`, `RETENTION_DAYS=90`, `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS=0`.
 4. Configure email delivery as above. Open `/app`, verify the email sign-in link, create a workspace and project, then verify a real collection receipt.
-5. Configure Railway/off-site backup retention separately. The unreleased branch also includes an operator-only encrypted consistent SQLite snapshot and isolated restore tool; see [operations](docs/operations.md). Its local tests are not a production recovery claim. A persistent volume is not an off-site backup.
+5. Configure Railway/off-site backup retention separately. The platform includes an operator-only encrypted consistent SQLite snapshot and isolated restore tool; see [operations](docs/operations.md). One production snapshot was restored in isolation; full recovery and backup scheduling remain separate. A persistent volume is not an off-site backup.
 
 For local development use a writable `ANALYTICS_DB` and `COOKIE_SECURE=false` on localhost only.
 Run `uvicorn app:app --host 127.0.0.1 --port 8080`.

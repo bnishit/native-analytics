@@ -1,4 +1,4 @@
-# Governed debug snapshots (unreleased outcome-platform branch)
+# Governed debug snapshots
 
 A developer opens a workflow trace, lists retained snapshot metadata, and explicitly selects one redacted snapshot to read. An owner first grants a narrow workflow/environment capture window. Nothing captures prompts, responses, headers or user messages automatically. Tracing and OTLP remain metadata-only.
 

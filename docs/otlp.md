@@ -1,4 +1,4 @@
-# OpenTelemetry intake (unreleased outcome-platform branch)
+# OpenTelemetry intake
 
 An application can send its existing OpenTelemetry spans to `POST /v1/traces` with the project's server-side write key in `Authorization: Bearer …`. Audit readers use the same Traces search, detail and MCP tools as native workflow observations. No separate store or raw-data reader is added.
 
@@ -35,6 +35,6 @@ Span names, arbitrary attributes, raw error/status text, event bodies, links, pr
 
 ## Evidence
 
-Local tests run the official OpenTelemetry Python SDK and HTTP exporter against a real loopback service, then read the nested trace from the shared explorer. Other tests cover protobuf/JSON/gzip equivalence, idempotency, partial rejection, unknown status, conflicting updates, model provenance and decompression bounds. This is local synthetic proof. Official exporter → deployed production readback remains a release gate.
+Local tests run the official OpenTelemetry Python SDK and HTTP exporter against a real loopback service, then read the nested trace from the shared explorer. Other tests cover protobuf/JSON/gzip equivalence, idempotency, partial rejection, unknown status, conflicting updates, model provenance and decompression bounds. The official exporter also passed against the production service in an isolated synthetic project: two nested spans, exact declared decimal cost, stable-ID re-export deduplication, content omission, anonymous-ingestion denial, producer-read denial and cross-project audit denial. Those model values are synthetic price-table metadata; Tracker separately supplies real provider-reported usage and charges. This is bounded interoperability proof, not adoption by a second customer product.
 
 Primary standards: [OTLP](https://opentelemetry.io/docs/specs/otlp/), [Trace API status](https://opentelemetry.io/docs/specs/otel/trace/api/), [W3C Trace Context](https://www.w3.org/TR/trace-context/). See [the full release acceptance](outcome-platform-release.md) for pending scale, recovery, privacy and production verification.

@@ -1,4 +1,4 @@
-# Collection health (unreleased outcome-platform branch)
+# Collection health
 
 An owner opens **Collection health**, selects the environment, and sees which declared sources reported, which evidence is missing, and whether queues or checks need attention. The environment stays in the shared page link. An absent report never means zero loss. Release comparisons also inspect both full follow-up windows and stay unknown when this bounded collection evidence is incomplete.
 
@@ -53,4 +53,4 @@ Legacy untyped pipeline events remain accepted and explicitly unknown. Their arb
 
 ## Local proof
 
-Tests cover strict pulses, old/missing sources, queue/loss/evaluator uncertainty, stale clocks, receipt cutoffs, sequence/counter contradictions, source revisions, project/environment/workflow isolation, explicit consent and role downgrade/revocation. Actual Python and Node pulses roundtrip through the backend. The official MCP transport reads health and saves an expectation under the new scope. A running synthetic browser and real CLI show a full delayed queue, three reported drops, one rejection and unknown evaluator health. The release comparison rejects that collection state. This is local synthetic proof; production adoption, real fault/restart recovery, capacity and the requested rollout remain separate gates.
+Tests cover strict pulses, old/missing sources, queue/loss/evaluator uncertainty, stale clocks, receipt cutoffs, sequence/counter contradictions, source revisions, project/environment/workflow isolation, explicit consent and role downgrade/revocation. Actual Python and Node pulses roundtrip through the backend. The official MCP transport reads health and saves an expectation under the new scope. A running synthetic browser and real CLI show a full delayed queue, three reported drops, one rejection and unknown evaluator health. The release comparison rejects that collection state. Those fault checks are local synthetic proof. Separately, the deployed Tracker source reported observed health with no current reason codes over one production 90-second window. Complete collection is not established. The [release evidence](outcome-platform-release.md) separates that bounded check from broader adoption, operating and recovery gates.

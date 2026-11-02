@@ -1,6 +1,6 @@
 # Capacity and access readiness
 
-This outcome-platform branch is unreleased. The evidence below is local. It is not a hosted SLA, a production load test or an enterprise-security certification.
+The operating-envelope measurements below are local, even where the capabilities are deployed. It is not a hosted SLA, a production load test or an enterprise-security certification.
 
 ## Measured local envelope — 2026-11-02
 

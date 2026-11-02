@@ -31,3 +31,10 @@ test('release boundary retains provider microseconds instead of starting before 
  assert.equal(r.before.start,base.released_at);assert.equal(r.before.as_of,release.released_at);assert.equal(r.after.start,release.released_at);
  assert.ok(Date.parse(r.before.end)+30000<=Date.parse(release.released_at));
 });
+
+test('decimal provider cost stays visible below one micro-dollar',()=>{
+ const c=context();const html=vm.runInContext('outcomeModelCost('+JSON.stringify({model_spans:1,cost_known_spans:1,cost_unknown_spans:0,measured_usd:'0.000000037125',measured_microusd:null,per_satisfied_task_usd:'0.000000012375',per_satisfied_task_microusd:null})+')',c);
+ assert.match(html,/\$0\.000000037125 measured/);assert.match(html,/\$0\.000000012375 per satisfied/);assert.doesNotMatch(html,/Unknown per/);
+ const tiny=vm.runInContext('outcomeModelCost('+JSON.stringify({model_spans:1,cost_known_spans:1,cost_unknown_spans:0,measured_usd:'0.000000000001',per_satisfied_task_usd:'0',per_satisfied_task_below_display_precision:true,per_satisfied_task_rounded:true})+')',c);
+ assert.match(tiny,/&lt;\$0\.000000000000000001/);assert.match(tiny,/rounded/);
+});

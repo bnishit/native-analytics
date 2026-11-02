@@ -1,12 +1,13 @@
 """Bounded, content-free workflow traces; observations are not business proof."""
 from collections import defaultdict
 from contextlib import closing
+from decimal import Decimal
 import hashlib
 import hmac
 import json
 from typing import Literal
 from fastapi import Depends,HTTPException
-from pydantic import BaseModel,ConfigDict,Field,UUID4,StrictBool,model_validator
+from pydantic import BaseModel,ConfigDict,Field,UUID4,StrictBool,model_validator,field_validator
 from product_analytics import Window
 
 STEPS=('receive','queue','processing','model','tool','retrieval','storage','http','response','availability','booking','provider_send','provider_delivery')
@@ -49,15 +50,24 @@ class ModelUsage(BaseModel):
     reasoning_count:int|None=Field(default=None,ge=0,le=1000000000,strict=True)
     usage_source:Literal['provider_reported','estimated']|None=None
     cost_microusd:int|None=Field(default=None,ge=0,le=1000000000000,strict=True)
+    cost_usd_decimal:str|None=Field(default=None,pattern=r'^(?:0|[1-9][0-9]{0,6})(?:\.[0-9]{1,12})?$')
     cost_source:Literal['provider_reported','price_table']|None=None
     price_version:str|None=Field(default=None,pattern=r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$')
     first_output_ms:float|None=Field(default=None,ge=0,le=86400000,strict=True,allow_inf_nan=False)
+
+    @field_validator('cost_usd_decimal')
+    @classmethod
+    def decimal_cost(cls,value):
+        if value is None:return None
+        if Decimal(value)>Decimal('1000000'):raise ValueError('cost exceeds supported bound')
+        return value.rstrip('0').rstrip('.') if '.' in value else value
 
     @model_validator(mode='after')
     def provenance(self):
         has_usage=any(getattr(self,k) is not None for k in ('input_count','output_count','cache_read_count','reasoning_count'))
         if has_usage!=(self.usage_source is not None):raise ValueError('usage requires its source')
-        if (self.cost_microusd is not None)!=(self.cost_source is not None):raise ValueError('cost requires its source')
+        if self.cost_microusd is not None and self.cost_usd_decimal is not None:raise ValueError('use one exact cost representation')
+        if (self.cost_microusd is not None or self.cost_usd_decimal is not None)!=(self.cost_source is not None):raise ValueError('cost requires its source')
         if (self.cost_source=='price_table')!=(self.price_version is not None):raise ValueError('price-table cost requires a pinned price version')
         if self.input_count is not None and self.cache_read_count is not None and self.cache_read_count>self.input_count:raise ValueError('cached units exceed input units')
         if self.output_count is not None and self.reasoning_count is not None and self.reasoning_count>self.output_count:raise ValueError('reasoning units exceed output units')
@@ -211,11 +221,11 @@ def project_trace(rows,reference,reference_for=None,available=None):
 
 
 class Tracing:
-    def __init__(self,app,connect,reader,freeze,metadata):
+    def __init__(self,app,connect,reader,freeze,metadata,integrations=None):
         self.connect=connect;self.freeze=freeze;self.metadata=metadata
         @app.get('/api/traces/catalog',dependencies=[Depends(reader)])
         def catalog(project:str):
-            return {'schema':SpanObservation.model_json_schema(),'steps':list(STEPS),
+            return {'schema':SpanObservation.model_json_schema(),'steps':list(STEPS),'integrations':integrations or [],
                     'meanings':{'receive':'Application receipt; not a queue or reply guarantee.',
                     'queue':'Queue handling; not end-user delivery.','processing':'Application work; not business outcome or delivery proof.',
                     'model':'Model call completed; not answer correctness.','tool':'Tool call completed; not verified business state.',

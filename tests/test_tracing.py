@@ -82,6 +82,11 @@ class TracingTests(unittest.TestCase):
         key=self.client.post('/api/projects/alpha/read-keys',headers=self.admin,json={'label':'trace audit','purpose':'audit'}).json()['read_key']
         headers={'Authorization':'Bearer '+key}
         self.assertEqual(self.client.post('/api/traces/review?project=alpha',headers=headers,json={'environment':'staging'}).status_code,200)
+        catalog=self.client.get('/api/traces/catalog?project=alpha',headers=headers).json()
+        self.assertEqual({i['contract'] for i in catalog['integrations']},{'workflow-trace-v1','slack-request-v1'})
+        slack=next(i for i in catalog['integrations'] if i['contract']=='slack-request-v1')
+        self.assertIn('slack_read_request',slack['workflows'])
+        self.assertEqual(slack['checks'][0]['evidence_version'],'source-check-v1')
         self.assertEqual(self.client.get('/api/traces/catalog?project=beta',headers=headers).status_code,403)
         self.assertEqual(self.client.get('/api/events?project=alpha',headers=headers).status_code,401)
         bad=self.event();bad['properties']['afterspan_trace']['patient_phone']='private'

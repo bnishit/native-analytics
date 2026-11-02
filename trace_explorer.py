@@ -5,6 +5,7 @@ from pydantic import Field
 from product_analytics import Window
 from audit import ReviewQuery, request_groups
 from tracing import Environment, TraceReview
+from outcome_adapters import project_slack
 
 class TraceSearch(Window):
     environment: Environment = 'production'
@@ -21,12 +22,13 @@ class TraceOpen(TraceSearch):
 
 
 def slack_trace(audit, project, key, group, q):
-    row = audit.chain(project, key, group, q)
+    row = audit.chain(project, key, group, q, include_trace_attempts=True)
     timing = row['trace']
+    normalized=project_slack(audit,project,key,group,q,row)
     spans = [{'id':str(s['operation']), 'parent':str(s['parent_operation']) if s['parent_operation'] else None,
               'step':s['step'], 'attempt':s['attempt_number'], 'state':s['state'],
               'start_ms':None if s['state']=='missing_start' else s['at_ms_from_request_start'], 'duration_ms':s['duration_ms'],
-              'end_ms':s['finished_at_ms_from_request_start'], 'parent_missing':s['parent_missing']}
+              'end_ms':s['finished_at_ms_from_request_start'], 'parent_missing':s['parent_missing'],'model_usage':s.get('model_usage')}
              for s in timing.get('spans',[])]
     environments = {r['facts']['environment'] for r in group}
     evidence = [{'name':s['stage'], 'state':s['state'], 'outcome':s['reported_outcome']} for s in row['stages']]
@@ -34,10 +36,10 @@ def slack_trace(audit, project, key, group, q):
     return {'reference':row['request'], 'contract':'slack-request-v1',
             'name':row['command_kind'] or row['request_kind'],
             'environment':row['environment'] if row['environment']!='unknown' else next(iter(environments)) if len(environments)==1 else 'conflict',
-            'release':row['release_sha'], 'started_at':min(r['ts'] for r in group),
+            'traffic_kind':row.get('traffic_kind','unknown'),'release':row['release_sha'], 'started_at':min(r['ts'] for r in group),
             'last_seen':max(r['ts'] for r in group), 'attempts':row['business_attempts_observed'],
             'read_target_environments':next((s['tool_environments'] for s in row['stages'] if s['stage']=='tool'),None),
-            'spans':spans, 'answer_check':row['answer_check'], 'evidence':evidence, 'issues':sorted(set(row['issues']+timing.get('issues',[])+(['timing_environment_mixed'] if len(environments)>1 else []))),
+            'spans':spans,'checks':normalized['checks'], 'answer_check':row['answer_check'], 'evidence':evidence, 'issues':sorted(set(row['issues']+normalized['issues']+timing.get('issues',[])+(['timing_environment_mixed'] if len(environments)>1 else []))),
             'unobserved_categories':timing.get('missing_steps',[]), 'links':[],
             'clock':'request start' if timing.get('spans') else 'unavailable',
             'business_outcome':'not_independently_verified'}

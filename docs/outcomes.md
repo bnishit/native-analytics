@@ -6,7 +6,7 @@ This capability is on the outcome-platform branch and has not been released to p
 
 Open Outcomes, save a workflow goal, then send real task observations. A goal defines the workflow and environment, deadline, exact required check names/versions/methods/phases, and completion/delivery/usefulness milestones. The simple form requires a source-evidence reference and completion plus delivery; the API supports other explicit criteria. No goal executes repository or evaluator code on the service.
 
-The outcome engine applies criteria to producer-reported evidence. A satisfied task is not a claim that Afterspan fetched an independent source, that a human read a reply, or that a release caused an improvement. A source, model, code or human check retains its method. Required evidence resolves to a matching retained workflow-evidence-v1 receipt. Resolution validates correlation and recorded facts; it is not an independent Afterspan source fetch.
+The outcome engine applies criteria to producer-reported evidence. A satisfied task is not a claim that Afterspan fetched an independent source, that a human read a reply, or that a release caused an improvement. A source, model, code or human check retains its method. Required native evidence resolves to a matching retained workflow-evidence-v1 receipt. Supported integration adapters resolve their own explicit proof bindings. Resolution validates correlation and recorded facts; it is not an independent Afterspan source fetch.
 
 ## Versions and APIs
 
@@ -26,7 +26,13 @@ One observed task is counted once across retries. Tasks wait outside the mature 
 
 The query window selects original task starts. Evidence may be followed through the deadline, bounded by the receipt cutoff. The actual entry and observed follow-up window must fit within 90 days. Frozen task-to-trace links preserve the actual follow-up window. Missing clocks cannot prove cohort membership, so the satisfied fraction stays unavailable. Invalid observations or uncertain release selection also prevent a clean fraction. Erasure, retention and late telemetry can change repeated reads; best-effort collection is not a complete task ledger.
 
-The current implementation supports generic workflow traces. Existing Slack audit checks retain their separate historical contract; a shared outcome adapter for those observations remains part of release integration.
+## Supported integrations
+
+Goals default to `contract: workflow-trace-v1` for any producer-declared workflow. Select `contract: slack-request-v1` for existing Slack audit requests; the same outcome engine then reads the existing stream without re-ingestion or a parallel trace. `GET /api/traces/catalog` lists supported integrations and check versions.
+
+The Slack adapter maps read/write requests to `slack_read_request` / `slack_write_request`. Its source checks are `source_facts` v1 and `growthbook_catalog` v1, method source, phase before_delivery. A check qualifies only on a real, complete quality operation with matching request, attempt, original clock, environment and release. The immutable quality observation must include a source-check-v1 digest binding. Historical counts, an unrelated pointer or a closed model span cannot substitute. The digest is a producer attestation over the compared facts, not an independent server-side source fetch or HMAC verification.
+
+Final delivery requires an explicit reply operation bound to exactly one matching accepted Slack send. An interim message, dev-log output or multiple ambiguous sends cannot qualify. Unknown traffic, missing required reports, conflicting clocks/releases and parent cycles stay unknown. Original-clock deadlines and latest-attempt quality apply to both contracts. The adapter is local branch work; real Tracker delivery and deployment remain release gates.
 
 ## Evidence receipts
 

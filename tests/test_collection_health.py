@@ -64,6 +64,14 @@ class CollectionHealthTests(unittest.TestCase):
         for change in [{'dropped':True},{'error_code':'Bearer SECRET'},{'queued':1},{'sequence':-1},{'observed_at_ms':int((self.now+1)*1000)},{'private_text':'do not retain'}]:
             self.assertEqual(self.f.ingest([self.pulse(self.now-100,**change)]).status_code,422,change)
         event=self.pulse(self.now-100);event['distinct_id']='someone';self.assertEqual(self.f.ingest([event]).status_code,422)
+    def test_exact_start_pulse_is_one_baseline_not_a_sequence_conflict(self):
+        self.configured()
+        r=self.report(start=stamp(int((self.now-250)*1000)/1000))
+        self.assertEqual(r['status'],'observed',r['reasons'])
+        source=r['sources'][0]
+        self.assertNotIn('pulse_sequence_conflict',source['reasons'])
+        self.assertEqual(source['instances'][0]['window_counter_changes']['dropped'],0)
+
     def test_project_environment_workflow_and_time_scopes_do_not_mix(self):
         self.configured()
         self.assertEqual(self.report(environment='production')['sources'],[])

@@ -92,13 +92,14 @@ class RemoteMCPTests(unittest.TestCase):
             'schema_version':'workflow-trace-v1','trace_id':trace_id,'attempt_id':str(uuid.uuid4()),
             'attempt_number':1,'span_id':str(uuid.uuid4()),'workflow':'appointment_request',
             'environment':'staging','step':'provider_send','state':'started'}})
-        with closing(app.connect()) as c,c:app.store_events(c,p,[event])
+        audit=app.Event(name='slack.audit.parser',properties={'afterspan_audit':{'schema_version':'slack-request-v1','stage':'parser','environment':'staging','request_ref':trace_id,'attempt_ref':str(uuid.uuid4()),'attempt_number':1,'context_digest':'a'*64}})
+        with closing(app.connect()) as c,c:app.store_events(c,p,[event,audit])
         h={'Authorization':'Bearer '+t['access_token']}
         self.assertEqual(self.client.post('/api/traces/review',params={'project':p},headers=h,json={'environment':'staging'}).status_code,403)
-        for query in [{},{'event':'trace.observed','breakdown':'afterspan_trace'},{'breakdown':'afterspan_trace'}]:
+        for query in [{'event':'slack.audit.parser','breakdown':'afterspan_audit'},{},{'event':'trace.observed','breakdown':'afterspan_trace'},{'breakdown':'afterspan_trace'},{'breakdown':'afterspan_audit'}]:
             r=self.client.post('/api/query',params={'project':p},headers=h,json=query)
-            self.assertEqual(r.status_code,200,r.text);self.assertEqual(r.json()['total'],0)
-            self.assertNotIn(trace_id,r.text)
+            self.assertEqual(r.status_code,200,r.text);self.assertNotIn('a'*64,r.text);self.assertNotIn(trace_id,r.text)
+            self.assertEqual(r.json()['total'],0)
         r=self.client.post('/api/catalog',params={'project':p},headers=h,json={'event':'trace.observed'})
         self.assertEqual(r.status_code,200,r.text);self.assertNotIn('afterspan_trace',r.text)
         r=self.client.get('/api/overview',params={'project':p},headers=h)

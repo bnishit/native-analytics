@@ -6,7 +6,7 @@
 
 Funnels, saved behavior/trait segments, linked journeys, retries, event metrics and scoped agent access are included in the core. Self-hosting needs no Stripe account, subscription or commercial quota. Accounts, teams and roles protect your own instance. Optional hosted billing is a separate opt-in; it never gates a core analytics feature.
 
-#> Outcome-platform branch: reviewed experiments can now pin a goal version and compare two verified releases against mature, explicitly labelled user-task windows. This is local and unreleased; collection health and encrypted restore have local proof; a 32,000-observation local capacity run and real process crash/retry tests pass; production adoption and operating verification remain pending. See [capacity and access limits](docs/capacity-and-access.md). See [collection health](docs/collection-health.md) and [operations](docs/operations.md). See [release outcomes](docs/release-outcomes.md).
+> Outcome-platform branch: reviewed experiments can now pin a goal version and compare two verified releases against mature, explicitly labelled user-task windows. This is local and unreleased; collection health and encrypted restore have local proof; a 32,000-observation local capacity run and real process crash/retry tests pass; production adoption and operating verification remain pending. See [capacity and access limits](docs/capacity-and-access.md). See [collection health](docs/collection-health.md) and [operations](docs/operations.md). See [release outcomes](docs/release-outcomes.md).
 
 ## Connect an agent remotely
 
@@ -45,7 +45,7 @@ Open http://127.0.0.1:8769/app. This loopback preview creates private local emai
 
 The same branch adds [Python/Node workflow context helpers](docs/tracing-sdk.md) and [metadata-only OTLP/HTTP ingestion](docs/otlp.md). Local official-exporter and cross-language tests pass; deployment and live provider adoption remain release gates.
 
-The outcome-platform branch adds versioned goals and required checks over generic workflow tasks, with original-clock deadlines and explicit satisfied/failed/withheld/unclassified/waiting results. See [outcome semantics](docs/outcomes.md) and the [full release acceptance matrix](docs/outcome-platform-release.md). This is not a production release or a claim of Langfuse parity.
+The outcome-platform branch adds versioned goals and required checks over generic workflow tasks, with original-clock deadlines and explicit satisfied/failed/withheld/unclassified/waiting results. Native workflow traces and the existing Slack request stream share the classifier through explicit integration adapters; historical Slack counts alone cannot satisfy a source-evidence requirement. Exact decimal model charges retain sub-microdollar costs rather than rounding them to zero. See [outcome semantics](docs/outcomes.md) and the [full release acceptance matrix](docs/outcome-platform-release.md). This is not a production release or a claim of Langfuse parity.
 
 ### Onboard a repository with existing analytics
 

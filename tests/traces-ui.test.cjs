@@ -53,3 +53,9 @@ test('model usage preserves unknowns, zero price and provenance without quality 
  assert.match(html,/Input 0 tokens/);assert.match(html,/output unknown tokens/);assert.match(html,/Cost \$0.000000/);assert.match(html,/estimated/);assert.match(html,/not answer quality/);
  assert.equal(vm.runInContext('traceModelUsage([{id:1}])',context),'');
 });
+
+test('trace model cost prefers exact decimal dollars over an unavailable integer amount',()=>{
+ const context=vm.createContext({esc:String,fmt:String,traceStepLabel:{}});vm.runInContext(fs.readFileSync('static/traces.js','utf8'),context);
+ const html=vm.runInContext("traceModelUsage([{id:'span_1',model_usage:{provider:'example',model:'model-v1',cost_usd_decimal:'0.000000037125',cost_microusd:null,cost_source:'provider_reported'}}])",context);
+ assert.match(html,/Cost \$0\.000000037125/);assert.doesNotMatch(html,/Cost unknown/);
+});

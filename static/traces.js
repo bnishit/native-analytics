@@ -13,7 +13,7 @@ function traceModelUsage(spans){
  if(!models.length)return '';
  return '<h3>Model calls and usage</h3><p>Producer-reported metadata. Unknown usage and cost stay unknown; token counts are not answer quality.</p><ul>'+models.map(s=>{
   const m=s.model_usage,number=v=>v==null?'unknown':fmt(v);
-  return `<li>Step ${esc(s.id)} · ${esc(m.provider)} / ${esc(m.model)} · template ${esc(m.template_version||'unknown')}<br>Input ${number(m.input_count)} tokens · output ${number(m.output_count)} tokens · cached ${number(m.cache_read_count)} · reasoning ${number(m.reasoning_count)} · source ${esc((m.usage_source||'unknown').replaceAll('_',' '))}<br>Cost ${m.cost_microusd==null?'unknown':'$'+(m.cost_microusd/1000000).toFixed(6)} · ${esc((m.cost_source||'unknown').replaceAll('_',' '))}${m.price_version?' · prices '+esc(m.price_version):''} · first output ${number(m.first_output_ms)} ms</li>`;
+  return `<li>Step ${esc(s.id)} · ${esc(m.provider)} / ${esc(m.model)} · template ${esc(m.template_version||'unknown')}<br>Input ${number(m.input_count)} tokens · output ${number(m.output_count)} tokens · cached ${number(m.cache_read_count)} · reasoning ${number(m.reasoning_count)} · source ${esc((m.usage_source||'unknown').replaceAll('_',' '))}<br>Cost ${m.cost_usd_decimal!=null?'$'+esc(m.cost_usd_decimal):m.cost_microusd==null?'unknown':'$'+(m.cost_microusd/1000000).toFixed(6)} · ${esc((m.cost_source||'unknown').replaceAll('_',' '))}${m.price_version?' · prices '+esc(m.price_version):''} · first output ${number(m.first_output_ms)} ms</li>`;
  }).join('')+'</ul>';
 }
 function traceAnswerCheck(check){

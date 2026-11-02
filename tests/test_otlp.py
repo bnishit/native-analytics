@@ -94,6 +94,18 @@ class OTLPTests(unittest.TestCase):
         usage=self.detail()['spans'][0]['model_usage']
         self.assertEqual(usage['input_count'],100);self.assertIsNone(usage['cost_microusd'])
         self.assertNotIn('private prompt',json.dumps(self.detail()))
+    def test_decimal_model_charge_roundtrips_without_float_conversion(self):
+        message,span=self.payload()
+        for key,value in [('gen_ai.provider.name','example'),('gen_ai.request.model','model-v1'),
+            ('afterspan.model.cost_usd_decimal','0.000000037125'),('afterspan.model.cost_source','provider_reported')]:
+            a=span.attributes.add();a.key=key;a.value.string_value=value
+        self.assertEqual(self.send(message).status_code,200)
+        usage=self.detail()['spans'][0]['model_usage']
+        self.assertEqual(usage['cost_usd_decimal'],'0.000000037125');self.assertIsNone(usage['cost_microusd'])
+        span.attributes[-2].value.string_value='0.0000000000001'
+        response=ExportTraceServiceResponse.FromString(self.send(message).content)
+        self.assertEqual(response.partial_success.rejected_spans,1)
+
     def test_official_exporter_over_real_http_produces_nested_trace(self):
         sock=socket.socket();sock.bind(('127.0.0.1',0));sock.listen();port=sock.getsockname()[1]
         server=uvicorn.Server(uvicorn.Config(test_analytics.analytics.app,log_level='critical',lifespan='off'))

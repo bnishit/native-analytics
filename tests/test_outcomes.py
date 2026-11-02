@@ -8,7 +8,7 @@ class OutcomeTests(unittest.TestCase):
     def setUp(self):
         self.fixture=test_tracing.TracingTests();self.fixture.setUp()
         self.client=self.fixture.client;self.admin=self.fixture.admin;self.id=str(uuid.uuid4())
-        self.goal={'title':'Checked export','workflow':'document_export','environment':'staging','deadline_seconds':30,'traffic_kind':'all','min_sample_size':25,
+        self.goal={'contract':'workflow-trace-v1','title':'Checked export','workflow':'document_export','environment':'staging','deadline_seconds':30,'traffic_kind':'all','min_sample_size':25,
             'checks':[{'name':'source_facts','version':1,'method':'source','phase':'before_delivery','evidence_required':True}],
             'milestones':['completion','delivery']}
         self.save()

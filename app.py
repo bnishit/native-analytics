@@ -26,8 +26,9 @@ from tracing import WorkflowEvidence,Tracing,SpanObservation
 from retention import Retention
 from product_loop import ProductLoop
 from catalog import Catalog
-from product_analytics import Window,PropertyFilter,ProductAnalytics
+from product_analytics import Window,PropertyFilter,ProductAnalytics,SAFE_EVENT_SQL,PRODUCT_EVENT_SQL
 from outcomes import Outcomes
+from outcome_adapters import INTEGRATIONS
 from otlp import install as install_otlp
 from regressions import Regressions
 from debugging import Debugging
@@ -788,7 +789,7 @@ def where(project,q):
 
 
 def product_only(clause):
-    return clause+" AND name NOT IN ('analytics.pipeline','afterspan.setup.checked','trace.observed','evidence.observed') AND json_type(properties,'$.afterspan_trace') IS NULL"
+    return clause+' AND '+PRODUCT_EVENT_SQL
 
 
 def percentile(values):
@@ -808,8 +809,7 @@ def aggregate(rows,q):
 def query_data(project,q):
     q=freeze(q)
     clause,params=where(project,q)
-    clause+=" AND name NOT IN ('trace.observed','evidence.observed') AND json_type(properties,'$.afterspan_trace') IS NULL AND json_type(properties,'$.afterspan_evidence') IS NULL AND json_type(properties,'$.afterspan_health') IS NULL"
-    if q.event is None:clause=product_only(clause)
+    clause+=' AND '+(SAFE_EVENT_SQL if q.event is not None else PRODUCT_EVENT_SQL)
     with closing(connect()) as c:
         count=c.execute('SELECT count(*) FROM events WHERE '+clause,params).fetchone()[0]
         if count>200000:raise HTTPException(422,'query exceeds 200,000 events; shorten the time window')
@@ -1053,9 +1053,9 @@ Retention(app,products,reader,editor)
 Catalog(app,products,reader,editor)
 
 request_audit=Audit(app,connect,audit_reader,freeze,evidence_metadata,editor)
-workflow_tracing=Tracing(app,connect,audit_reader,freeze,evidence_metadata)
+workflow_tracing=Tracing(app,connect,audit_reader,freeze,evidence_metadata,INTEGRATIONS)
 collection_health=CollectionHealth(app,connect,editor,audit_reader,freeze,evidence_metadata,RETENTION_DAYS)
-outcomes=Outcomes(app,connect,reader,editor,audit_reader,freeze,evidence_metadata,workflow_tracing)
+outcomes=Outcomes(app,connect,reader,editor,audit_reader,freeze,evidence_metadata,workflow_tracing,request_audit)
 from trace_explorer import TraceExplorer
 trace_explorer=TraceExplorer(app,request_audit,workflow_tracing,audit_reader,freeze,evidence_metadata)
 regressions=Regressions(app,connect,editor,trace_explorer,RETENTION_DAYS,outcomes)

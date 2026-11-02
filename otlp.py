@@ -82,7 +82,7 @@ def convert(span,resource,event_type,retention_days):
         names={'gen_ai.usage.input_tokens':'input_count','gen_ai.usage.output_tokens':'output_count',
                'afterspan.model.cache_read_count':'cache_read_count','afterspan.model.reasoning_count':'reasoning_count',
                'afterspan.model.template_version':'template_version','afterspan.model.first_output_ms':'first_output_ms',
-               'afterspan.model.cost_microusd':'cost_microusd','afterspan.model.cost_source':'cost_source','afterspan.model.price_version':'price_version'}
+               'afterspan.model.cost_usd_decimal':'cost_usd_decimal','afterspan.model.cost_microusd':'cost_microusd','afterspan.model.cost_source':'cost_source','afterspan.model.price_version':'price_version'}
         usage.update({target:values[source] for source,target in names.items() if source in values})
         if any(k in usage for k in ['input_count','output_count','cache_read_count','reasoning_count']):usage['usage_source']=values.get('afterspan.model.usage_source','provider_reported')
         facts['model_usage']=ModelUsage.model_validate(usage).model_dump(mode='json')

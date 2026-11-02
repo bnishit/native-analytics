@@ -139,7 +139,7 @@ class CollectionHealth:
             for instance,values in instances.items():
                 latest=values[-1];in_window=[p for p in values if p['observed_at_ms']/1000>=start]
                 baseline=next((p for p in reversed(values) if p['observed_at_ms']/1000<=start),None)
-                scoped=([baseline] if baseline else [])+in_window
+                scoped=([baseline] if baseline and baseline not in in_window else [])+in_window
                 issues=[]
                 if any(p['evaluator_failures'] is None for p in scoped):issues.append('evaluator_health_unknown')
                 if latest['observed_at_ms']/1000<end-allowance:issues.append('pulse_stale')

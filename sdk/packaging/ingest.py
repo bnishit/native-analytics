@@ -20,6 +20,12 @@ try:
     assert all(trace['checks'][0]['evidence_status'] == 'resolved' for trace in traces)
     assert all(trace['checks'][0]['execution'] == 'completed' for trace in traces)
     assert all(trace['checks'][1]['execution'] == 'not_run' and trace['checks'][1]['reason_code'] == 'evidence_absent' and trace['checks'][1]['result'] == 'unknown' and not trace['checks'][1]['evidence_present'] for trace in traces)
+    for trace in traces:
+        usage={span['model_usage']['model']:span['model_usage'] for span in trace['spans'] if span.get('model_usage')}
+        assert usage['fixture/responses']['input_count']==10 and usage['fixture/responses']['reasoning_count']==2, usage
+        assert usage['fixture/messages']['input_count']==20 and usage['fixture/messages']['output_count']==5, usage
+        assert usage['fixture/messages']['cache_read_count']==10, usage
+        assert all(usage[key]['first_output_ms'] is not None and usage[key]['cost_usd_decimal'] is None for key in ['fixture/responses','fixture/messages']), usage
     print(json.dumps({'ingested_languages': 2, 'traces': len(traces)}))
 finally:
     fixture.tearDown()

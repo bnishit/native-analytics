@@ -16,6 +16,17 @@ await tracer.task({workflow:'package_probe',environment:'test',trafficKind:'synt
     span.observeOpenAI({choices:[{delta:{content:'private-content-sentinel'}}]});
     span.modelUsage({input_count:4,output_count:2,usage_source:'provider_reported',cost_usd_decimal:'0.000000254',cost_source:'provider_reported'});
   });
+  await tracer.span('model',span=>{
+    span.modelUsage({provider:'openai',model:'fixture/responses'});
+    span.observeResponses({type:'response.output_text.delta',delta:'private-content-sentinel'});
+    span.observeResponses({type:'response.completed',response:{usage:{input_tokens:10,output_tokens:4,input_tokens_details:{cached_tokens:6},output_tokens_details:{reasoning_tokens:2}}}});
+  });
+  await tracer.span('model',span=>{
+    span.modelUsage({provider:'anthropic',model:'fixture/messages'});
+    span.observeAnthropic({type:'message_start',message:{usage:{input_tokens:3,cache_creation_input_tokens:7,cache_read_input_tokens:10,output_tokens:1}}});
+    span.observeAnthropic({type:'content_block_delta',delta:{type:'text_delta',text:'private-content-sentinel'}});
+    for(const count of [2,5,5])span.observeAnthropic({type:'message_delta',usage:{output_tokens:count}});
+  });
   await tracer.span('processing',span=>{assert.equal(2+2,4);span.check('arithmetic','passed',{method:'code',evidenceDigest:createHash('sha256').update('4').digest('hex'),execution:'completed'});span.check('source_facts','unknown',{execution:'not_run',reasonCode:'evidence_absent'});},{milestone:'completion'});
   await tracer.span('response',()=>{},{milestone:'delivery',disposition:'delivered'});
 });

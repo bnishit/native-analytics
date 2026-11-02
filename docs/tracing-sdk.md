@@ -9,8 +9,8 @@ The Python distribution is `afterspan-sdk`; the server-only ESM Node package is 
 Pinned Git installation is verified at the released commit below in fresh consumers. Node also passed a production `--omit=dev` lockfile install with a fresh cache and SSH disabled. Python preserves the existing flat-module imports. No registry account or publication is needed. npm Git installation runs the reviewed `prepare` build and downloads its pinned build dependencies.
 
 ```sh
-python -m pip install 'afterspan-sdk @ git+https://github.com/bnishit/native-analytics.git@28460050dcfaea8de1a45be95078875f0a24ee5d#subdirectory=sdk/python'
-npm install 'git+https://github.com/bnishit/native-analytics.git#28460050dcfaea8de1a45be95078875f0a24ee5d'
+python -m pip install 'afterspan-sdk @ git+https://github.com/bnishit/native-analytics.git@fdb555569f20abbe21efc215c3178b4a374e6962#subdirectory=sdk/python'
+npm install 'git+https://github.com/bnishit/native-analytics.git#fdb555569f20abbe21efc215c3178b4a374e6962'
 ```
 
 ### Build and verify artifacts locally
@@ -126,6 +126,38 @@ The metadata setter accepts the existing wire fields: input/output/cache/reasoni
 `ModelObservation` in `sdk/python/afterspan_model.py` and `sdk/typescript/model-observation.ts` offers the same metadata/timing state without a workflow collector. Existing tracers can reuse it without emitting a second event stream. Installed packages include the companion automatically. Standalone Node callers can use `import { ModelObservation } from '@afterspan/sdk/model'`; Python callers use `from afterspan_model import ModelObservation`. Existing vendored entrypoints still need their matching sibling helper until migrated. Snapshots are copies; closing prevents further updates. Malformed provider metadata clears uncertain accounting instead of retaining stale totals and increments `rejected_updates` / `rejectedUpdates`. Native tracer status accumulates `model_metadata_errors`. Telemetry send failure never reruns the business call.
 
 No prompt, output, refusal text, tool arguments or raw provider error is retained by these observers. Selected debugging remains a separate opt-in path. The server still enforces model-step, terminal-observation, usage-provenance and first-output-within-duration rules. The SDK's two languages and actual cross-language ingestion are tested locally; current production adoption is tracked separately in [release acceptance](outcome-platform-release.md).
+
+## Responses and Messages observation
+
+The pinned SDK also exposes `observe_responses` / `observeResponses` for parsed OpenAI Responses objects and events, and `observe_anthropic` / `observeAnthropic` for parsed Anthropic Messages objects and events. These methods are available on an open model span and the standalone observer. The Git installation above includes both methods; earlier SDK revisions require an update. These are explicit observers, not automatic provider/framework wrappers. They add no provider dependency or transport.
+
+```python
+with tracer.span('model') as span:
+    span.model_usage(provider='anthropic', model=requested_model)
+    for event in messages_stream:
+        span.observe_anthropic(event)
+        handle_event(event)
+```
+
+```typescript
+await tracer.span('model', async span => {
+  span.modelUsage({provider:'openai', model:requestedModel});
+  for await (const event of responsesStream) {
+    span.observeResponses(event);
+    handleEvent(event);
+  }
+});
+```
+
+Responses usage maps reported input/output totals, cached input and reasoning output from the response object, including completed, incomplete and failed lifecycle envelopes. This records incurred usage, never successful completion. Nonempty text, refusal and function-argument deltas, or a named function-call item, start the output clock. Reasoning text and lifecycle events do not. Audio, image, built-in tool and reasoning-content timing are unsupported, not inferred.
+
+Messages usage replaces cumulative output counts; repeated totals do not add tokens. Total input is the sum of uncached, cache-creation and cache-read input, only when all three components are known. Missing components are unknown, never implicit zero. Partial stream updates retain earlier reported components. Text and tool-use/JSON deltas start output timing; thinking, signatures and pings do not. No reasoning-token breakdown is inferred. Use one observer per model request, feed parsed events in delivery order, and do not combine providers or concurrent requests in one observer. Full non-streaming responses record usage but leave first-output timing unknown.
+
+Neither format reports USD cost through these methods. Record a separate exact amount with its real provenance only when available. A provider update cannot relabel prior estimated token counts as provider-reported. Invalid accounting clears uncertain counts and increments the same existing diagnostic counter. These observers retain no prompt, response, reasoning text, function name or tool argument. The caller must surface provider errors and incomplete streams; recording their usage never marks the span or task successful.
+
+The contract tests and fresh installed-package consumers use synthetic provider-shaped events. They assert both language outputs against the local service, including cached input, cumulative output, unknown cost and private-content omission. Separately, two bounded synthetic streaming requests through the existing production producer’s OpenRouter-compatible Responses and Messages endpoints completed with expected output, reported input/output totals of 6/1 each, and first-output timings of 518.294 and 381.246 ms. These calls used the reviewed compiled standalone observer without changing the producer’s installed dependency. They prove gateway-format observation, not native OpenAI/Anthropic endpoints, framework-wide coverage, a second customer integration or a latency estimate. Fresh Python/Node Git installs at the pin above verified the new exports; wheel/tarball consumers separately verified service ingestion.
+
+Provider contracts: [OpenAI Responses usage types](https://github.com/openai/openai-python/blob/main/src/openai/types/responses/response_usage.py), [Responses event types](https://github.com/openai/openai-python/blob/main/src/openai/types/responses/response_stream_event.py), [Anthropic cumulative streaming usage](https://platform.claude.com/docs/en/build-with-claude/streaming), and [cached-input accounting](https://platform.claude.com/docs/en/build-with-claude/prompt-caching). These are the documented mapping sources, not a claim of all-provider support.
 
 ## Bounded installed-helper production adoption
 

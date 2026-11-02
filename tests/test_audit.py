@@ -9,7 +9,7 @@ import uuid
 from contextlib import closing
 from fastapi.testclient import TestClient
 import app
-from audit import nearest
+from audit import nearest, Observation
 import test_product as fixtures
 from test_workspaces import CSRF
 
@@ -234,6 +234,22 @@ class AuditTests(unittest.TestCase):
         return {'schema':'afterspan-audit-goal-v1','id':'read-reply-delivery','question':'Did Slack accept the reply?',
                 'metric':'read-reply-delivery-v1','environment':'production','tracking':{'recipe':'tracker-read-reply-v1',
                 'path':'src/app/api/slack/route.ts','dependencies':['src/app/api/slack/route.ts','src/lib/analytics/request-audit.ts']}}
+
+    def test_tool_read_targets_do_not_change_request_environment(self):
+        ref,attempt=str(uuid.uuid4()),str(uuid.uuid4())
+        for at,stage in enumerate(['parser','planner','tool','reply']):
+            extra={'tool_environments':['production','staging']} if stage=='tool' else {}
+            self.observe(self.facts(stage,ref,attempt,comparison_eligible=False,tool_required=True,reply_required=True,reported_outcome='succeeded',**extra),at)
+        row=self.review()['requests'][0]
+        self.assertEqual(row['environment'],'production')
+        self.assertNotIn('environment_conflict',row['issues'])
+        self.assertEqual(next(s for s in row['stages'] if s['stage']=='tool')['tool_environments'],['production','staging'])
+        opened=self.owner.post('/api/traces/open?project='+self.p['id'],headers=CSRF,json={'reference':row['request']})
+        self.assertEqual(opened.status_code,200,opened.text)
+        self.assertEqual(opened.json()['trace']['read_target_environments'],['production','staging'])
+        for bad in [['production','production'],['private-sentinel'],['production','staging','production']]:
+            with self.assertRaises(ValueError):Observation.model_validate(self.facts('tool',str(uuid.uuid4()),str(uuid.uuid4()),tool_environments=bad))
+        with self.assertRaises(ValueError):Observation.model_validate(self.facts('reply',str(uuid.uuid4()),str(uuid.uuid4()),tool_environments=['production']))
 
     def quality_goal(self,verifier='growthbook-catalog-v1'):
         return {'schema':'afterspan-audit-goal-v1','id':'answer-quality','question':'Do displayed catalog facts match the source?',

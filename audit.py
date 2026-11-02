@@ -48,6 +48,7 @@ class Observation(BaseModel):
     trace_step:Literal['preparation','parser','model','feature_list','feature_lookup','policy','mutation','readback','slack_delivery','webhook_ack','background','total']|None=None
     span_state:Literal['started','succeeded','failed']|None=None
     completion_kind:Literal['processing','delivered']|None=None
+    tool_environments:list[Literal['production','staging']]|None=Field(default=None,min_length=1,max_length=2)
     check_version:Literal['growthbook-catalog-v1','source-facts-v1']|None=None
     answer_disposition:Literal['verified','withheld','clarification']|None=None
     check_phase:Literal['before_reply','after_reply']|None=None
@@ -56,6 +57,8 @@ class Observation(BaseModel):
     unknown_claims:int|None=Field(default=None,ge=0,le=15,strict=True)
     @model_validator(mode='after')
     def quality_counts(self):
+        if self.tool_environments is not None and (self.stage!='tool' or len(set(self.tool_environments))!=len(self.tool_environments)):
+            raise ValueError('unique tool target scopes belong to the tool stage')
         trace_fields=(self.span_ref,self.parent_span_ref,self.trace_step,self.span_state,self.completion_kind)
         if self.stage=='trace':
             if any(v is None or v=='[redacted]' for v in (self.request_ref,self.attempt_ref,self.attempt_number,self.request_started_at_ms,self.span_ref,self.trace_step,self.span_state)):
@@ -96,7 +99,8 @@ MEANINGS={
  'unknown_claims':'Rows not checkable, including changed or missing source versions. Missing checks and unsupported answers remain unknown.',
  'schema_version':'Version of this producer diagnostic contract; it is not an inferred event schema.',
  'stage':'One completed comparison-stage observation per business attempt, or trace start/terminal observations. Reuse the event ID for delivery retries.',
- 'environment':'Producer-reported environment. A mismatch with the expected environment is reported.',
+ 'environment':'Producer-reported request environment. Tool read targets are separate; a mismatch with the expected request environment is reported.',
+ 'tool_environments':'Bounded environments read by the tool stage, separate from the request environment. Missing historical target scopes remain unknown.',
  'request_ref':'Fresh random UUIDv4 per request, shared across stages/retries. Never a Slack/message/user ID. Returned only as a project-scoped opaque server reference.',
  'attempt_ref':'Fresh random UUIDv4 per business attempt; one attempt number maps to one reference. Missing/redacted refs are never joined.',
  'attempt_number':'Increasing business-attempt number. Delivery retry keeps the same event ID and number.',
@@ -353,6 +357,7 @@ class Audit:
             stages.append({'stage':name,'required':required,'state':state,'observations':len(seen),
                 'reported_outcome':seen[0]['facts'].get('reported_outcome','unknown') if len(seen)==1 else 'unknown',
                 'proposal_safe':seen[0]['facts'].get('proposal_safe') if len(seen)==1 else None,
+                'tool_environments':seen[0]['facts'].get('tool_environments') if len(seen)==1 else None,
                 'diagnostic_code':seen[0]['facts'].get('diagnostic_code','unknown') if len(seen)==1 else 'unknown',
                 'duration_ms':seen[0]['facts'].get('duration_ms') if len(seen)==1 else None,'at_ms_from_first_observation':round((seen[0]['ts']-min(r['ts'] for r in group))*1000,3) if len(seen)==1 else None})
         parser=by_stage.get('parser',[]);planner=by_stage.get('planner',[]);shadow=by_stage.get('shadow',[])

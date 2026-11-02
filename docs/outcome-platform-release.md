@@ -18,10 +18,11 @@ All items require implementation plus direct evidence. Proposed targets are acce
 
 | Area | Required behavior | Completion evidence | Current state |
 |---|---|---|---|
-| 1 Outcomes | Versioned generic goals: task population, deadline, required evidence/checks | API/UI/CLI/MCP tests and two different product workflows | Pending |
-| 1 Checks | Versioned generic source/code/model/human checks on workflow traces | Contradictions, unknowns, scope isolation and shared projection tests | Local first implementation |
-| 1 Task accounting | Completion, correctness, delivery and usefulness stay distinct | Mature denominator includes failure, withheld and unclassified; retries never restart clocks | Pending generic implementation |
-| 1 Outcome screen | Goal → failing tasks → evidence → next action | Real running UI and agent workflow | Pending |
+| 1 Outcomes | Versioned generic goals: task population, deadline, required evidence/checks | API/UI/CLI/MCP tests and two different product workflows | Local engine and surfaces; two-product/live proof pending |
+| 1 Checks | Versioned generic source/code/model/human checks on workflow traces | Contradictions, unknowns, scope isolation and shared projection tests | Local checks and goal-based classification tested |
+| 1 Evidence | Resolve check evidence against scoped immutable receipts, not just pointer presence | Missing/cross-task/wrong-version receipts cannot satisfy required evidence | Pending |
+| 1 Task accounting | Completion, correctness, delivery and usefulness stay distinct | Mature denominator includes failure, withheld and unclassified; retries never restart clocks | Local engine tested |
+| 1 Outcome screen | Goal → failing tasks → evidence → next action | Real running UI and agent workflow | Local running synthetic UI/CLI/MCP tested; production pending |
 | 2 Instrumentation | Python and Node tracing helpers with nested context and lifecycle | Running apps, background jobs and queue/HTTP propagation tests | Pending |
 | 2 Interoperability | OpenTelemetry ingestion with explicit safe mapping and W3C propagation | Official exporter → production ingestion → trace readback | Pending |
 | 2 Model evidence | Provider/model and prompt version, token usage, cost and streaming timing | Bounds/unit tests and real provider observations; no invented cost | Pending |
@@ -51,4 +52,4 @@ All items require implementation plus direct evidence. Proposed targets are acce
 
 The first local unit extends workflow terminal observations with bounded versioned checks and exposes them through the shared trace projection and UI. Step success is preserved separately. Duplicate check names, start-time checks, raw reason text and invalid evidence references are rejected. Evidence UUIDs are not returned by diagnostic readers. Conflicting terminal checks do not become a pass.
 
-This is not yet the complete outcome model, evaluator runner, dataset system, interoperability layer or production release.
+Versioned generic goals and deadline-based outcome classification now have local API/UI/CLI/MCP implementations. Real running synthetic UI and CLI checks match the regression cases. The release still requires two-product integration, SDK/OTLP work, datasets/experiments, operating proof, independent review and production verification. See [outcome semantics](outcomes.md).

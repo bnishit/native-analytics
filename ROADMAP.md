@@ -10,7 +10,7 @@ The existing product loop supports bounded goals, tracking repair and release ev
 
 ## In progress
 
-Generic workflow checks are being added on the outcome-platform branch. They are not deployed. The acceptance matrix lists implementation, test, operating and release work still required across all four areas.
+Generic workflow checks, immutable goal versions and task outcome accounting have local implementations on the outcome-platform branch. The running Outcomes screen, CLI and MCP have local synthetic checks. They are not deployed. The acceptance matrix lists implementation, test, operating and release work still required across all four areas.
 
 ## Other product work
 

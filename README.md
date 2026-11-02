@@ -35,6 +35,10 @@ Open http://127.0.0.1:8769/app. This loopback preview creates private local emai
 
 `AFTERSPAN_EDITION=self_hosted` is the default. Usage counts remain useful for server capacity; there are no commercial event, payload, project or seat limits. Request rate, query-size, definition-count and retention bounds still protect the service. This is one process on one SQLite volume, not unlimited infrastructure.
 
+### Generic workflow outcomes — unreleased branch work
+
+The outcome-platform branch adds versioned goals and required checks over generic workflow tasks, with original-clock deadlines and explicit satisfied/failed/withheld/unclassified/waiting results. See [outcome semantics](docs/outcomes.md) and the [full release acceptance matrix](docs/outcome-platform-release.md). This is not a production release or a claim of Langfuse parity.
+
 ### Onboard a repository with existing analytics
 
 Open **Goal loop → Connect a repository**. An owner connects a GitHub repository, scans a branch, reviews an event outcome goal, and adopts its exact proposal. Keep current Native Analytics events or select a connected PostHog project whose event is found in the pinned code. Old PostHog taxonomy does not prove that a current native release sends those events. Unsupported patterns and the 64-file scan cap stay visible.

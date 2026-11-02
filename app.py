@@ -27,6 +27,7 @@ from retention import Retention
 from product_loop import ProductLoop
 from catalog import Catalog
 from product_analytics import Window,PropertyFilter,ProductAnalytics
+from outcomes import Outcomes
 
 from journeys import JourneyContext,project_journeys,summarize
 
@@ -105,6 +106,7 @@ def init_db():
         OAuthProvider.init_db(c)
         billing.init_db(c)
         ProductAnalytics.init_db(c)
+        Outcomes.init_db(c)
         Catalog.init_db(c)
         Audit.init_db(c)
         ProductLoop.init_db(c)
@@ -1017,6 +1019,7 @@ Catalog(app,products,reader,editor)
 
 request_audit=Audit(app,connect,audit_reader,freeze,evidence_metadata,editor)
 workflow_tracing=Tracing(app,connect,audit_reader,freeze,evidence_metadata)
+outcomes=Outcomes(app,connect,reader,editor,audit_reader,freeze,evidence_metadata,workflow_tracing)
 from trace_explorer import TraceExplorer
 trace_explorer=TraceExplorer(app,request_audit,workflow_tracing,audit_reader,freeze,evidence_metadata)
 product_loop=ProductLoop(app,connect,reader,editor,owner,RETENTION_DAYS,store_events=store_events,audit=request_audit)
@@ -1027,6 +1030,7 @@ def capabilities():
     return {'product':'Afterspan','license':'MIT','schema':'/openapi.json','agent_guide':'/llms.txt',
       'analytics':{'catalog':'/api/catalog','funnels':'/api/funnels/analyze','retention':'/api/retention/analyze','unit':'explicit opaque identity; not automatically a person'},
       'product_loop':{'goals':'/api/loop/goals','contract':'committed goals, scoped tracking PRs, independent answer checks and mature observational outcomes','local_mcp':'agent/loop_server.py','production_release_proof':'separate from PR and merge','repo_onboarding':{'sources':'/api/loop/sources','scans':'/api/loop/scans/{UUID}','jobs':'/api/loop/jobs/{UUID}','contract':'afterspan-repo-goal-v2','unit':'declared logged events or observed read requests, not unique people','measurements':['event-outcome-v1','slack-read-outcome-v1'],'credentials':'owner-only encrypted project connections','release':'/api/loop/actions/{id}/release'}},
+      'outcomes':{'goals':'/api/outcomes/goals','evaluate':'/api/outcomes/evaluate','contract':'workflow-outcome-v1','scope':'project audit-purpose read; editor writes goal versions','evidence':'producer-reported criteria, not independent business proof'},
       'traces':{'search':'/api/traces/search','open':'/api/traces/open','contracts':['slack-request-v1','workflow-trace-v1'],'scope':'project audit-purpose read key','raw_data':False},
       'audit':{'catalog':'/api/audit/catalog','review':'/api/audit/review','trace':'/api/audit/trace','evaluate':'/api/audit/evaluate','onboarding':'/api/audit/onboarding','quality_metric':'answer-quality-v1','contract':'properties.afterspan_audit / slack-request-v1','scope':'project audit-purpose read key','historical_evidence':'/api/audit/evidence/{UUIDv4}','max_requests':60,'raw_data':False,'overall_readiness_claim':False},
       'connection':{'transport':'local stdio MCP','bootstrap':'An owner uses connect-audit to issue a private, expiring audit-only connection receipt. No operator token fallback.','launcher':'agent/run_audit.py PRIVATE_RECEIPT','remote_oauth':True,'remote_mcp':'/mcp','consent':'/assets/mcp-connect.html','scopes':['analytics:read','charts:write','audit:read']}}

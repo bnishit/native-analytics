@@ -179,6 +179,15 @@ class RemoteMCPTests(unittest.TestCase):
             opened=call('open_trace',{'reference':searched['traces'][0]['reference'],'query':searched['query']})
             self.assertTrue(opened['trace']['has_gaps'])
             self.assertEqual(opened['trace']['business_outcome'],'not_independently_verified')
+            from outcomes import OutcomeGoal
+            goal_id=str(uuid.uuid4())
+            app.outcomes.save(p,goal_id,0,OutcomeGoal(title='Checked workflow',workflow='appointment_request',environment='staging',deadline_seconds=30,
+                checks=[{'name':'source_facts','version':1,'method':'source','phase':'before_delivery'}],milestones=['delivery']))
+            self.assertEqual(call('outcome_goals')['goals'][0]['id'],goal_id)
+            outcome=call('evaluate_outcomes',{'query':{'goal_id':goal_id,'version':1}})
+            self.assertEqual(outcome['counts']['unclassified'],1)
+            self.assertIsNone(outcome['satisfied_fraction'])
+
             batch_event=app.Event(name='trace.observed',properties={'afterspan_trace':{
                 **trace_event.properties['afterspan_trace'],'trace_id':str(uuid.uuid4()),'span_id':str(uuid.uuid4()),
                 'step':'processing','receipt_count':1,'linked_trace_ids':[trace_event.properties['afterspan_trace']['trace_id']]}})

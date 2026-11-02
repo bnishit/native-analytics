@@ -1,0 +1,98 @@
+import time
+import uuid
+from datetime import datetime,timezone
+import unittest
+import test_tracing
+
+class OutcomeTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture=test_tracing.TracingTests();self.fixture.setUp()
+        self.client=self.fixture.client;self.admin=self.fixture.admin;self.id=str(uuid.uuid4())
+        self.goal={'title':'Checked export','workflow':'document_export','environment':'staging','deadline_seconds':30,
+            'checks':[{'name':'source_facts','version':1,'method':'source','phase':'before_delivery','evidence_required':True}],
+            'milestones':['completion','delivery']}
+        self.save()
+    def tearDown(self):self.fixture.tearDown()
+    def save(self,revision=0,goal=None):
+        return self.client.put('/api/outcomes/goals/'+self.id+'?project=alpha&revision='+str(revision),headers=self.admin,json=goal or self.goal)
+    def check(self,result='passed',**changes):
+        return {'name':'source_facts','version':1,'result':result,'required':True,'method':'source','phase':'before_delivery','evidence_ref':str(uuid.uuid4()),**changes}
+    def task(self,check=None,attempt=1,disposition='delivered',clock=None,**changes):
+        f=self.fixture
+        clock=clock if clock is not None else int(f.base*1000)
+        common={'workflow':'document_export','request_started_at_ms':clock,'attempt_number':attempt,**changes}
+        events=[]
+        for step,at,milestone,checks in [('processing',1,'completion',[check or self.check()]),('response',3,'delivery',None)]:
+            span=str(uuid.uuid4())
+            events.append(f.event(at=at,span_id=span,step=step,**common))
+            events.append(f.event('succeeded',at+1,span_id=span,step=step,milestone=milestone,
+                **({'checks':checks} if checks else {'disposition':disposition}),**common))
+        r=f.ingest(*events);self.assertEqual(r.status_code,200,r.text)
+    def evaluate(self,**query):
+        r=self.client.post('/api/outcomes/evaluate?project=alpha',headers=self.admin,json={'goal_id':self.id,'version':1,**query})
+        self.assertEqual(r.status_code,200,r.text);return r.json()
+    def test_goal_versions_are_immutable_and_retries_idempotent(self):
+        self.assertEqual(self.save().json()['version'],1)
+        second={**self.goal,'deadline_seconds':60}
+        self.assertEqual(self.save(1,second).json()['version'],2)
+        self.assertEqual(self.save(0,second).status_code,409)
+        self.assertEqual(self.client.get('/api/outcomes/goals/'+self.id+'?project=alpha&version=1',headers=self.admin).json()['definition'],self.goal)
+        self.assertEqual(self.client.get('/api/outcomes/goals/'+self.id+'?project=beta',headers=self.admin).status_code,404)
+    def test_qualified_success_requires_goal_checks_and_milestones(self):
+        self.task();r=self.evaluate()
+        self.assertEqual(r['counts']['satisfied'],1);self.assertEqual(r['mature_denominator'],1)
+        self.assertEqual(r['satisfied_fraction'],1)
+        opened=self.client.post('/api/traces/open?project=alpha',headers=self.admin,json={**r['trace_query'],'reference':r['tasks'][0]['trace']}).json()['trace']
+        self.assertEqual(opened['clock'],'request start')
+        self.assertAlmostEqual(opened['spans'][0]['start_ms'],1000,delta=1)
+        self.assertEqual(self.evaluate(**r['query']),r)
+        self.fixture.tid=str(uuid.uuid4());self.task(self.check('unknown'))
+        r=self.evaluate();self.assertEqual(r['counts']['unclassified'],1);self.assertEqual(r['satisfied_fraction'],.5)
+        self.fixture.tid=str(uuid.uuid4());self.task(self.check('failed'))
+        r=self.evaluate();self.assertEqual(r['counts']['failed'],1);self.assertEqual(r['mature_denominator'],3)
+    def test_withheld_and_missing_evidence_never_pass(self):
+        self.task(disposition='withheld');self.assertEqual(self.evaluate()['counts']['withheld'],1)
+        self.fixture.tid=str(uuid.uuid4());self.task(self.check(evidence_ref=None))
+        r=self.evaluate();self.assertEqual(r['counts']['unclassified'],1)
+        self.assertEqual(r['satisfied_fraction'],0)
+    def test_retries_do_not_restart_clock_and_only_latest_attempt_qualifies(self):
+        self.task(self.check('failed'))
+        self.fixture.aid=str(uuid.uuid4());self.task(attempt=2)
+        r=self.evaluate();self.assertEqual(r['counts']['satisfied'],1);self.assertEqual(r['tasks'][0]['attempts'],2)
+        self.assertEqual(r['tasks'][0]['started_at_ms'],int(self.fixture.base*1000))
+    def test_waiting_is_not_a_mature_success(self):
+        self.fixture.base=time.time()-6
+        self.task();r=self.evaluate()
+        self.assertEqual(r['counts']['waiting'],1);self.assertEqual(r['mature_denominator'],0);self.assertIsNone(r['satisfied_fraction'])
+    def test_wrong_check_version_and_late_success_fail_closed(self):
+        self.task(self.check(version=2));self.assertEqual(self.evaluate()['counts']['unclassified'],1)
+        self.fixture.tid=str(uuid.uuid4());self.task(clock=int((self.fixture.base-40)*1000))
+        self.assertEqual(self.evaluate()['counts']['failed'],1)
+    def test_goal_required_check_cannot_be_omitted_or_downgraded_by_producer(self):
+        self.task(self.check(name='unrelated_check',required=False))
+        r=self.evaluate();self.assertEqual(r['counts']['unclassified'],1)
+        self.assertIn('check_missing_or_conflicting:source_facts',r['tasks'][0]['reasons'])
+        self.fixture.tid=str(uuid.uuid4());self.task(self.check('failed',required=False))
+        self.assertEqual(self.evaluate()['counts']['failed'],1)
+    def test_missing_clock_and_release_do_not_qualify_clean_fraction(self):
+        self.task(request_started_at_ms=None)
+        r=self.evaluate();self.assertEqual(r['coverage']['original_clock_missing'],1);self.assertIsNone(r['satisfied_fraction'])
+        r=self.evaluate(release_sha='a'*40);self.assertEqual(r['coverage']['release_uncertain'],1);self.assertIsNone(r['satisfied_fraction'])
+    def test_declared_after_delivery_check_cannot_run_before_delivery(self):
+        goal={**self.goal,'checks':[{**self.goal['checks'][0],'phase':'after_delivery'}]}
+        self.save(1,goal);self.task(self.check(phase='after_delivery'))
+        r=self.evaluate(version=2);self.assertEqual(r['counts']['unclassified'],1)
+        self.assertIn('check_before_delivery:source_facts',r['tasks'][0]['reasons'])
+
+    def test_read_purpose_keys_are_isolated_and_edit_requires_editor(self):
+        key=self.client.post('/api/projects/alpha/read-keys',headers=self.admin,json={'label':'outcomes','purpose':'audit'}).json()['read_key']
+        auth={'Authorization':'Bearer '+key}
+        self.assertEqual(self.client.get('/api/outcomes/goals?project=alpha',headers=auth).status_code,200)
+        self.assertEqual(self.client.post('/api/outcomes/evaluate?project=beta',headers=auth,json={'goal_id':self.id,'version':1}).status_code,403)
+        self.assertEqual(self.client.put('/api/outcomes/goals/'+self.id+'?project=alpha&revision=1',headers=auth,json=self.goal).status_code,401)
+
+    def test_write_key_and_unauthenticated_cannot_read_outcomes(self):
+        query={'goal_id':self.id,'version':1}
+        self.assertEqual(self.client.post('/api/outcomes/evaluate?project=alpha',json=query).status_code,401)
+        self.assertEqual(self.client.post('/api/outcomes/evaluate?project=alpha',headers=self.fixture.fixture.a,json=query).status_code,401)
+        self.assertEqual(self.client.get('/api/outcomes/goals?project=alpha',headers=self.fixture.fixture.a).status_code,401)

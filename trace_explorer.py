@@ -43,7 +43,8 @@ def slack_trace(audit, project, key, group, q):
 
 
 def workflow_trace(row):
-    origin=min(s['first_seen'] for s in row['spans'])
+    original=row.get('request_started_at_ms')
+    origin=original/1000 if original is not None and 'request_clock_conflict' not in row['issues'] else min(s['first_seen'] for s in row['spans'])
     spans=[{'id':s['span'],'parent':s['parent'],'step':s['step'],'attempt':s['attempt_number'],
             'state':s['state'],'start_ms':round((s['first_seen']-origin)*1000,3) if not s['missing_start'] else None,
             'duration_ms':s['duration_ms'],'end_ms':round((s['last_seen']-origin)*1000,3) if s['state'] in {'succeeded','failed'} and not s['missing_start'] else None,
@@ -54,7 +55,7 @@ def workflow_trace(row):
             'environment':row['environment'],'release':row['release_sha'],'started_at':origin,'last_seen':row['last_seen'],
             'attempts':row['observed_attempts'],'checks':row['checks'],'spans':spans,'evidence':evidence,'issues':row['issues'],
             'unobserved_categories':[], 'links':row['batch']['inputs'] if row['batch'] else [],
-            'clock':'first observed event; earlier work may be absent', 'business_outcome':'not_independently_verified'}
+            'clock':'request start' if original is not None and 'request_clock_conflict' not in row['issues'] else 'first observed event; earlier work may be absent', 'business_outcome':'not_independently_verified'}
 
 
 def finish_trace(row):

@@ -51,6 +51,16 @@ def install(app,provider):
         return {'name':name,'instructions':(Path(__file__).parent/'skills'/name/'SKILL.md').read_text()}
 
     @mcp.tool(annotations=READ)
+    async def outcome_goals()->dict:
+        """Requires audit:read. List current versioned workflow outcome goals in the approved project."""
+        return await call('/api/outcomes/goals')
+
+    @mcp.tool(annotations=READ)
+    async def evaluate_outcomes(query:dict)->dict:
+        """Requires audit:read. Evaluate a saved goal_id and version over the task-entry window. Reuse returned query for frozen pages. Satisfaction means declared producer-evidence criteria, not independent business proof."""
+        return await call('/api/outcomes/evaluate',query)
+
+    @mcp.tool(annotations=READ)
     async def overview(days:int=7)->dict:
         """Read activity and collection health, not raw events."""
         # API query parameters own validation; body-free GET keeps the shared engine unchanged.

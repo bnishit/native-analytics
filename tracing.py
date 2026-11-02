@@ -39,10 +39,15 @@ class SpanObservation(BaseModel):
     receipt_count:int|None=Field(default=None,ge=1,le=20,strict=True)
     linked_trace_ids:list[UUID4]|None=Field(default=None,max_length=20)
 
+    request_started_at_ms:int|None=Field(default=None,ge=0,le=4102444800000,strict=True)
+    milestone:Literal['completion','delivery','usefulness']|None=None
+    disposition:Literal['delivered','withheld','clarification']|None=None
     checks:list[WorkflowCheck]|None=Field(default=None,min_length=1,max_length=20)
 
     @model_validator(mode='after')
     def coherent(self):
+        if self.state=='started' and (self.milestone is not None or self.disposition is not None):raise ValueError('milestones and dispositions belong to terminal observations')
+        if self.disposition is not None and self.step!='response':raise ValueError('disposition belongs to response')
         if self.checks is not None:
             if self.state=='started':raise ValueError('checks belong to a terminal observation')
             if len({c.name for c in self.checks})!=len(self.checks):raise ValueError('check names must be unique on one observation')
@@ -72,7 +77,7 @@ def summarize_span(rows,labels):
     starts=[r for r in rows if r['facts']['state']=='started']
     conflict=conflict or len({(r['facts'].get('receipt_count'),tuple(r['facts'].get('linked_trace_ids') or [])) for r in starts})>1
     ends=[r for r in rows if r['facts']['state']!='started']
-    signatures={(r['facts']['state'],r['facts'].get('duration_ms'),r['facts']['outcome_code'],json.dumps(r['facts'].get('checks'),sort_keys=True)) for r in ends}
+    signatures={(r['facts']['state'],r['facts'].get('duration_ms'),r['facts']['outcome_code'],json.dumps([r['facts'].get(k) for k in ['checks','milestone','disposition']],sort_keys=True)) for r in ends}
     conflict=conflict or len(signatures)>1 or len({r['ts'] for r in starts})>1 or len({r['ts'] for r in ends})>1 or bool(starts and ends and min(r['ts'] for r in starts)>min(r['ts'] for r in ends))
     state='conflict' if conflict else ends[0]['facts']['state'] if ends else 'incomplete'
     parent=first.get('parent_span_id')
@@ -80,6 +85,8 @@ def summarize_span(rows,labels):
             'step':first['step'],'attempt_number':first['attempt_number'],'state':state,'missing_start':not starts,
             'duration_ms':ends[0]['facts']['duration_ms'] if ends and not conflict else None,
             'outcome_code':ends[0]['facts']['outcome_code'] if ends and not conflict else 'uncertain',
+            'milestone':ends[0]['facts'].get('milestone') if ends and not conflict else None,
+            'disposition':ends[0]['facts'].get('disposition') if ends and not conflict else None,
             'checks':[{**{k:v for k,v in check.items() if k!='evidence_ref'},'evidence_present':check.get('evidence_ref') is not None}
                       for check in ends[0]['facts'].get('checks') or []] if ends and not conflict else [],
             'first_seen':min(r['ts'] for r in rows),'last_seen':max(r['ts'] for r in rows)}
@@ -103,6 +110,9 @@ def project_trace(rows,reference,reference_for=None,available=None):
             {'trace':reference_for(tid),'state':'observed' if tid in available else 'missing_in_window'}
             for tid in links] if reference_for else []}
     if any(len(x)>1 for x in [*slots.values(),*attempts.values()]):issues.append('attempt_identity_conflict')
+    clocks={r['facts'].get('request_started_at_ms') for r in rows}
+    clock=next(iter(clocks)) if len(clocks)==1 else None
+    if len(clocks)>1 or clock is not None and any(r['ts']*1000<clock for r in rows):issues.append('request_clock_conflict')
     if len({r['facts']['workflow'] for r in rows})>1:issues.append('workflow_conflict')
     if any(len(values)>1 for values in releases.values()):issues.append('release_conflict')
     parents={sid:group[0]['facts'].get('parent_span_id') for sid,group in groups.items()}
@@ -128,7 +138,7 @@ def project_trace(rows,reference,reference_for=None,available=None):
     if max(slots)!=len(slots):issues.append('missing_attempts')
     if issues:
         for item in completion.values():item['state']='unknown'
-    return {'trace':reference,'workflow':rows[0]['facts']['workflow'],'environment':rows[0]['facts']['environment'],
+    return {'trace':reference,'request_started_at_ms':clock,'workflow':rows[0]['facts']['workflow'],'environment':rows[0]['facts']['environment'],
             'release_sha':next(iter({r['facts'].get('release_sha') for r in rows})) if len({r['facts'].get('release_sha') for r in rows})==1 else None,
             'latest_attempt':latest,'observed_attempts':len(slots),'last_seen':max(r['ts'] for r in rows),'spans':spans,
             'completion':completion,'issues':sorted(set(issues)),'batch':batch,

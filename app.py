@@ -31,6 +31,7 @@ from outcomes import Outcomes
 from otlp import install as install_otlp
 from regressions import Regressions
 from debugging import Debugging
+from release_outcomes import ReleaseOutcomes
 
 from journeys import JourneyContext,project_journeys,summarize
 
@@ -1040,9 +1041,10 @@ workflow_tracing=Tracing(app,connect,audit_reader,freeze,evidence_metadata)
 outcomes=Outcomes(app,connect,reader,editor,audit_reader,freeze,evidence_metadata,workflow_tracing)
 from trace_explorer import TraceExplorer
 trace_explorer=TraceExplorer(app,request_audit,workflow_tracing,audit_reader,freeze,evidence_metadata)
-regressions=Regressions(app,connect,editor,trace_explorer,RETENTION_DAYS)
+regressions=Regressions(app,connect,editor,trace_explorer,RETENTION_DAYS,outcomes)
 debugging=Debugging(app,connect,owner,editor,writer,trace_explorer,audit_project,RETENTION_DAYS)
 product_loop=ProductLoop(app,connect,reader,editor,owner,RETENTION_DAYS,store_events=store_events,audit=request_audit)
+release_outcomes=ReleaseOutcomes(app,connect,editor,outcomes,regressions,product_loop)
 
 
 @app.get('/.well-known/afterspan')

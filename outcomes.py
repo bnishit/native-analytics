@@ -10,6 +10,12 @@ from fastapi import Depends, HTTPException
 from pydantic import Field, StrictBool, model_validator
 from product_analytics import Model, Window
 from tracing import Environment, TraceReview
+from sdk.python.afterspan_experiments import digest
+
+class OutcomeBinding(Model):
+    id:uuid.UUID
+    version:int=Field(ge=1,le=1000,strict=True)
+    sha256:str=Field(pattern=r'^[a-f0-9]{64}$')
 
 class RequiredCheck(Model):
     name:str=Field(pattern=r'^[a-z][a-z0-9_.-]{0,63}$')
@@ -22,6 +28,8 @@ class OutcomeGoal(Model):
     title:str=Field(min_length=1,max_length=100)
     workflow:str=Field(pattern=r'^[a-z][a-z0-9_.-]{0,63}$')
     environment:Environment
+    traffic_kind:Literal['user','synthetic','internal','all']='all'
+    min_sample_size:int=Field(default=25,ge=1,le=100000,strict=True)
     deadline_seconds:int=Field(ge=1,le=7*86400,strict=True)
     checks:list[RequiredCheck]=Field(min_length=1,max_length=20)
     milestones:list[Literal['completion','delivery','usefulness']]=Field(min_length=1,max_length=3)
@@ -73,6 +81,18 @@ def classify(trace,goal,as_of):
         if span['disposition']=='clarification':reasons.append('clarification_not_completed')
     return ('failed' if failed else 'withheld' if withheld else 'unclassified' if reasons else 'satisfied'),sorted(set(reasons))
 
+def model_cost_summary(traces,satisfied,population_certain):
+    spans=[s for trace in traces for s in trace['spans'] if s['step']=='model']
+    known=[s['model_usage'] for s in spans if s.get('model_usage') and s['model_usage']['cost_microusd'] is not None]
+    measured=sum(m['cost_microusd'] for m in known);overflow=measured>2**53-1
+    complete=bool(spans) and len(known)==len(spans) and not overflow
+    return {'measured_microusd':None if overflow else measured,'model_spans':len(spans),'cost_known_spans':len(known),
+            'cost_unknown_spans':len(spans)-len(known),'amount_outside_safe_range':overflow,
+            'sources':dict(Counter(m['cost_source'] for m in known)),
+            'per_satisfied_task_microusd':measured/satisfied if satisfied and complete and population_certain else None,
+            'scope':'Observed model spans in mature tasks, including failed/withheld tasks and all retry attempts. Waiting tasks excluded.',
+            'limits':['Only reported model cost, not a complete application bill. Missing cost is unknown, not zero.','Cost sources remain provider-reported or pinned price-table estimates.']}
+
 class Outcomes:
     @staticmethod
     def init_db(c):
@@ -94,12 +114,13 @@ class Outcomes:
     def get(self,project,id,version):
         with closing(self.connect()) as c:r=c.execute('SELECT * FROM outcome_goals WHERE project=? AND id=? AND version=?',(project,id,version)).fetchone()
         if not r:raise HTTPException(404,'goal version not found in this project')
-        return {**dict(r),'definition':json.loads(r['definition'])}
+        definition=json.loads(r['definition'])
+        return {**dict(r),'definition':definition,'sha256':digest(definition)}
 
     def list(self,project):
         with closing(self.connect()) as c:rows=c.execute('''SELECT g.* FROM outcome_goals g WHERE project=? AND version=
             (SELECT MAX(version) FROM outcome_goals x WHERE x.project=g.project AND x.id=g.id) ORDER BY created DESC,id''',(project,)).fetchall()
-        return {'goals':[{**dict(r),'definition':json.loads(r['definition'])} for r in rows]}
+        return {'goals':[{**dict(r),'definition':json.loads(r['definition']),'sha256':digest(json.loads(r['definition']))} for r in rows]}
 
     def save(self,project,id,revision,req):
         if revision<0:raise HTTPException(422,'revision must be nonnegative')
@@ -118,18 +139,22 @@ class Outcomes:
 
     def evaluate(self,project,req):
         saved=self.get(project,str(req.goal_id),req.version);goal=OutcomeGoal.model_validate(saved['definition']);q=self.freeze(req)
-        if (q.end-q.start).total_seconds()+goal.deadline_seconds>90*86400:
+        followup_end=min(q.end+timedelta(seconds=goal.deadline_seconds),q.as_of)
+        if (followup_end-q.start).total_seconds()>90*86400:
             raise HTTPException(422,'entry window plus deadline must fit within 90 days')
-        report=self.tracing.review(project,TraceReview(start=q.start,end=min(q.end+timedelta(seconds=goal.deadline_seconds),q.as_of),as_of=q.as_of,environment=goal.environment),all_traces=True)
-        rows=[];missing=0;excluded=0;release_uncertain=0
+        report=self.tracing.review(project,TraceReview(start=q.start,end=followup_end,as_of=q.as_of,environment=goal.environment),all_traces=True)
+        rows=[];mature_traces=[];missing=0;excluded=0;release_uncertain=0;traffic_excluded=0;traffic_unknown=0
         for trace in report['traces']:
             if trace['workflow']!=goal.workflow:continue
-            if req.release_sha and trace['release_sha']!=req.release_sha:
-                excluded+=1;release_uncertain+=trace['release_sha'] is None;continue
             entered=trace['request_started_at_ms']
             if entered is not None and not q.start.timestamp()<=entered/1000<q.end.timestamp():continue
+            if goal.traffic_kind!='all' and trace.get('traffic_kind','unknown')!=goal.traffic_kind:
+                traffic_excluded+=1;traffic_unknown+=trace.get('traffic_kind','unknown')=='unknown';continue
+            if req.release_sha and trace['release_sha']!=req.release_sha:
+                excluded+=1;release_uncertain+=trace['release_sha'] is None;continue
             if entered is None:missing+=1
             state,reasons=classify(trace,goal,q.as_of.timestamp())
+            if state!='waiting':mature_traces.append(trace)
             rows.append({'trace':trace['trace'],'state':state,'reasons':reasons,'attempts':trace['observed_attempts'],
                          'started_at_ms':entered,'release_sha':trace['release_sha']})
         rows.sort(key=lambda r:((r['started_at_ms'] or 0),r['trace']),reverse=True)
@@ -137,9 +162,10 @@ class Outcomes:
         result=self.metadata(project,q,'workflow-outcome-v1')
         result.update(goal=saved,query=req.model_dump(mode='json')|{k:result['query'][k] for k in ['days','start','end','as_of']},
             counts={k:counts[k] for k in ['satisfied','failed','withheld','unclassified','waiting']},mature_denominator=mature,
-            satisfied_fraction=counts['satisfied']/mature if mature and not missing and not release_uncertain and not report['coverage']['invalid_observations'] and not report['coverage']['invalid_evidence_receipts'] else None,
-            coverage={**report['coverage'],'original_clock_missing':missing,'release_excluded':excluded,'release_uncertain':release_uncertain},
+            satisfied_fraction=counts['satisfied']/mature if mature and not missing and not release_uncertain and not traffic_unknown and not report['coverage']['invalid_observations'] and not report['coverage']['invalid_evidence_receipts'] else None,
+            coverage={**report['coverage'],'original_clock_missing':missing,'release_excluded':excluded,'release_uncertain':release_uncertain,'traffic_excluded':traffic_excluded,'traffic_unknown':traffic_unknown},
             trace_query=report['query'],total=len(rows),tasks=rows[q.offset:q.offset+q.limit],has_more=q.offset+q.limit<len(rows))
+        result['model_cost']=model_cost_summary(mature_traces,counts['satisfied'],result['satisfied_fraction'] is not None)
         result['limits']+=['Outcomes apply the saved criteria to producer-reported observations, not an independent source read.',
             'One observed task trace is counted once across retries. All mature unclassified and withheld tasks remain in the denominator.',
             'Missing original clocks cannot establish membership; fraction stays unavailable. Unobserved tasks are not a complete task ledger.',

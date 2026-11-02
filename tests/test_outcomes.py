@@ -8,7 +8,7 @@ class OutcomeTests(unittest.TestCase):
     def setUp(self):
         self.fixture=test_tracing.TracingTests();self.fixture.setUp()
         self.client=self.fixture.client;self.admin=self.fixture.admin;self.id=str(uuid.uuid4())
-        self.goal={'title':'Checked export','workflow':'document_export','environment':'staging','deadline_seconds':30,
+        self.goal={'title':'Checked export','workflow':'document_export','environment':'staging','deadline_seconds':30,'traffic_kind':'all','min_sample_size':25,
             'checks':[{'name':'source_facts','version':1,'method':'source','phase':'before_delivery','evidence_required':True}],
             'milestones':['completion','delivery']}
         self.save()
@@ -156,3 +156,30 @@ class OutcomeTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/outcomes/evaluate?project=alpha',json=query).status_code,401)
         self.assertEqual(self.client.post('/api/outcomes/evaluate?project=alpha',headers=self.fixture.fixture.a,json=query).status_code,401)
         self.assertEqual(self.client.get('/api/outcomes/goals?project=alpha',headers=self.fixture.fixture.a).status_code,401)
+
+    def test_user_population_excludes_known_checks_and_unknown_labels_block_fraction(self):
+        self.save(1,{**self.goal,'traffic_kind':'user','min_sample_size':1}).raise_for_status()
+        self.task(traffic_kind='synthetic')
+        self.fixture.tid=str(uuid.uuid4());self.fixture.aid=str(uuid.uuid4());self.task(traffic_kind='user')
+        r=self.evaluate(version=2);self.assertEqual(r['counts']['satisfied'],1);self.assertEqual(r['coverage']['traffic_excluded'],1);self.assertEqual(r['satisfied_fraction'],1)
+        self.fixture.tid=str(uuid.uuid4());self.fixture.aid=str(uuid.uuid4());self.task()
+        r=self.evaluate(version=2);self.assertEqual(r['coverage']['traffic_unknown'],1);self.assertIsNone(r['satisfied_fraction'])
+    def test_known_original_clock_outside_entry_window_does_not_pollute_traffic_coverage(self):
+        self.save(1,{**self.goal,'traffic_kind':'user'}).raise_for_status();self.task()
+        self.fixture.tid=str(uuid.uuid4());self.fixture.aid=str(uuid.uuid4());self.task(traffic_kind='user',clock=int((self.fixture.base+1)*1000))
+        r=self.evaluate(version=2,start=datetime.fromtimestamp(self.fixture.base+.5,timezone.utc).isoformat(),end=datetime.fromtimestamp(self.fixture.base+10,timezone.utc).isoformat())
+        self.assertEqual(r['counts']['satisfied'],1);self.assertEqual(r['coverage']['traffic_unknown'],0);self.assertEqual(r['satisfied_fraction'],1)
+    def test_ninety_day_entry_window_respects_actual_receipt_cutoff(self):
+        self.task();r=self.evaluate(days=90);self.assertEqual(r['counts']['satisfied'],1)
+    def test_model_cost_per_satisfied_task_includes_failed_task_cost_and_unknown_coverage(self):
+        def cost(amount):
+            sid=str(uuid.uuid4());base={'workflow':'document_export','request_started_at_ms':int(self.fixture.base*1000),'step':'model','span_id':sid}
+            usage={'provider':'synthetic','model':'example-v1','cost_microusd':amount,'cost_source':'provider_reported'} if amount is not None else None
+            end=self.fixture.event('succeeded',.7,**base,**({'model_usage':usage} if usage else {}))
+            self.fixture.ingest(self.fixture.event(at=.5,**base),end).raise_for_status()
+        self.task();cost(20)
+        self.fixture.tid=str(uuid.uuid4());self.fixture.aid=str(uuid.uuid4());self.task(self.check('failed'));cost(30)
+        r=self.evaluate();self.assertEqual(r['model_cost']['measured_microusd'],50);self.assertEqual(r['model_cost']['per_satisfied_task_microusd'],50)
+        self.assertEqual(r['counts']['satisfied'],1);self.assertEqual(r['counts']['failed'],1)
+        self.fixture.tid=str(uuid.uuid4());self.fixture.aid=str(uuid.uuid4());self.task();cost(None)
+        r=self.evaluate();self.assertEqual(r['model_cost']['cost_unknown_spans'],1);self.assertIsNone(r['model_cost']['per_satisfied_task_microusd'])

@@ -101,6 +101,8 @@ def parser():
         if name=='experiment-get':command.add_argument('--version',type=int,default=1)
         if name=='experiment-save':command.add_argument('--revision',type=int,default=0)
         if name in ['experiment-save','experiment-compare']:command.add_argument('--file',required=True)
+    command=sub.add_parser('outcome-releases');command.add_argument('--project',required=True);command.add_argument('--environment',choices=['production','staging','development','test','local'],required=True);command.add_argument('--offset',type=int,default=0)
+    command=sub.add_parser('outcome-release-compare');command.add_argument('--project',required=True);command.add_argument('--file',required=True)
     command=sub.add_parser('debug-policy');command.add_argument('--project',required=True);command.add_argument('--file');command.add_argument('--revision',type=int)
     command=sub.add_parser('debug-review');command.add_argument('--project',required=True);command.add_argument('--file',required=True)
     sub.add_parser('debug-capture').add_argument('--file',required=True)
@@ -220,6 +222,8 @@ def main(argv=None):
         if command=='experiment-get':params['version']=args.version
         if command=='experiment-save':params['revision']=args.revision;body=private_json(args.file);method='PUT'
     if command=='experiment-compare':path='/api/experiments/compare';body=private_json(args.file);method='POST'
+    if command=='outcome-releases':path='/api/outcomes/releases';params['environment']=args.environment;params['offset']=args.offset
+    if command=='outcome-release-compare':path='/api/outcomes/releases/compare';body=private_json(args.file);method='POST'
     if command=='debug-policy':
         path='/api/debug/policy'
         if args.file:

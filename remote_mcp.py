@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 from uuid import UUID
-from urllib.parse import urlsplit,parse_qsl
+from urllib.parse import urlsplit,parse_qsl,urlencode
 
 import httpx
 from starlette.routing import Route
@@ -84,6 +84,16 @@ def install(app,provider):
     async def compare_experiments(baseline:UUID,candidate:UUID)->dict:
         """Requires experiments:write and editor role. Compare the same pinned dataset/check versions. Missing cases remain counted. Eligibility for review is not deployment authority or production impact."""
         return await call('/api/experiments/compare',{'baseline':str(baseline),'candidate':str(candidate)})
+
+    @mcp.tool(annotations=READ)
+    async def released_artifacts(environment:Literal['production','staging','development','test','local'],offset:int=0,limit:int=20)->dict:
+        """Requires both audit:read and experiments:write plus editor membership. List safe stored provider-verified reviewed release receipts. These are historical deployment records, not a fresh runtime-status check or new deployment authority."""
+        return await call('/api/outcomes/releases?'+urlencode({'environment':environment,'offset':offset,'limit':limit}))
+
+    @mcp.tool(annotations=READ)
+    async def compare_release_outcomes(query:dict)->dict:
+        """Requires audit:read and experiments:write plus editor membership. Pin outcome_goal id/version/sha256, baseline/candidate runs, both verified release action IDs and frozen before/after windows. Test traffic cannot count as user outcomes. Missing evidence stays unknown; differences are observational and never authorize a release."""
+        return await call('/api/outcomes/releases/compare',query)
 
     @mcp.tool(annotations=READ)
     async def evaluate_outcomes(query:dict)->dict:

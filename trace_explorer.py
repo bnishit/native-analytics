@@ -8,6 +8,7 @@ from tracing import Environment, TraceReview
 
 class TraceSearch(Window):
     environment: Environment = 'production'
+    traffic_kind:Literal['all','user','synthetic','internal','unknown']='all'
     contract: Literal['all','slack-request-v1','workflow-trace-v1'] = 'all'
     search: str = Field(default='', max_length=100)
     status: Literal['all','failed','gaps','observed'] = 'all'
@@ -52,7 +53,7 @@ def workflow_trace(row):
     # Absent domain-specific steps are not requirements for other products.
     evidence=[{'name':s['step'],'state':s['state'],'outcome':s['outcome_code']} for s in row['spans']]
     return {'reference':row['trace'],'contract':'workflow-trace-v1','name':row['workflow'],
-            'environment':row['environment'],'release':row['release_sha'],'started_at':origin,'last_seen':row['last_seen'],
+            'environment':row['environment'],'traffic_kind':row.get('traffic_kind','unknown'),'release':row['release_sha'],'started_at':origin,'last_seen':row['last_seen'],
             'attempts':row['observed_attempts'],'checks':row['checks'],'spans':spans,'evidence':evidence,'issues':row['issues'],
             'unobserved_categories':[], 'links':row['batch']['inputs'] if row['batch'] else [],
             'clock':'request start' if original is not None and 'request_clock_conflict' not in row['issues'] else 'first observed event; earlier work may be absent', 'business_outcome':'not_independently_verified'}
@@ -90,7 +91,7 @@ class TraceExplorer:
             coverage['workflow']=report['coverage']
         coverage['conflicting_environment_requests']=sum(r['environment']=='conflict' for r in rows)
         coverage['other_environment_requests']=sum(r['environment'] not in {q.environment,'conflict'} for r in rows)
-        rows=[finish_trace(r) for r in rows if r['environment']==q.environment]
+        rows=[finish_trace(r) for r in rows if r['environment']==q.environment and (q.traffic_kind=='all' or r.get('traffic_kind','unknown')==q.traffic_kind)]
         needle=q.search.strip().lower()
         rows=[r for r in rows if (not needle or needle in ' '.join([r['reference'],r['name'],r['release'] or '',*(s['step'] for s in r['spans']),*(c['name'] for c in r.get('checks',[]))]).lower())
               and (q.status=='all' or r['status']==q.status)

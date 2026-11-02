@@ -206,6 +206,7 @@ class RemoteMCPTests(unittest.TestCase):
             self.assertEqual(call('save_outcome_goal',args)['version'],1)
             self.assertEqual(call('save_outcome_goal',args)['version'],1)
             self.assertEqual(call('outcome_goals')['goals'][0]['id'],goal_id)
+            self.assertEqual(call('released_artifacts',{'environment':'staging'})['releases'],[])
             outcome=call('evaluate_outcomes',{'query':{'goal_id':goal_id,'version':1}})
             self.assertEqual(outcome['counts']['unclassified'],1)
             self.assertIsNone(outcome['satisfied_fraction'])
@@ -247,6 +248,15 @@ class RemoteMCPTests(unittest.TestCase):
             self.assertTrue(rpc('tools/call',{'name':'debug_capture_policy','arguments':{}})['result']['isError'])
 
 
+
+    def test_release_measurement_needs_both_diagnostic_and_experiment_scopes(self):
+        for scope in ['audit:read','experiments:write']:
+            owner,uid,w,p,cid,t,*_=self.grant(scope)
+            response=self.client.get('/api/outcomes/releases?project='+p+'&environment=staging',headers={'Authorization':'Bearer '+t['access_token']})
+            self.assertEqual(response.status_code,403)
+        owner,uid,w,p,cid,t,*_=self.grant('audit:read experiments:write')
+        response=self.client.get('/api/outcomes/releases?project='+p+'&environment=staging',headers={'Authorization':'Bearer '+t['access_token']})
+        self.assertEqual(response.status_code,200,response.text)
 
     def test_chart_write_scope_cannot_edit_outcome_goals(self):
         owner,uid,w,p,cid,t,*_=self.grant('audit:read charts:write')

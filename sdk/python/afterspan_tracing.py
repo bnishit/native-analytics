@@ -30,9 +30,11 @@ class TraceContext:
     release_sha:str|None=None
     span_id:str|None=None
     sampled:bool=True
+    traffic_kind:str="unknown"
 
     def validate(self):
         mapped_id(self.trace_id,self.span_id)
+        if self.traffic_kind not in {'user','synthetic','internal','unknown'}:raise ValueError('invalid traffic kind')
         if type(self.sampled) is not bool:raise ValueError('invalid sampling decision')
         if str(uuid.UUID(self.attempt_id,version=4))!=self.attempt_id:raise ValueError('invalid attempt ID')
         if type(self.attempt_number) is not int or not 1<=self.attempt_number<=10000:raise ValueError('invalid attempt number')
@@ -49,7 +51,7 @@ def inject(context=None):
     if context is None or context.span_id is None:return {}
     context.validate()
     values={'workflow':context.workflow,'environment':context.environment,'attempt':context.attempt_id,
-            'number':str(context.attempt_number),'clock':str(context.request_started_at_ms)}
+            'number':str(context.attempt_number),'clock':str(context.request_started_at_ms),'traffic':context.traffic_kind}
     if context.release_sha:values['release']=context.release_sha
     return {'traceparent':'00-'+context.trace_id+'-'+context.span_id+('-01' if context.sampled else '-00'),
             'baggage':','.join('afterspan.'+k+'='+quote(v,safe='') for k,v in values.items())}
@@ -67,7 +69,7 @@ def extract(headers,*,trusted=False):
                 key=key[10:]
                 if key in values:return None
                 values[key]=unquote(value)
-        return TraceContext(parent[3:35],values['attempt'],int(values['number']),values['workflow'],values['environment'],int(values['clock']),values.get('release'),parent[36:52],bool(int(parent[-2:],16)&1)).validate()
+        return TraceContext(parent[3:35],values['attempt'],int(values['number']),values['workflow'],values['environment'],int(values['clock']),values.get('release'),parent[36:52],bool(int(parent[-2:],16)&1),values.get('traffic','unknown')).validate()
     except (ValueError,TypeError,KeyError,AttributeError):return None
 
 class Span:
@@ -77,7 +79,7 @@ class Span:
         c=self.context
         return {'schema_version':'workflow-trace-v1','trace_id':mapped_id(c.trace_id),'attempt_id':c.attempt_id,
                 'attempt_number':c.attempt_number,'span_id':mapped_id(c.trace_id,c.span_id),'parent_span_id':self.parent,
-                'workflow':c.workflow,'environment':c.environment,'release_sha':c.release_sha,'request_started_at_ms':c.request_started_at_ms,'step':self.step}
+                'workflow':c.workflow,'environment':c.environment,'traffic_kind':c.traffic_kind,'release_sha':c.release_sha,'request_started_at_ms':c.request_started_at_ms,'step':self.step}
     def check(self,name,result,*,version=1,method='source',phase='before_delivery',required=True,evidence_digest=None):
         if self.closed:raise ValueError('span already closed')
         if not isinstance(name,str) or not re.fullmatch(r'[a-z][a-z0-9_.-]{0,63}',name) or result not in {'passed','failed','unknown'} or type(version) is not int or not 1<=version<=1000000:raise ValueError('invalid check')
@@ -104,8 +106,8 @@ class WorkflowTracer:
             if self.collector.track(name,properties=properties) is None:self.emit_failures+=1
         except Exception:self.emit_failures+=1
     @contextmanager
-    def task(self,workflow=None,environment='production',release_sha=None,*,context=None):
-        context=context or TraceContext(secrets.token_hex(16),str(uuid.uuid4()),1,workflow,environment,int(time.time()*1000),release_sha)
+    def task(self,workflow=None,environment='production',release_sha=None,*,context=None,traffic_kind='unknown'):
+        context=context or TraceContext(secrets.token_hex(16),str(uuid.uuid4()),1,workflow,environment,int(time.time()*1000),release_sha,traffic_kind=traffic_kind)
         context.validate();token=_current.set(context)
         try:
             with self.span('processing') as span:yield span

@@ -125,3 +125,12 @@ await tracer.flush();process.stdout.write(JSON.stringify(events));
             self.assertEqual(self.fixture.client.put('/api/debug/policy?project=alpha&revision=0',headers=self.fixture.admin,json=policy).status_code,200)
             response=self.fixture.client.post('/v1/debug',headers=self.fixture.a,json=snapshot)
             self.assertEqual(response.status_code,200,response.text)
+
+    def test_declared_user_traffic_propagates_without_promoting_unknown_context(self):
+        with self.tracer.task('document_export','test',traffic_kind='user'):
+            carrier=inject();context=extract(carrier,trusted=True)
+            self.assertEqual(context.traffic_kind,'user')
+        with self.tracer.task('document_export','test'):
+            self.assertEqual(extract(inject(),trusted=True).traffic_kind,'unknown')
+        events=self.events();self.assertTrue(any(e['properties']['afterspan_trace']['traffic_kind']=='user' for e in events))
+        self.assertEqual(self.fixture.ingest(events).status_code,200)

@@ -6,7 +6,9 @@
 
 Funnels, saved behavior/trait segments, linked journeys, retries, event metrics and scoped agent access are included in the core. Self-hosting needs no Stripe account, subscription or commercial quota. Accounts, teams and roles protect your own instance. Optional hosted billing is a separate opt-in; it never gates a core analytics feature.
 
-### Connect an agent remotely
+#> Outcome-platform branch: reviewed experiments can now pin a goal version and compare two verified releases against mature, explicitly labelled user-task windows. This is local and unreleased; collection completeness and production adoption are still pending. See [release outcomes](docs/release-outcomes.md).
+
+## Connect an agent remotely
 
 Use **your deployment's** `https://YOUR_HOST/mcp` URL with an OAuth-capable Streamable HTTP client. Discover the endpoint and limits at `/.well-known/afterspan`. The server uses the official MCP SDK for OAuth discovery, dynamic public-client registration, S256 PKCE, exact registered redirect validation and token exchange. Tokens are bound to this MCP resource. HTTPS is required except for local loopback development/callbacks.
 

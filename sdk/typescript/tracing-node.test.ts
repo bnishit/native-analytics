@@ -88,3 +88,14 @@ test('debug snapshots require explicit review, redact before upload, and never e
  assert.deepEqual(redactDebugContent(snapshot.content),snapshot.content);
  for(const value of [{x:Infinity},{x:'a'.repeat(4001)},{x:new Date()},{x:undefined}])assert.throws(()=>redactDebugContent(value));
 });
+
+
+test('traffic kind is explicit, propagated, and unknown by default',async()=>{
+ const f=fixture();await f.tracer.task({workflow:'document_export',environment:'test',trafficKind:'user'},()=>{
+  assert.equal(extract(inject(),true)?.trafficKind,'user');
+ });await f.tracer.task({workflow:'document_export',environment:'test'},()=>{
+  assert.equal(extract(inject(),true)?.trafficKind,'unknown');
+ });await f.tracer.flush();
+ assert.equal(f.events[0].properties.afterspan_trace.traffic_kind,'user');
+ assert.equal(f.events.at(-1).properties.afterspan_trace.traffic_kind,'unknown');
+});

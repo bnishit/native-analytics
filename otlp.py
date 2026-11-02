@@ -72,7 +72,7 @@ def convert(span,resource,event_type,retention_days):
            'parent_span_id':mapped_id(trace_id,span.parent_span_id.hex()) if span.parent_span_id else None,
            'attempt_id':values.get('afterspan.attempt_id',trace),'attempt_number':values.get('afterspan.attempt_number',1),
            'workflow':values.get('afterspan.workflow'),'environment':values.get('afterspan.environment'),
-           'release_sha':values.get('afterspan.release_sha'),'request_started_at_ms':values.get('afterspan.request_started_at_ms'),
+           'traffic_kind':values.get('afterspan.traffic_kind','unknown'),'release_sha':values.get('afterspan.release_sha'),'request_started_at_ms':values.get('afterspan.request_started_at_ms'),
            'step':step,'state':'started'}
     begin=SpanObservation.model_validate(facts).model_dump(mode='json')
     state={0:'unknown',1:'succeeded',2:'failed'}[span.status.code]

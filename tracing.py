@@ -11,6 +11,7 @@ from product_analytics import Window
 
 STEPS=('receive','queue','processing','model','tool','retrieval','storage','http','response','availability','booking','provider_send','provider_delivery')
 Environment=Literal['production','staging','development','test','local']
+TrafficKind=Literal['user','synthetic','internal','unknown']
 def workflow_reference(project,environment,trace_id,key):
     return 'trace_'+hmac.new(key.encode(),(project+'\0'+environment+'\0'+trace_id).encode(),hashlib.sha256).hexdigest()[:32]
 class CheckResult(BaseModel):
@@ -86,6 +87,7 @@ class SpanObservation(BaseModel):
     parent_span_id:UUID4|None=None
     workflow:str=Field(pattern=r'^[a-z][a-z0-9_.-]{0,63}$')
     environment:Environment
+    traffic_kind:TrafficKind='unknown'
     release_sha:str|None=Field(default=None,pattern=r'^[a-f0-9]{40}$')
     step:Literal['receive','queue','processing','model','tool','retrieval','storage','http','response','availability','booking','provider_send','provider_delivery']
     state:Literal['started','succeeded','failed','unknown']
@@ -174,6 +176,8 @@ def project_trace(rows,reference,reference_for=None,available=None):
     clock=next(iter(clocks)) if len(clocks)==1 else None
     if len(clocks)>1 or clock is not None and any(r['ts']*1000<clock for r in rows):issues.append('request_clock_conflict')
     if len({r['facts']['workflow'] for r in rows})>1:issues.append('workflow_conflict')
+    traffic={r['facts'].get('traffic_kind','unknown') for r in rows}
+    if len(traffic)>1:issues.append('traffic_kind_conflict')
     if any(len(values)>1 for values in releases.values()):issues.append('release_conflict')
     parents={sid:group[0]['facts'].get('parent_span_id') for sid,group in groups.items()}
     for sid,parent in parents.items():
@@ -198,7 +202,7 @@ def project_trace(rows,reference,reference_for=None,available=None):
     if max(slots)!=len(slots):issues.append('missing_attempts')
     if issues:
         for item in completion.values():item['state']='unknown'
-    return {'trace':reference,'request_started_at_ms':clock,'workflow':rows[0]['facts']['workflow'],'environment':rows[0]['facts']['environment'],
+    return {'trace':reference,'request_started_at_ms':clock,'workflow':rows[0]['facts']['workflow'],'environment':rows[0]['facts']['environment'],'traffic_kind':next(iter(traffic)) if len(traffic)==1 else 'unknown',
             'release_sha':next(iter({r['facts'].get('release_sha') for r in rows})) if len({r['facts'].get('release_sha') for r in rows})==1 else None,
             'latest_attempt':latest,'observed_attempts':len(slots),'last_seen':max(r['ts'] for r in rows),'spans':spans,
             'completion':completion,'issues':sorted(set(issues)),'batch':batch,

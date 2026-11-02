@@ -9,6 +9,7 @@ from fastapi import Depends,HTTPException
 from pydantic import Field,StrictBool,field_validator,model_validator
 from product_analytics import Model
 from trace_explorer import TraceOpen
+from outcomes import OutcomeBinding
 
 from sdk.python.afterspan_experiments import reviewed_json,canonical,digest
 
@@ -45,6 +46,7 @@ class DatasetDefinition(Model):
     title:str=Field(min_length=1,max_length=100)
     cases:list[CaseRef]=Field(min_length=1,max_length=100)
     minimum_pass_rate:float=Field(default=1.0,gt=0,le=1,allow_inf_nan=False,strict=True)
+    outcome_goal:OutcomeBinding|None=None
     @field_validator('title')
     @classmethod
     def safe(cls,value):return reviewed_json(value)
@@ -115,8 +117,8 @@ class Regressions:
           kind TEXT NOT NULL,id TEXT NOT NULL,version INTEGER NOT NULL,definition TEXT NOT NULL,
           sha256 TEXT NOT NULL,created REAL NOT NULL,expires REAL NOT NULL,PRIMARY KEY(project,kind,id,version))''')
 
-    def __init__(self,app,connect,editor,explorer,retention_days):
-        self.connect=connect;self.explorer=explorer;self.retention_days=retention_days
+    def __init__(self,app,connect,editor,explorer,retention_days,outcomes):
+        self.connect=connect;self.explorer=explorer;self.retention_days=retention_days;self.outcomes=outcomes
         # Inputs/outputs require editor authority, separate from aggregate/audit access.
         @app.get('/api/experiments/cases',dependencies=[Depends(editor)])
         def cases(project:str):return self.list(project,'case')
@@ -155,12 +157,15 @@ class Regressions:
             rows=c.execute('''SELECT o.* FROM regression_objects o WHERE project=? AND kind=? AND expires>? AND version=
               (SELECT MAX(version) FROM regression_objects x WHERE x.project=o.project AND x.kind=o.kind AND x.id=o.id)
               ORDER BY created DESC,id LIMIT 100''',(project,kind,time.time())).fetchall()
+            bindings={(r['id'],r['version']):{'outcome_goal':json.loads(r['binding']) if r['binding'] else None,'dataset_title':r['title']} for r in c.execute("SELECT id,version,json_extract(definition,'$.title') AS title,json_extract(definition,'$.outcome_goal') AS binding FROM regression_objects WHERE project=? AND kind='dataset' AND expires>?",(project,time.time()))} if kind=='run' else {}
         items=[]
         for row in rows:
             definition=json.loads(row['definition'])
             summary={k:v for k,v in definition.items() if k not in {'input','expected','results','configuration','cases'}}
             if kind=='dataset':summary['case_count']=len(definition['cases'])
-            items.append({**dict(row),'definition':summary})
+            item={**dict(row),'definition':summary}
+            if kind=='run':item.update(bindings.get((definition['dataset'],definition['dataset_version']),{'outcome_goal':None,'dataset_title':None}))
+            items.append(item)
         return {'items':items,'content_included':False}
 
     def save(self,project,kind,id,revision,definition,expires=None):
@@ -192,6 +197,9 @@ class Regressions:
 
     def save_dataset(self,project,id,revision,req):
         definition=req.model_dump(mode='json');expires=[]
+        if req.outcome_goal:
+            goal=self.outcomes.get(project,str(req.outcome_goal.id),req.outcome_goal.version)
+            if goal['sha256']!=req.outcome_goal.sha256:raise HTTPException(409,'outcome goal bytes do not match their pinned hash')
         for ref in req.cases:
             case=self.get(project,'case',str(ref.id),ref.version);expires.append(case['expires'])
             next(r for r in definition['cases'] if r['id']==str(ref.id))['sha256']=case['sha256']
@@ -223,18 +231,21 @@ class Regressions:
                 'pass_rate':counts['passed']/len(rows),'limits':['Fixed reviewed expected facts, not independent source verification or subjective answer quality.','Every pinned case remains in the denominator. Errors and missing cases cannot pass.','A declared release SHA is not deployment proof. Experiment results do not authorize a release.']}
 
     def compare(self,project,baseline,candidate):
-        if baseline==candidate:raise HTTPException(422,'choose distinct baseline and candidate runs')
-        old=self.run_report(project,baseline);new=self.run_report(project,candidate)
-        a=old['run']['definition'];b=new['run']['definition']
-        if old['dataset_sha256']!=new['dataset_sha256'] or a['dataset']!=b['dataset'] or a['dataset_version']!=b['dataset_version']:raise HTTPException(409,'compare the same immutable dataset version')
-        if a['evaluator_runner_sha256']!=b['evaluator_runner_sha256']:raise HTTPException(409,'the evaluation runner changed; keep checks fixed for this comparison')
-        previous={r['case']:r for r in old['cases']};rows=[]
-        for result in new['cases']:
-            before=previous[result['case']]['state'];after=result['state']
-            change='unknown' if 'missing' in {before,after} else 'regressed' if before=='passed' and after!='passed' else 'improved' if before!='passed' and after=='passed' else 'unchanged'
-            rows.append({**result,'baseline_state':before,'baseline_differences':previous[result['case']]['differences'],'baseline_difference_count':previous[result['case']]['difference_count'],'change':change})
-        counts=Counter(r['change'] for r in rows)
-        eligible=old['complete'] and new['complete'] and not counts['regressed'] and new['pass_rate']>=new['dataset']['definition']['minimum_pass_rate']
-        return {'baseline':baseline,'candidate':candidate,'dataset_sha256':new['dataset_sha256'],'cases':rows,
-                'changes':{k:counts[k] for k in ['improved','regressed','unchanged','unknown']},'baseline_pass_rate':old['pass_rate'],'candidate_pass_rate':new['pass_rate'],
-                'eligible_for_review':eligible,'deployment_authorized':False,'limits':new['limits']+['This controlled fixture comparison does not establish production impact or causal improvement for real users.']}
+        return compare_runs(self.run_report(project,baseline),self.run_report(project,candidate))
+
+def compare_runs(old,new):
+    baseline=old['run']['id'];candidate=new['run']['id']
+    if baseline==candidate:raise HTTPException(422,'choose distinct baseline and candidate runs')
+    a=old['run']['definition'];b=new['run']['definition']
+    if old['dataset_sha256']!=new['dataset_sha256'] or a['dataset']!=b['dataset'] or a['dataset_version']!=b['dataset_version']:raise HTTPException(409,'compare the same immutable dataset version')
+    if a['evaluator_runner_sha256']!=b['evaluator_runner_sha256']:raise HTTPException(409,'the evaluation runner changed; keep checks fixed for this comparison')
+    previous={r['case']:r for r in old['cases']};rows=[]
+    for result in new['cases']:
+        before=previous[result['case']]['state'];after=result['state']
+        change='unknown' if 'missing' in {before,after} else 'regressed' if before=='passed' and after!='passed' else 'improved' if before!='passed' and after=='passed' else 'unchanged'
+        rows.append({**result,'baseline_state':before,'baseline_differences':previous[result['case']]['differences'],'baseline_difference_count':previous[result['case']]['difference_count'],'change':change})
+    counts=Counter(r['change'] for r in rows)
+    eligible=old['complete'] and new['complete'] and not counts['regressed'] and new['pass_rate']>=new['dataset']['definition']['minimum_pass_rate']
+    return {'baseline':baseline,'candidate':candidate,'dataset_sha256':new['dataset_sha256'],'cases':rows,
+            'changes':{k:counts[k] for k in ['improved','regressed','unchanged','unknown']},'baseline_pass_rate':old['pass_rate'],'candidate_pass_rate':new['pass_rate'],
+            'eligible_for_review':eligible,'deployment_authorized':False,'limits':new['limits']+['This controlled fixture comparison does not establish production impact or causal improvement for real users.']}

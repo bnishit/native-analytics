@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { createAnalytics } from './native-analytics.ts';
 
+type TrafficKind = 'user'|'synthetic'|'internal'|'unknown';
 type Environment = 'production'|'staging'|'development'|'test'|'local';
 type Step = 'receive'|'queue'|'processing'|'model'|'tool'|'retrieval'|'storage'|'http'|'response';
 type Method = 'source'|'code'|'model'|'human';
@@ -12,7 +13,7 @@ type Milestone = 'completion'|'delivery'|'usefulness';
 type Disposition = 'delivered'|'withheld'|'clarification';
 export interface TraceContext {
  traceId:string; attemptId:string; attemptNumber:number; workflow:string; environment:Environment;
- requestStartedAtMs:number; releaseSha?:string; spanId?:string; sampled:boolean;
+ requestStartedAtMs:number; releaseSha?:string; spanId?:string; sampled:boolean; trafficKind?:TrafficKind;
 }
 type Check = {name:string;version:number;result:Result;required:boolean;method:Method;phase:Phase;evidence_ref?:string};
 const current = new AsyncLocalStorage<TraceContext>();
@@ -28,13 +29,14 @@ export function mappedId(traceId:string,spanId?:string):string {
 }
 function validate(c:TraceContext):TraceContext {
  mappedId(c.traceId,c.spanId);
+ if(c.trafficKind!==undefined&&!['user','synthetic','internal','unknown'].includes(c.trafficKind))throw Error('Invalid traffic kind');
  if(!uuid4.test(c.attemptId)||!Number.isInteger(c.attemptNumber)||c.attemptNumber<1||c.attemptNumber>10000||typeof c.workflow!=='string'||!identifier.test(c.workflow)||!['production','staging','development','test','local'].includes(c.environment)||!Number.isSafeInteger(c.requestStartedAtMs)||c.requestStartedAtMs<0||c.requestStartedAtMs>4102444800000||typeof c.sampled!=='boolean'||c.releaseSha!==undefined&&!/^[a-f0-9]{40}$/.test(c.releaseSha))throw Error('Invalid workflow context');
  return Object.freeze({...c});
 }
 export function retryContext(c:TraceContext):TraceContext {return validate({...c,attemptId:randomUUID(),attemptNumber:c.attemptNumber+1,spanId:undefined})}
 export function inject(context:TraceContext|undefined=current.getStore()):Record<string,string> {
  if(!context?.spanId)return {};
- const c=validate(context);const values:Record<string,string>={workflow:c.workflow,environment:c.environment,attempt:c.attemptId,number:String(c.attemptNumber),clock:String(c.requestStartedAtMs)};
+ const c=validate(context);const values:Record<string,string>={workflow:c.workflow,environment:c.environment,attempt:c.attemptId,number:String(c.attemptNumber),clock:String(c.requestStartedAtMs),traffic:c.trafficKind||'unknown'};
  if(c.releaseSha)values.release=c.releaseSha;
  return {traceparent:`00-${c.traceId}-${c.spanId}-${c.sampled?'01':'00'}`,baggage:Object.entries(values).map(([k,v])=>'afterspan.'+k+'='+encodeURIComponent(v)).join(',')};
 }
@@ -46,14 +48,14 @@ export function extract(headers:Record<string,string>,trusted=false):TraceContex
   const values:Record<string,string>={};
   for(const item of baggage.split(',')){const i=item.indexOf('=');if(i<0)return;const key=item.slice(0,i).trim();if(key.startsWith('afterspan.')){const name=key.slice(10);if(Object.hasOwn(values,name))return;values[name]=decodeURIComponent(item.slice(i+1))}}
   if(!/^\d+$/.test(values.number)||!/^\d+$/.test(values.clock))return;
-  return validate({traceId:parent.slice(3,35),spanId:parent.slice(36,52),attemptId:values.attempt,attemptNumber:Number(values.number),workflow:values.workflow,environment:values.environment as Environment,requestStartedAtMs:Number(values.clock),releaseSha:values.release,sampled:(parseInt(parent.slice(-2),16)&1)===1});
+  return validate({traceId:parent.slice(3,35),spanId:parent.slice(36,52),attemptId:values.attempt,attemptNumber:Number(values.number),workflow:values.workflow,environment:values.environment as Environment,requestStartedAtMs:Number(values.clock),releaseSha:values.release,sampled:(parseInt(parent.slice(-2),16)&1)===1,trafficKind:(values.traffic||'unknown') as TrafficKind});
  } catch {return}
 }
 export class Span {
  readonly checks:Check[]=[];closed=false;
  readonly tracer:WorkflowTracer;readonly context:TraceContext;readonly parent:string|undefined;readonly step:Step;
  constructor(tracer:WorkflowTracer,context:TraceContext,parent:string|undefined,step:Step){this.tracer=tracer;this.context=context;this.parent=parent;this.step=step}
- facts(){const c=this.context;return {schema_version:'workflow-trace-v1',trace_id:mappedId(c.traceId),attempt_id:c.attemptId,attempt_number:c.attemptNumber,span_id:mappedId(c.traceId,c.spanId),parent_span_id:this.parent,workflow:c.workflow,environment:c.environment,release_sha:c.releaseSha,request_started_at_ms:c.requestStartedAtMs,step:this.step}}
+ facts(){const c=this.context;return {schema_version:'workflow-trace-v1',trace_id:mappedId(c.traceId),attempt_id:c.attemptId,attempt_number:c.attemptNumber,span_id:mappedId(c.traceId,c.spanId),parent_span_id:this.parent,workflow:c.workflow,environment:c.environment,traffic_kind:c.trafficKind||'unknown',release_sha:c.releaseSha,request_started_at_ms:c.requestStartedAtMs,step:this.step}}
  check(name:string,result:Result,options:{version?:number;method?:Method;phase?:Phase;required?:boolean;evidenceDigest?:string}={}):Result {
   const {version=1,method='source',phase='before_delivery',required=true,evidenceDigest}=options;
   if(this.closed||typeof name!=='string'||!identifier.test(name)||!['passed','failed','unknown'].includes(result)||!Number.isInteger(version)||version<1||version>1000000||!['source','code','model','human'].includes(method)||!['before_delivery','after_delivery'].includes(phase)||typeof required!=='boolean'||this.checks.length>=20||this.checks.some(c=>c.name===name))throw Error('Invalid or closed check');
@@ -75,8 +77,8 @@ export class WorkflowTracer {
   if(current.getStore()?.sampled===false){this.sampledOutEvents++;return}
   try{const job=this.client.track(name,null,properties).catch(()=>{this.emitFailures++});this.pending.add(job);void job.finally(()=>this.pending.delete(job))}catch{this.emitFailures++}
  }
- async task<T>(options:{workflow?:string;environment?:Environment;releaseSha?:string;context?:TraceContext},run:(span:Span)=>Promise<T>|T):Promise<T>{
-  const context=validate(options.context||{traceId:randomBytes(16).toString('hex'),attemptId:randomUUID(),attemptNumber:1,workflow:options.workflow||'',environment:options.environment||'production',requestStartedAtMs:Date.now(),releaseSha:options.releaseSha,sampled:true});
+ async task<T>(options:{workflow?:string;environment?:Environment;releaseSha?:string;context?:TraceContext;trafficKind?:TrafficKind},run:(span:Span)=>Promise<T>|T):Promise<T>{
+  const context=validate(options.context||{traceId:randomBytes(16).toString('hex'),attemptId:randomUUID(),attemptNumber:1,workflow:options.workflow||'',environment:options.environment||'production',requestStartedAtMs:Date.now(),releaseSha:options.releaseSha,sampled:true,trafficKind:options.trafficKind||'unknown'});
   return current.run(context,()=>this.span('processing',run));
  }
  async span<T>(step:Step,run:(span:Span)=>Promise<T>|T,options:{milestone?:Milestone;disposition?:Disposition}={}):Promise<T>{

@@ -2,9 +2,38 @@
 
 A developer wraps a task and its timed steps. Nested calls and concurrent async tasks keep separate context. The helpers emit the existing strict workflow contract, not user content. A completed function is not a correct answer or useful outcome: declare checks and goal milestones separately.
 
+## Install from this checkout
+
+The Python distribution is `afterspan-sdk`; the server-only ESM Node package is `@afterspan/sdk`. Neither name claims publication on PyPI or npm. Python 3.12+ and Node 24+ are supported; CI tests Python 3.12 and Node 24. Both SDKs have zero runtime package dependencies. Python's build uses setuptools/wheel; Node's build uses pinned TypeScript and Node type declarations.
+
+Build artifacts from a reviewed checkout, then install them in your application:
+
+```sh
+python -m pip wheel --no-deps ./sdk/python --wheel-dir /private/sdk-build
+# In a separate application environment:
+python -m pip install /private/sdk-build/afterspan_sdk-0.1.0-py3-none-any.whl
+
+# In the SDK checkout (prepare builds JavaScript and declarations):
+npm ci
+npm pack --pack-destination /private/sdk-build
+# In your Node application:
+npm install /private/sdk-build/afterspan-sdk-0.1.0.tgz
+```
+
+The wheel includes all four Python modules. The tarball includes ordinary JavaScript, declarations, the standalone model observer and its required companions; it does not rely on stripping TypeScript from `node_modules`. Existing source-file imports still work for already vendored integrations. Pin the artifact hash or source revision when updating an application. When migrating an existing vendored integration, check which module is imported: local copies can shadow an installed Python package.
+
+After these manifests are merged, the intended pinned Git install forms are below. They are not yet a verified installation from a published Git revision; local wheel/tarball checks are the current proof. No registry account or publication is needed, but npm Git installation runs the package's reviewed `prepare` build and needs its build dependencies.
+
+```sh
+python -m pip install 'afterspan-sdk @ git+https://github.com/bnishit/native-analytics.git@PACKAGED_COMMIT#subdirectory=sdk/python'
+npm install 'git+https://github.com/bnishit/native-analytics.git#PACKAGED_COMMIT'
+```
+
+Run `python scripts/check_sdk_packages.py` after installing the repository's build and service test dependencies. This mandatory CI check builds and allowlists both archives, installs fresh consumers outside the checkout without `PYTHONPATH`, resolves TypeScript types, and ingests actual emitted payloads through the local service fixture. Missing-companion negative controls must fail imports; reinstalling the intact artifacts must restore the consumers. Python's bundled license must match the repository license byte for byte. The check does not call a provider or deployment.
+
 ## Python
 
-Put `sdk/python` on the application import path. The standard-library collector persists telemetry in its SQLite outbox before sending. Keep its database on a private writable volume; a failed local write remains a collection gap.
+Import the installed modules directly. The standard-library collector persists telemetry in its SQLite outbox before sending. Keep its database on a private writable volume; a failed local write remains a collection gap.
 
 ```python
 from native_analytics import Collector
@@ -25,9 +54,11 @@ collector.flush()
 
 ## Node
 
-Import `WorkflowTracer` from `sdk/typescript/tracing-node.ts` and `createAnalytics` from the adjacent client. Node 24+ can execute these files with `--experimental-strip-types`; an application TypeScript build can compile them normally. The Node context helper uses `AsyncLocalStorage` and is server-only.
+Import from the installed `@afterspan/sdk` ESM package. Plain JavaScript applications use the same imports; TypeScript applications also receive declarations. The Node context helper uses `AsyncLocalStorage` and is server-only.
 
 ```typescript
+import { WorkflowTracer, createAnalytics } from '@afterspan/sdk';
+
 const tracer = new WorkflowTracer(createAnalytics({url: origin, writeKey}));
 await tracer.task({workflow:'document_export', environment:'production', releaseSha}, async () => {
   await tracer.span('storage', async span => {
@@ -70,7 +101,7 @@ The first nonempty content, refusal or tool-function delta records `first_output
 
 The metadata setter accepts the existing wire fields: input/output/cache/reasoning counts, `usage_source`, one exact USD amount and `cost_source`, with `price_version` required for price-table estimates. Counts are bounded integers; unknown content fields and invalid relationships are rejected. Only explicit zero is zero. Exact decimal cost is a bounded string, never a binary floating-point conversion. If the provider SDK exposes USD only as a float, the chunk observer leaves it unknown. Pass independently preserved exact text as the observer's second argument, or set a properly sourced exact amount explicitly. No catalog-price estimate is inferred.
 
-`ModelObservation` in `sdk/python/afterspan_model.py` and `sdk/typescript/model-observation.ts` offers the same metadata/timing state without a workflow collector. Existing tracers can reuse it without emitting a second event stream. Keep the sibling helper when copying a tracing entrypoint. Snapshots are copies; closing prevents further updates. Malformed provider metadata clears uncertain accounting instead of retaining stale totals and increments `rejected_updates` / `rejectedUpdates`. Native tracer status accumulates `model_metadata_errors`. Telemetry send failure never reruns the business call.
+`ModelObservation` in `sdk/python/afterspan_model.py` and `sdk/typescript/model-observation.ts` offers the same metadata/timing state without a workflow collector. Existing tracers can reuse it without emitting a second event stream. Installed packages include the companion automatically. Standalone Node callers can use `import { ModelObservation } from '@afterspan/sdk/model'`; Python callers use `from afterspan_model import ModelObservation`. Existing vendored entrypoints still need their matching sibling helper until migrated. Snapshots are copies; closing prevents further updates. Malformed provider metadata clears uncertain accounting instead of retaining stale totals and increments `rejected_updates` / `rejectedUpdates`. Native tracer status accumulates `model_metadata_errors`. Telemetry send failure never reruns the business call.
 
 No prompt, output, refusal text, tool arguments or raw provider error is retained by these observers. Selected debugging remains a separate opt-in path. The server still enforces model-step, terminal-observation, usage-provenance and first-output-within-duration rules. The SDK's two languages and actual cross-language ingestion are tested locally; current production adoption is tracked separately in [release acceptance](outcome-platform-release.md).
 

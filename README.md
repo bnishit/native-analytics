@@ -454,7 +454,7 @@ Use opaque user IDs. Identity is producer-asserted; an IP is not a person and a 
 
 ## Python / FastAPI integration
 
-Copy `sdk/python/native_analytics.py` into your service and install it **after** other middleware:
+Install the Python SDK with `python -m pip install ./sdk/python` from a reviewed source checkout, or install its built wheel in your application environment. All companion modules are bundled; no service dependencies are required. See [SDK installation and tracing](docs/tracing-sdk.md) for artifact checks and proposed pinned Git installs. Install the ASGI middleware **after** other middleware:
 
 ```python
 from native_analytics import install
@@ -646,8 +646,7 @@ keys in the private file so you can inspect/recover the cloud project without lo
 
 ## TypeScript / Next.js / serverless
 
-Copy `sdk/typescript/native-analytics.ts` into your server code. It uses native `fetch`
-and `crypto`, no PostHog or client-side secret. Instantiate `createAnalytics({url,writeKey,source})`.
+Build the server-only ESM SDK with `npm ci` and `npm pack`, then install the resulting tarball in your application. Import `createAnalytics` and `WorkflowTracer` from `@afterspan/sdk`; standalone model adapters can import `@afterspan/sdk/model`. JavaScript and TypeScript declarations are bundled. Neither package name is claimed to be published to a registry. See [SDK installation and tracing](docs/tracing-sdk.md). It uses native `fetch` and `crypto`, with zero runtime dependencies. Instantiate `createAnalytics({url,writeKey,source})`.
 Use `after(() => client.track('save.completed', opaqueUserId, {kind:'article'}))` on Next.js,
 or your platform's `waitUntil`. `identify`, `flush`, and `status` are also available.
 Stable IDs survive its two bounded delivery attempts. Its 500-event in-memory queue is

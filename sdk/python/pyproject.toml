@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "afterspan-sdk"
+version = "0.1.0"
+description = "Metadata-only tracing and durable collection for Afterspan"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/bnishit/native-analytics"
+
+[tool.setuptools]
+py-modules = ["native_analytics", "afterspan_tracing", "afterspan_model", "afterspan_experiments"]

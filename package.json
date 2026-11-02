@@ -1,0 +1,35 @@
+{
+  "name": "@afterspan/sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Metadata-only server tracing and collection for Afterspan",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/node/index.d.ts",
+      "import": "./dist/node/index.js"
+    },
+    "./model": {
+      "types": "./dist/node/model-observation.d.ts",
+      "import": "./dist/node/model-observation.js"
+    }
+  },
+  "files": [
+    "dist/node/*.js",
+    "dist/node/*.d.ts",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build:sdk": "node scripts/build_sdk.mjs",
+    "prepare": "npm run build:sdk",
+    "check:sdk-packages": "python scripts/check_sdk_packages.py"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.0",
+    "typescript": "5.9.3"
+  }
+}

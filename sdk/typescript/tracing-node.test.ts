@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createAnalytics} from './native-analytics.ts';
+import {ModelObservation} from './model-observation.ts';
 import {WorkflowTracer,mappedId,inject,extract,retryContext,prepareDebugSnapshot,redactDebugContent} from './tracing-node.ts';
 
 function fixture(){
@@ -98,4 +99,47 @@ test('traffic kind is explicit, propagated, and unknown by default',async()=>{
  });await f.tracer.flush();
  assert.equal(f.events[0].properties.afterspan_trace.traffic_kind,'user');
  assert.equal(f.events.at(-1).properties.afterspan_trace.traffic_kind,'unknown');
+});
+
+test('model chunk observations keep exact accounting and first output, never content',async()=>{
+ const {tracer,events}=fixture();let modelSpan:any;
+ await tracer.task({workflow:'model_probe',environment:'test'},async()=>{
+  await tracer.span('model',span=>{
+   modelSpan=span;span.modelUsage({provider:'openrouter',model:'example/requested',template_version:'prompt-v1'});
+   span.observeOpenAI({choices:[{delta:{role:'assistant',content:''}}]});
+   span.observeOpenAI({choices:[{delta:{content:'private output sentinel'}}]});
+   span.observeOpenAI({model:'example/resolved',choices:[],usage:{prompt_tokens:4,completion_tokens:2,cost:'0.000000037125'}});
+  });
+ });await tracer.flush();
+ const terminal=events.find(e=>e.properties.afterspan_trace?.model_usage).properties.afterspan_trace;
+ assert.equal(terminal.model_usage.model,'example/resolved');assert.equal(terminal.model_usage.cost_usd_decimal,'0.000000037125');
+ assert.equal(terminal.model_usage.input_count,4);assert.ok(terminal.model_usage.first_output_ms>=0&&terminal.model_usage.first_output_ms<=terminal.duration_ms);
+ assert.ok(!JSON.stringify(events).includes('private output sentinel'));
+ assert.throws(()=>modelSpan.firstOutput());assert.throws(()=>modelSpan.modelUsage({output_count:1,usage_source:'provider_reported'}));
+});
+test('first model output clock ignores role and usage frames, and snapshot cannot mutate metadata',()=>{
+ let now=100;const o=new ModelObservation({provider:'openai',model:'example'},{clock:()=>now});
+ now=110;o.observeOpenAI({choices:[{delta:{role:'assistant',content:''}}]});assert.equal(o.snapshot().first_output_ms,undefined);
+ now=125;o.observeOpenAI({choices:[{delta:{tool_calls:[{function:{arguments:'private tool sentinel'}}]}}]});
+ now=140;o.observeOpenAI({choices:[{delta:{refusal:'private refusal sentinel'}}]});
+ assert.equal(o.snapshot().first_output_ms,25);assert.ok(!JSON.stringify(o.snapshot()).includes('private'));
+ const copy=o.snapshot();copy.model='changed';assert.equal(o.snapshot().model,'example');o.close();assert.throws(()=>o.firstOutput());
+});
+test('invalid accounting and content fields cannot enter model metadata or invent a zero bill',()=>{
+ const o=new ModelObservation({provider:'openai',model:'example'});
+ for(const update of [{prompt:'private'},{first_output_ms:1},{input_count:true,usage_source:'provider_reported'},{output_count:1},{cost_usd_decimal:.01,cost_source:'provider_reported'},{cost_usd_decimal:'0.01'},{cost_usd_decimal:'0.1',cost_source:'price_table'}])assert.throws(()=>o.record(update as any));
+ assert.deepEqual(o.snapshot(),{provider:'openai',model:'example',unit:'token'});
+ o.record({input_count:4,usage_source:'provider_reported',cost_usd_decimal:'0.000000037125',cost_source:'provider_reported'});
+ assert.equal(o.observeOpenAI({usage:{prompt_tokens:true}}),false);assert.equal(o.rejectedUpdates,1);
+ assert.equal(o.snapshot().input_count,undefined);assert.equal(o.snapshot().cost_usd_decimal,undefined);
+ o.observeOpenAI({usage:{prompt_tokens:0,completion_tokens:0,cost:.01}});
+ assert.equal(o.snapshot().input_count,0);assert.equal(o.snapshot().cost_usd_decimal,undefined);
+});
+test('empty streams and non-model spans cannot manufacture model timing',async()=>{
+ const {tracer,events}=fixture();
+ await tracer.task({workflow:'model_probe',environment:'test'},async root=>{
+  assert.throws(()=>root.modelUsage({provider:'openai',model:'example'}));
+  await tracer.span('model',span=>{span.modelUsage({provider:'openai',model:'example'});span.observeOpenAI({choices:[{delta:{role:'assistant',content:''}}],usage:null})});
+ });await tracer.flush();const usage=events.find(e=>e.properties.afterspan_trace?.model_usage).properties.afterspan_trace.model_usage;
+ assert.equal(usage.first_output_ms,undefined);assert.equal(usage.input_count,undefined);assert.equal(usage.cost_usd_decimal,undefined);
 });

@@ -32,6 +32,36 @@ class TracingSDKTests(unittest.TestCase):
         self.assertEqual(trace['checks'][0]['result'],'passed')
         self.assertEqual(trace['issues'],[])
         self.assertEqual(trace['completion']['response']['state'],'succeeded')
+    def test_model_chunks_export_only_usage_and_first_meaningful_output(self):
+        with self.tracer.task('model_probe','test'):
+            with self.tracer.span('model') as span:
+                span.model_usage(provider='openrouter',model='example/model',template_version='prompt-v1')
+                span.observe_openai({'choices':[{'delta':{'role':'assistant','content':''}}]})
+                span.observe_openai({'choices':[{'delta':{'content':'private output sentinel'}}]})
+                span.observe_openai({'model':'example/resolved','choices':[], 'usage':{'prompt_tokens':4,'completion_tokens':2,'cost':'0.000000037125'}})
+        terminal=next(e['properties']['afterspan_trace'] for e in self.events() if e['properties']['afterspan_trace'].get('model_usage'))
+        usage=terminal['model_usage']
+        self.assertEqual(usage['model'],'example/resolved');self.assertEqual(usage['input_count'],4)
+        self.assertEqual(usage['cost_usd_decimal'],'0.000000037125');self.assertEqual(usage['usage_source'],'provider_reported')
+        self.assertGreaterEqual(usage['first_output_ms'],0);self.assertLessEqual(usage['first_output_ms'],terminal['duration_ms'])
+        self.assertNotIn('private output sentinel',json.dumps(self.events()))
+        response=self.fixture.ingest(self.events());self.assertEqual(response.status_code,200,response.text)
+        opened=self.fixture.client.post('/api/traces/review?project=alpha',headers=self.fixture.admin,json={'environment':'test'}).json()
+        model=next(x for x in opened['traces'][0]['spans'] if x['step']=='model')
+        self.assertEqual(model['model_usage']['cost_usd_decimal'],'0.000000037125')
+
+    def test_empty_model_stream_keeps_timing_and_cost_unknown_and_closed_spans_reject_changes(self):
+        with self.tracer.task('model_probe','test'):
+            with self.tracer.span('model') as span:
+                span.model_usage(provider='openai',model='example-model')
+                span.observe_openai({'choices':[{'delta':{'role':'assistant','content':''}}],'usage':None})
+        usage=next(e['properties']['afterspan_trace']['model_usage'] for e in self.events() if 'model_usage' in e['properties']['afterspan_trace'])
+        self.assertNotIn('first_output_ms',usage);self.assertNotIn('cost_usd_decimal',usage);self.assertNotIn('input_count',usage)
+        with self.assertRaises(ValueError):span.first_output()
+        with self.assertRaises(ValueError):span.model_usage(output_count=1,usage_source='provider_reported')
+        with self.tracer.task('model_probe','test') as other:
+            with self.assertRaises(ValueError):other.model_usage(provider='openai',model='example')
+
     def test_context_roundtrip_requires_trust_and_retries_keep_original_clock(self):
         with self.tracer.task('document_export','test'):
             with self.tracer.span('http'):
@@ -89,12 +119,16 @@ import {createAnalytics} from './sdk/typescript/native-analytics.ts';
 import {WorkflowTracer,extract} from './sdk/typescript/tracing-node.ts';
 const events=[];const client=createAnalytics({url:'https://analytics.example',writeKey:'synthetic-key',source:'cross-language-test',fetch:async(_u,o)=>{const batch=JSON.parse(o.body);events.push(...batch.events);return new Response(JSON.stringify({accepted:batch.events.length,duplicates:0}),{status:200})}});
 const tracer=new WorkflowTracer(client),context=extract(JSON.parse(readFileSync(0,'utf8')),true);
-await tracer.task({context},async()=>{await tracer.span('processing',s=>s.check('source_facts','passed',{evidenceDigest:'a'.repeat(64)}),{milestone:'completion'});await tracer.span('response',()=>{},{milestone:'delivery'})});
+await tracer.task({context},async()=>{await tracer.span('model',s=>{s.modelUsage({provider:'openai',model:'example'});s.observeOpenAI({choices:[{delta:{content:'private cross-language output'}}]});s.modelUsage({input_count:3,output_count:2,usage_source:'provider_reported',cost_usd_decimal:'0.000000037125',cost_source:'provider_reported'})});await tracer.span('processing',s=>s.check('source_facts','passed',{evidenceDigest:'a'.repeat(64)}),{milestone:'completion'});await tracer.span('response',()=>{},{milestone:'delivery'})});
 await tracer.flush();process.stdout.write(JSON.stringify(events));
 """
         run=subprocess.run(['node','--experimental-strip-types','--input-type=module','-e',script],input=json.dumps(carrier),cwd=Path(__file__).resolve().parents[1],capture_output=True,text=True)
         self.assertEqual(run.returncode,0,run.stderr)
         events=self.events()+json.loads(run.stdout)
+        self.assertNotIn('private cross-language output',run.stdout)
+        model=next(e['properties']['afterspan_trace'] for e in events if e['properties']['afterspan_trace'].get('model_usage'))
+        self.assertLessEqual(model['model_usage']['first_output_ms'],model['duration_ms'])
+        self.assertEqual(model['model_usage']['cost_usd_decimal'],'0.000000037125')
         response=self.fixture.ingest(events);self.assertEqual(response.status_code,200,response.text)
         report=self.fixture.client.post('/api/traces/review?project=alpha',headers=self.fixture.admin,json={'environment':'test'}).json()
         self.assertEqual(len(report['traces']),1)
@@ -134,3 +168,31 @@ await tracer.flush();process.stdout.write(JSON.stringify(events));
             self.assertEqual(extract(inject(),trusted=True).traffic_kind,'unknown')
         events=self.events();self.assertTrue(any(e['properties']['afterspan_trace']['traffic_kind']=='user' for e in events))
         self.assertEqual(self.fixture.ingest(events).status_code,200)
+
+class ModelObservationTests(unittest.TestCase):
+    def test_output_clock_ignores_accounting_and_keeps_first_signal(self):
+        from afterspan_model import ModelObservation
+        now=[100.0];o=ModelObservation('openai','example',clock=lambda:now[0])
+        now[0]=110;o.observe_openai({'choices':[{'delta':{'role':'assistant'}}]})
+        self.assertNotIn('first_output_ms',o.snapshot())
+        now[0]=125;o.observe_openai({'choices':[{'delta':{'tool_calls':[{'function':{'arguments':'private tool sentinel'}}]}}]})
+        now[0]=140;o.observe_openai({'choices':[{'delta':{'content':'private text sentinel'}}]})
+        self.assertEqual(o.snapshot()['first_output_ms'],25)
+        self.assertNotIn('private',json.dumps(o.snapshot()));o.close()
+        with self.assertRaises(ValueError):o.first_output()
+
+    def test_invalid_metadata_never_overwrites_valid_state_or_invents_cost(self):
+        from afterspan_model import ModelObservation
+        o=ModelObservation('openai','example')
+        for fields in [{'prompt':'private sentinel'},{'first_output_ms':1},{'input_count':True,'usage_source':'provider_reported'},{'output_count':1},{'cost_usd_decimal':0.01,'cost_source':'provider_reported'},{'cost_usd_decimal':'0.01'},{'cost_usd_decimal':'0.1','cost_source':'price_table'}]:
+            with self.assertRaises(ValueError):o.record(**fields)
+        self.assertEqual(o.snapshot(),{'provider':'openai','model':'example','unit':'token'})
+        o.record(input_count=4,usage_source='provider_reported',cost_usd_decimal='0.000000037125',cost_source='provider_reported')
+        self.assertFalse(o.observe_openai({'usage':{'prompt_tokens':True}}));self.assertEqual(o.rejected_updates,1)
+        self.assertNotIn('input_count',o.snapshot());self.assertNotIn('cost_usd_decimal',o.snapshot())
+        o.observe_openai({'usage':{'prompt_tokens':0,'completion_tokens':0,'cost':0.01}})
+        self.assertEqual(o.snapshot()['input_count'],0);self.assertNotIn('cost_usd_decimal',o.snapshot())
+        for choices in ['malformed',{'delta':{}},None]:
+            o.record(input_count=10,usage_source='provider_reported',cost_usd_decimal='0.1',cost_source='provider_reported')
+            self.assertFalse(o.observe_openai({'choices':choices}))
+            self.assertNotIn('input_count',o.snapshot());self.assertNotIn('cost_usd_decimal',o.snapshot())

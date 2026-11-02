@@ -40,6 +40,40 @@ await tracer.flush(); // register with the serverless host's after/waitUntil hoo
 
 The Node client uses a bounded in-memory queue. It is best effort across process termination; it does not claim Python's durable outbox. Status exposes queued, dropped and rejected events, last delivery/error and the oldest queued clock. Throwing error callbacks cannot interrupt business work. Neither helper retries a business action after telemetry failure. Application exceptions are rethrown unchanged; their messages are never captured.
 
+## Model usage and first output
+
+Model metadata belongs to one open `model` span. Declare its provider, model and optional instruction-template version before observing chunks. Python uses `model_usage`, `first_output` and `observe_openai`; Node uses `modelUsage`, `firstOutput` and `observeOpenAI`. All methods retain metadata only. Other steps and closed spans reject updates.
+
+```python
+with tracer.span('model') as span:
+    span.model_usage(provider='openrouter', model='openai/gpt-4.1-mini',
+                     template_version='reply-v1')
+    for chunk in provider_stream:
+        span.observe_openai(chunk)
+        handle_chunk(chunk)  # Your application owns output and completion checks.
+```
+
+```typescript
+await tracer.span('model', async span => {
+  span.modelUsage({provider:'openrouter', model:'openai/gpt-4.1-mini',
+                   template_version:'reply-v1'});
+  for await (const chunk of providerStream) {
+    span.observeOpenAI(chunk);
+    handleChunk(chunk); // Your application owns output and completion checks.
+  }
+});
+```
+
+These examples observe already parsed Chat Completions chunks, including official Python SDK objects. They do not open a provider connection, parse SSE bytes, validate a full answer, retry a provider request or stream a reply to the user. The transport must reject errors and incomplete/truncated streams. An HTTP200 or a first delta is not successful completion.
+
+The first nonempty content, refusal or tool-function delta records `first_output_ms` once against the span's monotonic clock. Role-only chunks, empty deltas, usage frames and heartbeats do not supply first output. This is observed model-output timing, not Slack acceptance or the user's first visible reply. No qualifying delta means unknown, not zero. Manual adapters call `first_output()` / `firstOutput()` at their actual output boundary; they cannot set an arbitrary timing field through the metadata setter.
+
+The metadata setter accepts the existing wire fields: input/output/cache/reasoning counts, `usage_source`, one exact USD amount and `cost_source`, with `price_version` required for price-table estimates. Counts are bounded integers; unknown content fields and invalid relationships are rejected. Only explicit zero is zero. Exact decimal cost is a bounded string, never a binary floating-point conversion. If the provider SDK exposes USD only as a float, the chunk observer leaves it unknown. Pass independently preserved exact text as the observer's second argument, or set a properly sourced exact amount explicitly. No catalog-price estimate is inferred.
+
+`ModelObservation` in `sdk/python/afterspan_model.py` and `sdk/typescript/model-observation.ts` offers the same metadata/timing state without a workflow collector. Existing tracers can reuse it without emitting a second event stream. Keep the sibling helper when copying a tracing entrypoint. Snapshots are copies; closing prevents further updates. Malformed provider metadata clears uncertain accounting instead of retaining stale totals and increments `rejected_updates` / `rejectedUpdates`. Native tracer status accumulates `model_metadata_errors`. Telemetry send failure never reruns the business call.
+
+No prompt, output, refusal text, tool arguments or raw provider error is retained by these observers. Selected debugging remains a separate opt-in path. The server still enforces model-step, terminal-observation, usage-provenance and first-output-within-duration rules. The SDK's two languages and actual cross-language ingestion are tested locally; current production adoption is tracked separately in [release acceptance](outcome-platform-release.md).
+
 ## HTTP and queue handoff
 
 Inside a span, call `inject()` and send its W3C `traceparent` and bounded `baggage` as headers or queue metadata. At a trusted internal boundary, Python `extract(headers, trusted=True)` or Node `extract(headers, true)` validates that carrier, then pass the returned context to `task`. Public headers are untrusted by default. Do not forward arbitrary baggage or credentials. Invalid carriers return no context; the application chooses whether to start a separate task or reject its own request.
@@ -50,6 +84,6 @@ Both helpers use full W3C IDs and one deterministic SHA-256 mapping into the exi
 
 ## Evidence and limits
 
-Local tests ingest the exact Python and Node payloads through the real service, join a Python parent to a Node child, and resolve a check receipt. Concurrent contexts, sampling, retry clocks, duplicate check names, closed spans, invalid IDs and telemetry failures are tested. These are synthetic local runs, not production adoption. There is no automatic prompt/output capture or provider auto-instrumentation. Optional selected content uses the separate [governed debugging flow](debugging.md), never the normal collector. Model usage and OTLP mappings are described in [OTLP intake](otlp.md).
+Local tests ingest the exact Python and Node payloads through the real service, join a Python parent to a Node child, and resolve a check receipt. Concurrent contexts, sampling, retry clocks, duplicate check names, closed spans, invalid IDs and telemetry failures are tested. These are synthetic local runs, not production adoption. There is no automatic prompt/output capture or transparent provider monkey-patching; parsed-chunk observation requires the explicit model-span calls above. Optional selected content uses the separate [governed debugging flow](debugging.md), never the normal collector. Model usage and OTLP mappings are described in [OTLP intake](otlp.md).
 
 Standards: [W3C Trace Context](https://www.w3.org/TR/trace-context/), [OpenTelemetry trace API](https://opentelemetry.io/docs/specs/otel/trace/api/). The complete release gate remains in [platform acceptance](outcome-platform-release.md).

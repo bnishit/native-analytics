@@ -2,6 +2,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { createAnalytics } from './native-analytics.ts';
+import { ModelObservation, type ModelUsage } from './model-observation.ts';
 
 type TrafficKind = 'user'|'synthetic'|'internal'|'unknown';
 type Environment = 'production'|'staging'|'development'|'test'|'local';
@@ -53,8 +54,22 @@ export function extract(headers:Record<string,string>,trusted=false):TraceContex
 }
 export class Span {
  readonly checks:Check[]=[];closed=false;
+ readonly started=performance.now();private model?:ModelObservation;
  readonly tracer:WorkflowTracer;readonly context:TraceContext;readonly parent:string|undefined;readonly step:Step;
  constructor(tracer:WorkflowTracer,context:TraceContext,parent:string|undefined,step:Step){this.tracer=tracer;this.context=context;this.parent=parent;this.step=step}
+ modelUsage(fields:Partial<Omit<ModelUsage,'first_output_ms'>>){
+  if(this.closed||this.step!=='model')throw Error('Model metadata requires an open model span');
+  const observation=this.model||new ModelObservation({provider:fields.provider!,model:fields.model!,template_version:fields.template_version},{startedAtMs:this.started});
+  observation.record(fields);this.model=observation;
+ }
+ firstOutput(){if(this.closed||!this.model)throw Error('Declare model identity on an open model span first');return this.model.firstOutput()}
+ observeOpenAI(chunk:unknown,exactCostUsd?:string){if(this.closed||!this.model)throw Error('Declare model identity on an open model span first');return this.model.observeOpenAI(chunk,exactCostUsd)}
+ modelResult(duration:number){
+  if(!this.model)return;
+  const result=this.model.close();this.tracer.modelMetadataErrors+=this.model.rejectedUpdates;
+  if(duration>86400000)delete result.first_output_ms;
+  return result;
+ }
  facts(){const c=this.context;return {schema_version:'workflow-trace-v1',trace_id:mappedId(c.traceId),attempt_id:c.attemptId,attempt_number:c.attemptNumber,span_id:mappedId(c.traceId,c.spanId),parent_span_id:this.parent,workflow:c.workflow,environment:c.environment,traffic_kind:c.trafficKind||'unknown',release_sha:c.releaseSha,request_started_at_ms:c.requestStartedAtMs,step:this.step}}
  check(name:string,result:Result,options:{version?:number;method?:Method;phase?:Phase;required?:boolean;evidenceDigest?:string}={}):Result {
   const {version=1,method='source',phase='before_delivery',required=true,evidenceDigest}=options;
@@ -71,6 +86,7 @@ export class Span {
 }
 export class WorkflowTracer {
  private pending=new Set<Promise<void>>();private emitFailures=0;private sampledOutEvents=0;
+ modelMetadataErrors=0;
  readonly client:ReturnType<typeof createAnalytics>;
  constructor(client:ReturnType<typeof createAnalytics>){this.client=client}
  emit(name:string,properties:Record<string,unknown>):void {
@@ -86,15 +102,15 @@ export class WorkflowTracer {
   if(!steps.has(step)||options.milestone!==undefined&&!['completion','delivery','usefulness'].includes(options.milestone)||options.disposition!==undefined&&(!['delivered','withheld','clarification','partial'].includes(options.disposition)||step!=='response'))throw Error('Invalid span declaration');
   const child=validate({...context,spanId:randomBytes(8).toString('hex')});const span=new Span(this,child,context.spanId?mappedId(context.traceId,context.spanId):undefined,step);
   return current.run(child,async()=>{
-   const started=performance.now();let state='succeeded',code='none';this.emit('trace.observed',{afterspan_trace:{...span.facts(),state:'started'}});
+   let state='succeeded',code='none';this.emit('trace.observed',{afterspan_trace:{...span.facts(),state:'started'}});
    try{return await run(span)}catch(error){state='failed';code='internal';throw error}finally{
-    const duration=performance.now()-started;
-    this.emit('trace.observed',{afterspan_trace:{...span.facts(),state:duration<=86400000?state:'unknown',outcome_code:duration<=86400000?code:'uncertain',duration_ms:duration<=86400000?duration:undefined,...(options.milestone?{milestone:options.milestone}:{}),...(options.disposition?{disposition:options.disposition}:{}),...(span.checks.length?{checks:span.checks}:{})}});span.closed=true;
+    const duration=performance.now()-span.started,usage=span.modelResult(duration);
+    this.emit('trace.observed',{afterspan_trace:{...span.facts(),state:duration<=86400000?state:'unknown',outcome_code:duration<=86400000?code:'uncertain',duration_ms:duration<=86400000?duration:undefined,...(options.milestone?{milestone:options.milestone}:{}),...(options.disposition?{disposition:options.disposition}:{}),...(span.checks.length?{checks:span.checks}:{}),...(usage?{model_usage:usage}:{})}});span.closed=true;
    }
   });
  }
  async flush(){await Promise.all([...this.pending]);try{await this.client.flush()}catch{this.emitFailures++}}
- status(){return {emit_failures:this.emitFailures,sampled_out_events:this.sampledOutEvents,...this.client.status()}}
+ status(){return {emit_failures:this.emitFailures,sampled_out_events:this.sampledOutEvents,model_metadata_errors:this.modelMetadataErrors,...this.client.status()}}
 }
 
 

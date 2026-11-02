@@ -1,6 +1,7 @@
 /** Node tracing context and metadata-only receipts. Flush via the host's after/waitUntil hook. */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { isUint8Array } from 'node:util/types';
 import type { createAnalytics } from './native-analytics.ts';
 import { ModelObservation, type ModelUsage } from './model-observation.ts';
 
@@ -157,8 +158,8 @@ export class WorkflowTracer {
     const consumed=new Promise<void>((resolve,reject)=>{settle=(failed,error)=>{if(settled)return;settled=true;reader.releaseLock();if(failed)reject(error);else resolve()}});
     const body=new ReadableStream<Uint8Array>({
      async pull(controller){
-      try{const value=await reader.read();if(settled||cancelling)return;if(value.done){controller.close();settle(false)}else controller.enqueue(value.value)}
-      catch(error){if(!settled&&!cancelling){controller.error(error);settle(true,error)}}
+      try{const value=await reader.read();if(settled||cancelling)return;if(value.done){controller.close();settle(false)}else{if(!isUint8Array(value.value))throw new TypeError('Response body must yield Uint8Array');controller.enqueue(value.value)}}
+      catch(error){if(!settled&&!cancelling){controller.error(error);void reader.cancel(error).catch(()=>{});settle(true,error)}}
      },
      async cancel(reason){
       cancelling=true;

@@ -82,3 +82,11 @@ test('a Response.error is a failed transport response, not completed work',async
  const {tracer,events}=fixture();const result=await tracer.response({workflow:'answer'},()=>Response.error());
  assert.equal(result.response.type,'error');assert.equal(await result.finished,'failed');await tracer.flush();assert.equal(facts(events).filter(x=>x.state==='failed').length,2);
 });
+test('malformed response bytes fail the trace and cancel upstream rather than leaving it open',async()=>{
+ const {tracer,events}=fixture();let cancelled=0;
+ const result=await tracer.response({workflow:'answer'},()=>new Response(new ReadableStream<Uint8Array>({pull(controller){controller.enqueue('private-invalid-chunk' as unknown as Uint8Array)},cancel(){cancelled++}},{highWaterMark:0})));
+ await assert.rejects(result.response.text(),TypeError);
+ let timer:ReturnType<typeof setTimeout>|undefined;
+ try{assert.equal(await Promise.race([result.finished,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Trace stayed open')),1000)})]),'failed')}finally{clearTimeout(timer)}
+ await tracer.flush();assert.equal(cancelled,1);assert.equal(facts(events).filter(x=>x.state==='failed').length,2);assert.ok(!JSON.stringify(events).includes('private-invalid-chunk'));
+});

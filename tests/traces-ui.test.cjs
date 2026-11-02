@@ -29,3 +29,11 @@ test('answer check distinguishes withheld candidate claims from the replacement 
  const html=vm.runInContext(`traceAnswerCheck({answer_disposition:'withheld',check_phase:'before_reply',reported_outcome:'failed',checked_claims:2,mismatched_claims:1,unknown_claims:0})`,context);
  assert.match(html,/withheld/);assert.match(html,/before reply/);assert.match(html,/2 candidate claims checked/);assert.match(html,/not any replacement reply/);
 });
+
+test('read targets remain distinct from request scope',()=>{
+ const context=vm.createContext({esc:v=>String(v??''),traceStepLabel:{}});
+ vm.runInContext(fs.readFileSync('static/traces.js','utf8'),context);
+ const html=vm.runInContext(`traceReadTargets({environment:'production',read_target_environments:['production','staging']})`,context);
+ assert.match(html,/Request environment: production/);assert.match(html,/Read target environments: production, staging/);
+ assert.match(vm.runInContext(`traceReadTargets({environment:'production'})`,context),/Read target environments: unknown/);
+});

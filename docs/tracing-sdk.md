@@ -9,8 +9,8 @@ The Python distribution is `afterspan-sdk`; the server-only ESM Node package is 
 Pinned Git installation is verified at the released commit below in fresh consumers. Node also passed a production `--omit=dev` lockfile install with a fresh cache and SSH disabled. Python preserves the existing flat-module imports. No registry account or publication is needed. npm Git installation runs the reviewed `prepare` build and downloads its pinned build dependencies.
 
 ```sh
-python -m pip install 'afterspan-sdk @ git+https://github.com/bnishit/native-analytics.git@ce507e1429bb13d91eb96f7359f8e7a80130bfef#subdirectory=sdk/python'
-npm install 'git+https://github.com/bnishit/native-analytics.git#ce507e1429bb13d91eb96f7359f8e7a80130bfef'
+python -m pip install 'afterspan-sdk @ git+https://github.com/bnishit/native-analytics.git@28460050dcfaea8de1a45be95078875f0a24ee5d#subdirectory=sdk/python'
+npm install 'git+https://github.com/bnishit/native-analytics.git#28460050dcfaea8de1a45be95078875f0a24ee5d'
 ```
 
 ### Build and verify artifacts locally
@@ -46,7 +46,8 @@ tracer = WorkflowTracer(collector)
 with tracer.task('document_export', 'production', release_sha=release_sha):
     with tracer.span('storage', milestone='completion') as span:
         result = export_document()
-        span.check('source_facts', 'passed', evidence_digest=source_digest)
+        span.check('source_facts', 'passed', evidence_digest=source_digest,
+                   execution='completed')
     with tracer.span('response', milestone='delivery', disposition='delivered'):
         send_download_link(result)
 collector.flush()
@@ -65,13 +66,32 @@ const tracer = new WorkflowTracer(createAnalytics({url: origin, writeKey}));
 await tracer.task({workflow:'document_export', environment:'production', releaseSha}, async () => {
   await tracer.span('storage', async span => {
     await exportDocument();
-    span.check('source_facts', 'passed', {evidenceDigest: sourceDigest});
+    span.check('source_facts', 'passed', {evidenceDigest: sourceDigest, execution:'completed'});
   }, {milestone:'completion'});
 });
 await tracer.flush(); // register with the serverless host's after/waitUntil hook
 ```
 
 The Node client uses a bounded in-memory queue. It is best effort across process termination; it does not claim Python's durable outbox. Status exposes queued, dropped and rejected events, last delivery/error and the oldest queued clock. Throwing error callbacks cannot interrupt business work. Neither helper retries a business action after telemetry failure. Application exceptions are rethrown unchanged; their messages are never captured.
+
+## Check execution and missing evidence
+
+Only report `completed` after the comparison actually ran. An inconclusive comparison can be `completed` with result `unknown`; completing a span does not establish this. If evidence is absent or fails this task's binding checks, keep the result unknown and explain why the check did not run:
+
+```python
+span.check('source_facts', 'unknown', execution='not_run',
+           reason_code='evidence_absent')
+```
+
+```typescript
+span.check('source_facts', 'unknown', {
+  execution:'not_run', reasonCode:'evidence_binding_rejected'
+});
+```
+
+These are alternative terminal states for the check, not additional calls after a passed check of the same name. The two reason codes are fixed enums, never raw error or source text. A not-run check cannot carry a passed/failed result or an evidence digest. Omit execution when it is unknown; older traces retain that distinction. Neither execution nor a reason satisfies a required correctness check.
+
+The pinned revision above passed fresh Python and Node Git installs and installed-consumer checks with mocked transport. A separate installed Python SDK probe reached the production service in an isolated synthetic project: search/open retained completed-but-unknown and both not-run reasons. This proves service acceptance and search, not a second product adoption or normal-user success.
 
 ## Model usage and first output
 

@@ -143,3 +143,18 @@ test('empty streams and non-model spans cannot manufacture model timing',async()
  });await tracer.flush();const usage=events.find(e=>e.properties.afterspan_trace?.model_usage).properties.afterspan_trace.model_usage;
  assert.equal(usage.first_output_ms,undefined);assert.equal(usage.input_count,undefined);assert.equal(usage.cost_usd_decimal,undefined);
 });
+
+test('check execution diagnostics preserve unknown and never create evidence',async()=>{
+ const {tracer,events}=fixture();
+ await tracer.task({workflow:'document_export',environment:'test'},async()=>{
+  await tracer.span('processing',span=>{
+   for(const options of [{execution:'not_run',evidenceDigest:'a'.repeat(64)},{execution:'completed',reasonCode:'evidence_absent'},{reasonCode:'evidence_absent'},{execution:'raw text'}])assert.throws(()=>span.check('bad','unknown',options as any));
+   assert.throws(()=>span.check('bad','passed',{execution:'not_run'}));
+   span.check('source_facts','unknown',{execution:'not_run',reasonCode:'evidence_absent'});
+   span.check('old','unknown');
+  });
+ });await tracer.flush();
+ assert.ok(!events.some(e=>e.name==='evidence.observed'));
+ const checks=events.find(e=>e.properties.afterspan_trace?.checks)?.properties.afterspan_trace.checks;
+ assert.equal(checks[0].execution,'not_run');assert.equal(checks[0].reason_code,'evidence_absent');assert.ok(!('execution' in checks[1]));
+});

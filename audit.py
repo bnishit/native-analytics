@@ -13,7 +13,7 @@ from typing import Annotated,Literal
 from fastapi import Depends,HTTPException
 from pydantic import BaseModel,ConfigDict,Field,StrictBool,UUID4,model_validator
 from product_analytics import Window
-from tracing import ModelUsage,TrafficKind
+from tracing import ModelUsage,TrafficKind,CheckExecution,CheckReason,validate_check_execution
 
 SCHEMA='slack-request-v1'
 TRACE_STEPS=('preparation','parser','model','feature_list','feature_lookup','policy','mutation','readback','slack_delivery','webhook_ack','background','total','quality','reply')
@@ -58,6 +58,8 @@ class Observation(BaseModel):
     tool_environments:list[Literal['production','staging']]|None=Field(default=None,min_length=1,max_length=2)
     check_version:Literal['growthbook-catalog-v1','growthbook-catalog-v2','source-facts-v1']|None=None
     answer_disposition:Literal['verified','withheld','clarification','partial']|None=None
+    check_execution:CheckExecution|None=None
+    check_reason_code:CheckReason|None=None
     check_phase:Literal['before_reply','after_reply']|None=None
     checked_claims:int|None=Field(default=None,ge=0,le=16,strict=True)
     mismatched_claims:int|None=Field(default=None,ge=0,le=16,strict=True)
@@ -85,6 +87,10 @@ class Observation(BaseModel):
             if self.completion_kind is not None and self.trace_step!='total':raise ValueError('completion kind belongs to total')
             if self.trace_step=='total' and self.completion_kind is None:raise ValueError('total requires completion kind')
         elif any(v is not None for v in trace_fields):raise ValueError('trace fields belong to the trace stage')
+        if self.check_execution is not None or self.check_reason_code is not None:
+            if self.stage!='quality' or self.check_version is None:raise ValueError('check execution belongs to a declared quality check')
+            validate_check_execution(self.check_execution,self.check_reason_code,self.reported_outcome,self.check_evidence_digest is not None or self.check_evidence_version is not None)
+            if self.check_execution=='not_run' and (self.checked_claims!=0 or self.mismatched_claims!=0):raise ValueError('a check that did not run cannot compare claims')
         counts=(self.checked_claims,self.mismatched_claims,self.unknown_claims)
         if self.stage!='quality':
             if self.check_version is not None or self.answer_disposition is not None or self.check_phase is not None or any(v is not None for v in counts):raise ValueError('quality fields belong to the quality stage')
@@ -115,6 +121,8 @@ MEANINGS={
  'release_sha':'Exact producer Git revision. Missing or conflicting revisions cannot qualify a release-bound request outcome.',
  'request_started_at_ms':'Verified incoming event time when valid, otherwise server handling start, Unix milliseconds. It survives business retries; message sends never restart this clock.',
  'answer_disposition':'Producer reports verified answer, withheld factual answer, clarification, or an explicitly partial answer. Partial delivery cannot satisfy a complete task goal. Source-check counts refer to the candidate, not a replacement reply.',
+ 'check_execution':'Optional explicit execution diagnostic: completed or not_run. Missing stays unspecified; a completed quality operation does not establish that its check ran.',
+ 'check_reason_code':'Bounded reason for an explicitly not_run check: evidence_absent or evidence_binding_rejected. No raw content and no inferred historical cause.',
  'check_phase':'Producer-declared before_reply or after_reply. Timestamps must agree; missing historical phase stays unknown.',
  'check_version':'source-facts-v1 is a bounded producer check of displayed facts against a declared source; its exact criteria belong to the repo goal. growthbook-catalog-v1: producer-side deterministic check of the exact rendered catalog answer against a separate uncached GrowthBook read. growthbook-catalog-v2 adds producer-side original-request scope and bounded paginated coverage checks; it does not reinterpret v1 observations. Not a second model vote or an independent Afterspan source fetch.',
  'checked_claims':'Number of candidate facts checked against the repo-declared source criteria. growthbook-catalog-v1 checks catalog row presence, source version, enabled state and Identity $in entry count; never usage or eligibility.',
@@ -415,7 +423,7 @@ class Audit:
             'comparison_declared_eligible':declared,'comparison':comparison,'trace':trace,'stages':stages,'issues':sorted(set(issues)),
             'producer_reported_unsafe':any(f.get('proposal_safe') is False for f in facts),'business_state':'not_independently_verified',
             'release_coverage':[self.ref(key,project,'release',r) if available(r) else 'unavailable' for r in sorted(releases,key=str)],
-            'answer_check':({field:by_stage['quality'][0]['facts'].get(field) for field in ['check_version','checked_claims','mismatched_claims','unknown_claims','reported_outcome','answer_disposition','check_phase']}
+            'answer_check':({field:by_stage['quality'][0]['facts'].get(field) for field in ['check_version','checked_claims','mismatched_claims','unknown_claims','reported_outcome','answer_disposition','check_phase']} | {field:by_stage['quality'][0]['facts'][field] for field in ['check_execution','check_reason_code'] if by_stage['quality'][0]['facts'].get(field) is not None}
                             if len(by_stage.get('quality',[]))==1 else None)}
     def evaluate(self,project,req):
         report=self.review(project,ReviewQuery(**req.model_dump(exclude={'goal','release'})))

@@ -23,7 +23,8 @@ with tracer.task('package_probe', 'test', traffic_kind='synthetic'):
     with tracer.span('processing', milestone='completion') as span:
         result = 2 + 2
         assert result == 4
-        span.check('arithmetic', 'passed', method='code', evidence_digest=hashlib.sha256(str(result).encode()).hexdigest())
+        span.check('arithmetic', 'passed', method='code', evidence_digest=hashlib.sha256(str(result).encode()).hexdigest(), execution='completed')
+        span.check('source_facts', 'unknown', execution='not_run', reason_code='evidence_absent')
     with tracer.span('response', milestone='delivery', disposition='delivered'):
         pass
 reopened = Collector('https://analytics.invalid', 'synthetic-package-key', root / 'outbox.db')

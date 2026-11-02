@@ -41,7 +41,7 @@ def project_slack(audit,project,key,group,q,chain=None):
             proof=all(f.get(k) is not None for k in ['quality_span_ref','check_evidence_digest','check_evidence_version'])
             evidence='missing' if not proof else 'resolved' if f['check_evidence_version']=='source-check-v1' and phase=='before_delivery' and span['state']=='succeeded' and bound(checked,f['quality_span_ref'],'quality') else 'mismatch'
             span['checks']=[{'name':definition[0],'version':definition[1],'method':'source','phase':phase,'required':True,
-                'result':{'succeeded':'passed','failed':'failed'}.get(f.get('reported_outcome'),'unknown'),'evidence_present':proof,'evidence_status':evidence}]
+                'result':{'succeeded':'passed','failed':'failed'}.get(f.get('reported_outcome'),'unknown'),'evidence_present':proof,'evidence_status':evidence,**{target:f[source] for source,target in [('check_execution','execution'),('check_reason_code','reason_code')] if f.get(source) is not None}}]
             span['disposition']={'withheld':'withheld','clarification':'clarification','partial':'partial'}.get(f.get('answer_disposition'))
     replies=[r for r in group if r['facts']['stage']=='reply' and r['facts'].get('attempt_number')==latest]
     if len(replies)==1 and replies[0]['facts'].get('reply_span_ref'):

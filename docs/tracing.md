@@ -16,7 +16,13 @@ This is a general Afterspan capability. Experiment Tracker is the first live ado
 | [Grafana Tempo TraceQL](https://grafana.com/docs/tempo/latest/traceql/) | Search respects trace structure; UI and API share a model | One bounded search/open engine behind the UI and both MCP transports |
 | [OpenTelemetry traces](https://opentelemetry.io/docs/concepts/signals/traces/) | Parent context connects operations across services | Preserve explicit parent IDs and missing links; do not invent a cross-service relationship |
 
-These are product patterns, not a claim of vendor feature parity. Afterspan does not ingest OTLP, auto-instrument every service, collect prompts, or reconstruct missing history.
+These are product patterns, not a claim of vendor feature parity. Metadata-only [OTLP/HTTP ingestion](otlp.md) is supported within its documented bounds. Automatic coverage of every service and reconstruction of missing history are not provided. Content stays off by default; [selected debugging](debugging.md) uses separate owner controls.
+
+## Did the check actually run?
+
+A check may explicitly report `execution: completed` or `execution: not_run`. Completed means the producer reports its comparison ran, not that it passed or the user task succeeded. A not-run check stays unknown and carries no evidence reference. Its optional bounded reason is `evidence_absent` or `evidence_binding_rejected`. These report no available check input or input that failed the required binding; neither means the source data was wrong.
+
+Missing execution stays unspecified, including historical observations and new early failures that do not report a known cause. A closed quality span or a verifier version does not prove execution. Traces shows the reported state under Workflow checks; existing search accepts `not_run`, `not run`, or either reason enum. The API and scoped MCP reads use the same projection. The Slack adapter accepts `check_execution` / `check_reason_code` on its quality stage and maps them into these generic check fields. No raw request, source body or error text is added.
 
 ## Two designs considered
 

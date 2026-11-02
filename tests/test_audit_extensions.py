@@ -14,6 +14,12 @@ class AuditExtensionTests(unittest.TestCase):
     def quality(self,**changes):
         return self.base(check_version='source-facts-v1',checked_claims=1,mismatched_claims=0,unknown_claims=0,
             reported_outcome='succeeded',check_phase='before_reply',answer_disposition='verified',quality_span_ref=str(uuid.uuid4()),**changes)
+    def test_not_run_check_is_typed_quality_only_without_claims_or_proof(self):
+        facts=self.base(check_version='growthbook-catalog-v1',checked_claims=0,mismatched_claims=0,unknown_claims=0,reported_outcome='unknown',check_execution='not_run',check_reason_code='evidence_binding_rejected')
+        parsed=Observation.model_validate(facts);self.assertEqual(parsed.check_execution,'not_run')
+        for changes in [{'stage':'tool'},{'checked_claims':1},{'mismatched_claims':1},{'reported_outcome':'succeeded'},{'check_execution':'completed'},{'check_execution':None},{'check_reason_code':'raw message'}, {'check_version':None}, {'quality_span_ref':str(uuid.uuid4()),'check_evidence_digest':'a'*64,'check_evidence_version':'source-check-v1','check_phase':'before_reply','answer_disposition':'withheld'}]:
+            with self.subTest(changes=changes),self.assertRaises(ValidationError):Observation.model_validate({**facts,**changes})
+
     def test_quality_and_reply_operation_refs_are_stage_bound_and_proof_is_complete(self):
         facts=self.quality();Observation.model_validate(facts)  # A real operation may exist without source proof.
         full={**facts,'check_evidence_digest':'a'*64,'check_evidence_version':'source-check-v1'};Observation.model_validate(full)

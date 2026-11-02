@@ -18,6 +18,8 @@ Audit-purpose readers use `GET /api/outcomes/goals` and `GET /api/outcomes/goals
 
 A task reuses its workflow `trace_id`. Every span supplies the same original `request_started_at_ms`; retries keep that clock and increase the business attempt number. Terminal spans may declare one `milestone`: completion, delivery or usefulness. A response can also declare delivered, withheld or clarification disposition. Those are observations, not implicit check passes.
 
+Explicit check execution is diagnostic, separate from result and task outcome. A `not_run` check must stay unknown without a receipt; it cannot satisfy a required check. `completed` alone never qualifies a pass. Missing execution is not inferred from a successful span, a result label or an old verifier version. Receipt identities and existing goal versions remain unchanged.
+
 Only the latest attempt's checks and milestones qualify. Required criteria come from the saved goal, not the producer's optional/required flags. Each required check must have one matching version/method/phase. Missing or contradictory checks stay unclassified. Before/after delivery phase must agree with the observed timestamps when delivery is observed. A check without its start cannot establish a reliable ordered evaluation.
 
 ## Denominators and evidence windows
@@ -30,7 +32,7 @@ The query window selects original task starts. Evidence may be followed through 
 
 Goals default to `contract: workflow-trace-v1` for any producer-declared workflow. Select `contract: slack-request-v1` for existing Slack audit requests; the same outcome engine then reads the existing stream without re-ingestion or a parallel trace. `GET /api/traces/catalog` lists supported integrations and check versions.
 
-The Slack adapter maps read/write requests to `slack_read_request` / `slack_write_request`. Its source checks are `source_facts` v1 and `growthbook_catalog` v1, method source, phase before_delivery. A check qualifies only on a real, complete quality operation with matching request, attempt, original clock, environment and release. The immutable quality observation must include a source-check-v1 digest binding. Historical counts, an unrelated pointer or a closed model span cannot substitute. The digest is a producer attestation over the compared facts, not an independent server-side source fetch or HMAC verification.
+The Slack adapter maps read/write requests to `slack_read_request` / `slack_write_request`. Its source checks are `source_facts` v1 and `growthbook_catalog` v1/v2, method source, phase before_delivery. A check qualifies only on a real, complete quality operation with matching request, attempt, original clock, environment and release. The immutable quality observation must include a source-check-v1 digest binding. Historical counts, an unrelated pointer or a closed model span cannot substitute. The digest is a producer attestation over the compared facts, not an independent server-side source fetch or HMAC verification.
 
 Final delivery requires an explicit reply operation bound to exactly one matching accepted Slack send. An interim message, dev-log output or multiple ambiguous sends cannot qualify. Unknown traffic, missing required reports, conflicting clocks/releases and parent cycles stay unknown. Original-clock deadlines and latest-attempt quality apply to both contracts. Tracker delivery is verified for two production validation requests; broader user coverage remains a release gate.
 

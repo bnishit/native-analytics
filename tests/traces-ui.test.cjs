@@ -59,3 +59,27 @@ test('trace model cost prefers exact decimal dollars over an unavailable integer
  const html=vm.runInContext("traceModelUsage([{id:'span_1',model_usage:{provider:'example',model:'model-v1',cost_usd_decimal:'0.000000037125',cost_microusd:null,cost_source:'provider_reported'}}])",context);
  assert.match(html,/Cost \$0\.000000037125/);assert.doesNotMatch(html,/Cost unknown/);
 });
+
+
+test('checks explain that verification never ran without calling source data wrong',()=>{
+ const context=vm.createContext({location:{hash:''},URLSearchParams,traceStepLabel:{},esc:v=>String(v??'').replaceAll('<','&lt;'),fmt:String});
+ vm.runInContext(fs.readFileSync('static/traces.js','utf8'),context);
+ const render=reason=>vm.runInContext('traceWorkflowChecks('+JSON.stringify([{name:'source_facts',version:1,result:'unknown',required:true,method:'source',phase:'before_delivery',execution:'not_run',reason_code:reason}])+')',context);
+ assert.match(render('evidence_absent'),/Check did not run\. No evidence was available to check\./);
+ assert.match(render('evidence_binding_rejected'),/Check did not run\. Evidence did not match this task\./);
+ assert.doesNotMatch(render('evidence_binding_rejected'),/source data (?:was|is) wrong/i);
+ assert.match(render('<private-token>'),/Check did not run\. Reason was not recorded\./);
+ assert.doesNotMatch(render('<private-token>'),/private-token/);
+});
+
+test('historical and completed checks keep execution distinct from the result',()=>{
+ const context=vm.createContext({location:{hash:''},URLSearchParams,traceStepLabel:{},esc:String,fmt:String});
+ vm.runInContext(fs.readFileSync('static/traces.js','utf8'),context);
+ const base={name:'source_facts',version:1,result:'failed',required:true,method:'source',phase:'before_delivery'};
+ const render=check=>vm.runInContext('traceWorkflowChecks('+JSON.stringify([check])+')',context);
+ assert.match(render(base),/Execution was not recorded\./);
+ assert.doesNotMatch(render(base),/Check (?:ran|did not run)\./);
+ assert.match(render({...base,execution:'completed'}),/Check ran\./);
+ assert.match(render({...base,execution:'completed'}),/failed/);
+ assert.match(render({...base,execution:'completed'}),/not proof of task completion/);
+});

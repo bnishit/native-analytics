@@ -54,6 +54,27 @@ class ExplorerTests(unittest.TestCase):
 class SlackExplorerTests(unittest.TestCase):
     def setUp(self):self.f=AuditTests();self.f.setUp()
     def tearDown(self):self.f.tearDown()
+    def test_slack_explicit_not_run_search_and_projection_keep_old_checks_unspecified(self):
+        for explicit in (False,True):
+            ref,attempt=self.f.chain();span=str(uuid.uuid4())
+            for offset,state in enumerate(('started','succeeded')):self.f.observe(self.f.trace_facts(ref,attempt,span,'quality',state),4+offset)
+            facts={'schema_version':'slack-request-v1','stage':'quality','environment':'production','request_ref':ref,'attempt_ref':attempt,'attempt_number':1,'quality_span_ref':span,
+                   'check_version':'growthbook-catalog-v1','checked_claims':0,'mismatched_claims':0,'unknown_claims':0,'reported_outcome':'unknown','answer_disposition':'withheld','check_phase':'before_reply'}
+            if explicit:facts.update(check_execution='not_run',check_reason_code='evidence_binding_rejected')
+            self.f.observe(facts,6)
+        path='/api/traces/search?project='+self.f.p['id']
+        all_rows=self.f.owner.post(path,headers=CSRF,json={'environment':'production'}).json()['traces']
+        self.assertEqual(len(all_rows),2)
+        old=next(r for r in all_rows if 'check_execution' not in r['answer_check'])
+        self.assertNotIn('execution',old['checks'][0]);self.assertNotIn('reason_code',old['checks'][0])
+        for needle in ['not_run','not run','evidence_binding_rejected','evidence binding rejected']:
+            response=self.f.owner.post(path,headers=CSRF,json={'environment':'production','search':needle})
+            self.assertEqual(response.status_code,200,response.text);report=response.json();self.assertEqual(report['total'],1)
+            check=report['traces'][0]['checks'][0];self.assertEqual(check['result'],'unknown');self.assertEqual(check['execution'],'not_run');self.assertFalse(check['evidence_present'])
+            self.assertEqual(report['traces'][0]['answer_check']['check_reason_code'],'evidence_binding_rejected')
+            opened=self.f.owner.post('/api/traces/open?project='+self.f.p['id'],headers=CSRF,json={**report['query'],'reference':report['traces'][0]['reference']})
+            self.assertEqual(opened.status_code,200);self.assertEqual(opened.json()['trace']['checks'][0],check)
+
     def test_filter_before_pagination_and_no_private_payloads(self):
         production,_=self.f.chain()
         self.f.chain(environment='staging')

@@ -16,7 +16,9 @@ export interface TraceContext {
  traceId:string; attemptId:string; attemptNumber:number; workflow:string; environment:Environment;
  requestStartedAtMs:number; releaseSha?:string; spanId?:string; sampled:boolean; trafficKind?:TrafficKind;
 }
-type Check = {name:string;version:number;result:Result;required:boolean;method:Method;phase:Phase;evidence_ref?:string};
+type CheckExecution = 'completed'|'not_run';
+type CheckReason = 'evidence_absent'|'evidence_binding_rejected';
+type Check = {name:string;version:number;result:Result;required:boolean;method:Method;phase:Phase;evidence_ref?:string;execution?:CheckExecution;reason_code?:CheckReason};
 const current = new AsyncLocalStorage<TraceContext>();
 const identifier=/^[a-z][a-z0-9_.-]{0,63}$/;
 const uuid4=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -71,10 +73,11 @@ export class Span {
   return result;
  }
  facts(){const c=this.context;return {schema_version:'workflow-trace-v1',trace_id:mappedId(c.traceId),attempt_id:c.attemptId,attempt_number:c.attemptNumber,span_id:mappedId(c.traceId,c.spanId),parent_span_id:this.parent,workflow:c.workflow,environment:c.environment,traffic_kind:c.trafficKind||'unknown',release_sha:c.releaseSha,request_started_at_ms:c.requestStartedAtMs,step:this.step}}
- check(name:string,result:Result,options:{version?:number;method?:Method;phase?:Phase;required?:boolean;evidenceDigest?:string}={}):Result {
-  const {version=1,method='source',phase='before_delivery',required=true,evidenceDigest}=options;
+ check(name:string,result:Result,options:{version?:number;method?:Method;phase?:Phase;required?:boolean;evidenceDigest?:string;execution?:CheckExecution;reasonCode?:CheckReason}={}):Result {
+  const {version=1,method='source',phase='before_delivery',required=true,evidenceDigest,execution,reasonCode}=options;
   if(this.closed||typeof name!=='string'||!identifier.test(name)||!['passed','failed','unknown'].includes(result)||!Number.isInteger(version)||version<1||version>1000000||!['source','code','model','human'].includes(method)||!['before_delivery','after_delivery'].includes(phase)||typeof required!=='boolean'||this.checks.length>=20||this.checks.some(c=>c.name===name))throw Error('Invalid or closed check');
-  const check:Check={name,version,result,method,phase,required};
+  if(execution!==undefined&&!['completed','not_run'].includes(execution)||reasonCode!==undefined&&!['evidence_absent','evidence_binding_rejected'].includes(reasonCode)||reasonCode!==undefined&&execution!=='not_run'||execution==='not_run'&&(result!=='unknown'||evidenceDigest!==undefined))throw Error('Invalid check execution diagnostic');
+  const check:Check={name,version,result,method,phase,required,...(execution===undefined?{}:{execution}),...(reasonCode===undefined?{}:{reason_code:reasonCode})};
   if(evidenceDigest!==undefined){
    if(typeof evidenceDigest!=='string'||!/^[a-f0-9]{64}$/.test(evidenceDigest))throw Error('Provide a SHA-256 evidence digest, never content');
    const receipt=randomUUID(),facts=this.facts();

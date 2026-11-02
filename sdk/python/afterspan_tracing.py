@@ -97,12 +97,16 @@ class Span:
         return {'schema_version':'workflow-trace-v1','trace_id':mapped_id(c.trace_id),'attempt_id':c.attempt_id,
                 'attempt_number':c.attempt_number,'span_id':mapped_id(c.trace_id,c.span_id),'parent_span_id':self.parent,
                 'workflow':c.workflow,'environment':c.environment,'traffic_kind':c.traffic_kind,'release_sha':c.release_sha,'request_started_at_ms':c.request_started_at_ms,'step':self.step}
-    def check(self,name,result,*,version=1,method='source',phase='before_delivery',required=True,evidence_digest=None):
+    def check(self,name,result,*,version=1,method='source',phase='before_delivery',required=True,evidence_digest=None,execution=None,reason_code=None):
         if self.closed:raise ValueError('span already closed')
         if not isinstance(name,str) or not re.fullmatch(r'[a-z][a-z0-9_.-]{0,63}',name) or result not in {'passed','failed','unknown'} or type(version) is not int or not 1<=version<=1000000:raise ValueError('invalid check')
         if method not in {'source','code','model','human'} or phase not in {'before_delivery','after_delivery'} or type(required) is not bool:raise ValueError('invalid check definition')
         if len(self.checks)>=20 or any(c['name']==name for c in self.checks):raise ValueError('checks must be unique and bounded')
+        if execution not in (None,'completed','not_run') or reason_code not in (None,'evidence_absent','evidence_binding_rejected'):raise ValueError('invalid check execution diagnostic')
+        if reason_code is not None and execution!='not_run' or execution=='not_run' and (result!='unknown' or evidence_digest is not None):raise ValueError('check execution contradicts result or evidence')
         check={'name':name,'version':version,'result':result,'method':method,'phase':phase,'required':required}
+        if execution is not None:check['execution']=execution
+        if reason_code is not None:check['reason_code']=reason_code
         if evidence_digest is not None:
             if not isinstance(evidence_digest,str) or not re.fullmatch(r'[a-f0-9]{64}',evidence_digest):raise ValueError('provide a SHA-256 evidence digest, never source content')
             receipt=str(uuid.uuid4());facts=self.facts()

@@ -16,7 +16,7 @@ await tracer.task({workflow:'package_probe',environment:'test',trafficKind:'synt
     span.observeOpenAI({choices:[{delta:{content:'private-content-sentinel'}}]});
     span.modelUsage({input_count:4,output_count:2,usage_source:'provider_reported',cost_usd_decimal:'0.000000254',cost_source:'provider_reported'});
   });
-  await tracer.span('processing',span=>{assert.equal(2+2,4);span.check('arithmetic','passed',{method:'code',evidenceDigest:createHash('sha256').update('4').digest('hex')});},{milestone:'completion'});
+  await tracer.span('processing',span=>{assert.equal(2+2,4);span.check('arithmetic','passed',{method:'code',evidenceDigest:createHash('sha256').update('4').digest('hex'),execution:'completed'});span.check('source_facts','unknown',{execution:'not_run',reasonCode:'evidence_absent'});},{milestone:'completion'});
   await tracer.span('response',()=>{},{milestone:'delivery',disposition:'delivered'});
 });
 await tracer.flush();assert.equal(client.status().queued,0);

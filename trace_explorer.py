@@ -95,7 +95,7 @@ class TraceExplorer:
         coverage['other_environment_requests']=sum(r['environment'] not in {q.environment,'conflict'} for r in rows)
         rows=[finish_trace(r) for r in rows if r['environment']==q.environment and (q.traffic_kind=='all' or r.get('traffic_kind','unknown')==q.traffic_kind)]
         needle=q.search.strip().lower()
-        rows=[r for r in rows if (not needle or needle in ' '.join([r['reference'],r['name'],r['release'] or '',*(s['step'] for s in r['spans']),*(c['name'] for c in r.get('checks',[]))]).lower())
+        rows=[r for r in rows if (not needle or needle in ' '.join([r['reference'],r['name'],r['release'] or '',*(s['step'] for s in r['spans']),*(str(c.get(field) or '') for c in r.get('checks',[]) for field in ['name','execution','reason_code']),*(str(c.get(field) or '').replace('_',' ') for c in r.get('checks',[]) for field in ['execution','reason_code'])]).lower())
               and (q.status=='all' or r['status']==q.status)
               and (q.min_duration_ms==0 or r['duration_ms'] is not None and r['duration_ms']>=q.min_duration_ms)]
         rows.sort(key=lambda r:(-r['last_seen'],r['reference']))

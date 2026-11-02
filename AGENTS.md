@@ -106,7 +106,7 @@ still cause gaps; never promise exhaustive lossless logging.
 ## Maintenance
 
 One process, one replica, SQLite WAL on one persistent volume. Retention runs hourly.
-Configure backups separately. Diagnose queue backlog/drops and auth errors first. A producer
+Configure backups separately. The unreleased scripts/backup.py is operator-entire-database only, never a scoped customer export or MCP fallback; restore only to a new private isolated path with external workers disabled. See docs/operations.md. Diagnose queue backlog/drops and auth errors first. A producer
 outage must not stop business requests or automatically retry a payment/write. Never disable
 redaction or authentication to "fix" missing events. Avoid broad raw payload capture.
 

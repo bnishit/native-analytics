@@ -422,7 +422,7 @@ FastAPI, SQLite on one persistent volume, plain HTML/CSS/JS and SVG charts. No h
 3. Set `ANALYTICS_PUBLIC_URL` to the service HTTPS origin, `ANALYTICS_DB=/data/analytics.db`,
    `COOKIE_SECURE=true`, `RETENTION_DAYS=90`, `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS=0`.
 4. Configure email delivery as above. Open `/app`, verify the email sign-in link, create a workspace and project, then verify a real collection receipt.
-5. Use the Railway volume backup facility for backups. A persistent volume is not an off-site backup.
+5. Configure Railway/off-site backup retention separately. The unreleased branch also includes an operator-only encrypted consistent SQLite snapshot and isolated restore tool; see [operations](docs/operations.md). Its local tests are not a production recovery claim. A persistent volume is not an off-site backup.
 
 For local development use a writable `ANALYTICS_DB` and `COOKIE_SECURE=false` on localhost only.
 Run `uvicorn app:app --host 127.0.0.1 --port 8080`.

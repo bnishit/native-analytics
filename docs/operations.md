@@ -27,4 +27,18 @@ Six tests cover committed WAL, encryption, isolated destination permissions, ove
 
 ## Collection trust remains separate
 
-The existing Python collector has a durable SQLite outbox and pipeline pulses; the Node collector has a bounded in-memory queue and cannot survive process termination. Queue/disk/network failures and requests blocked before instrumentation can leave gaps. An absent pulse is not zero drops. The branch now has a local typed per-source collection-health screen/API/CLI/MCP; see [collection health](collection-health.md). Measured capacity, real fault/restart proof and production verification are still required. The release comparison therefore reports collection completeness as not established.
+The existing Python collector has a durable SQLite outbox and pipeline pulses; the Node collector has a bounded in-memory queue and cannot survive process termination. Queue/disk/network failures and requests blocked before instrumentation can leave gaps. An absent pulse is not zero drops. The branch now has a local typed per-source collection-health screen/API/CLI/MCP; see [collection health](collection-health.md). An isolated real-process test now proves the bounded outage/restart/ambiguous-receipt path below. Measured capacity and production verification are still required. The release comparison therefore reports collection completeness as not established.
+
+## Isolated crash and ambiguous-delivery proof
+
+`python -m unittest discover -s tests -p test_recovery_processes.py` starts a real loopback Uvicorn service with a new private database, fake operator credentials and no inherited cloud/mail/billing credentials. It uses actual producer write keys and separate project-scoped read keys. No production process is stopped.
+
+The test kills the analytics process, completes one synthetic business write while its telemetry remains queued, and crashes the producer after persistence. A fresh producer process reopens the durable outbox. A loopback proxy forwards the telemetry to the restarted service, then drops the HTTP reply after commit. The producer retains the same event for retry. The test kills/restarts analytics again before the next producer process retries, and verifies the duplicate acknowledgement clears the outbox.
+
+| Checkpoint | Business actions | Queued events | Stored completion events |
+|---|---:|---:|---:|
+| Service offline; producer crashed after queue persistence | 1 | 1 | 0 |
+| Service accepted event; acknowledgement discarded | 1 | 1 | 1 |
+| Service restarted; same event acknowledged as duplicate | 1 | 0 | 1 |
+
+Project-scoped API reads verify the event and chart after restart. The saved goal and credential remain usable, traits persist in SQLite, unauthenticated reads are denied and cross-project reads fail. Backend ingestion counters also survive. This proves this synthetic application's retry path and these stored records on the local filesystem. It does not prove every business application's idempotency, Node memory durability, host disk-loss recovery, production volume configuration or recovery time. The separate production restart/volume/delivery verification remains a release gate.

@@ -248,8 +248,34 @@ class AuditTests(unittest.TestCase):
                          reply_required=True,reported_outcome=outcome if stage=='quality' else 'succeeded',**extra),i)
         return ref,attempt
 
+    def test_pre_send_generic_check_preserves_withheld_candidate_and_order(self):
+        ref,attempt=str(uuid.uuid4()),str(uuid.uuid4())
+        for at,stage in enumerate(['parser','planner','quality','reply']):
+            extra=dict(check_version='source-facts-v1',checked_claims=1,mismatched_claims=1,unknown_claims=0,
+                       answer_disposition='withheld',check_phase='before_reply') if stage=='quality' else {}
+            self.observe(self.facts(stage,ref,attempt,comparison_eligible=False,reply_required=True,
+                         reported_outcome='failed' if stage=='quality' else 'succeeded',**extra),at)
+        row=self.review()['requests'][0]
+        self.assertNotIn('stage_time_conflict',row['issues'])
+        self.assertEqual(row['answer_check']['answer_disposition'],'withheld')
+        self.assertEqual(row['answer_check']['mismatched_claims'],1)
+        self.assertEqual(next(s for s in row['stages'] if s['stage']=='reply')['reported_outcome'],'succeeded')
+        bad_ref,bad_attempt=str(uuid.uuid4()),str(uuid.uuid4())
+        for at,stage in enumerate(['parser','planner','reply','quality']):
+            extra=dict(check_version='source-facts-v1',checked_claims=1,mismatched_claims=0,unknown_claims=0,
+                       answer_disposition='verified',check_phase='before_reply') if stage=='quality' else {}
+            self.observe(self.facts(stage,bad_ref,bad_attempt,comparison_eligible=False,reply_required=True,
+                         reported_outcome='succeeded',**extra),10+at)
+        self.assertTrue(any('stage_time_conflict' in r['issues'] for r in self.review()['requests']))
+
+    def test_withheld_successful_candidate_does_not_qualify_delivered_answer(self):
+        self.quality_chain(answer_disposition='withheld',check_phase='after_reply')
+        result=self.review({'goal':self.quality_goal()},path='evaluate')
+        self.assertEqual((result['passed'],result['unknown']),(0,1))
+
     def test_source_check_is_distinct_from_delivery_and_preserves_missing_checks(self):
         self.quality_chain()
+        self.assertIsNone(self.review()['requests'][0]['answer_check']['check_phase'])
         query={'goal':self.quality_goal()};r=self.review(query,path='evaluate')
         self.assertEqual((r['passed'],r['unknown'],r['rate']),(1,0,1))
         self.assertEqual(r['verification'],'producer_source_check_not_independently_fetched_by_afterspan')
@@ -276,7 +302,10 @@ class AuditTests(unittest.TestCase):
         from pydantic import ValidationError
         facts=self.facts('quality',str(uuid.uuid4()),str(uuid.uuid4()),check_version='growthbook-catalog-v1',checked_claims=1,mismatched_claims=1,unknown_claims=0,reported_outcome='succeeded')
         with self.assertRaises(ValidationError):Observation.model_validate(facts)
-        for extra in [{'checked_claims':True},{'source_response':'private contents'},{'checked_claims':16}]:
+        for extra in [{'checked_claims':True},{'source_response':'private contents'},{'checked_claims':16},
+                      {'reported_outcome':'failed','answer_disposition':'verified','check_phase':'before_reply'},
+                      {'reported_outcome':'failed','answer_disposition':'withheld'},
+                      {'stage':'reply','answer_disposition':'withheld','check_phase':'before_reply'}]:
             with self.assertRaises(ValidationError):Observation.model_validate({**facts,**extra})
 
     def test_new_repo_setup_reports_unconfigured_and_observed_coverage(self):

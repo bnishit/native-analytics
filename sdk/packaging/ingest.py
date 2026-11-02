@@ -19,8 +19,9 @@ try:
     streamed={trace['workflow']:trace for trace in traces if trace['workflow'].startswith('package_stream_')}
     assert set(streamed)=={'package_stream_complete','package_stream_cancel'}
     for name,trace in streamed.items():
-        expected='cancelled' if name.endswith('cancel') else 'succeeded'
+        expected='failed' if name.endswith('cancel') else 'succeeded'
         assert all(span['state']==expected for span in trace['spans']), trace
+        if name.endswith('cancel'):assert all(span['outcome_code']=='cancelled' for span in trace['spans']),trace
         assert trace['business_outcome']=='not_established'
         model=next(span for span in trace['spans'] if span['step']=='model')
         assert 0<=model['model_usage']['first_output_ms']<=model['duration_ms']

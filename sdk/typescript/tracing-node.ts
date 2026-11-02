@@ -118,7 +118,7 @@ export class WorkflowTracer {
  }
  private finishSpan(span:Span,options:SpanOptions,state:string,code:string):void {
   const duration=performance.now()-span.started,usage=span.modelResult(duration);
-  current.run(span.context,()=>this.emit('trace.observed',{afterspan_trace:{...span.facts(),state:duration<=86400000?state:'unknown',outcome_code:duration<=86400000?code:'uncertain',duration_ms:duration<=86400000?duration:undefined,...(options.milestone?{milestone:options.milestone}:{}),...(options.disposition?{disposition:options.disposition}:{}),...(span.checks.length?{checks:span.checks}:{}),...(usage?{model_usage:usage}:{})}}));span.closed=true;
+  current.run(span.context,()=>this.emit('trace.observed',{afterspan_trace:{...span.facts(),state:duration<=86400000?(state==='cancelled'?'failed':state):'unknown',outcome_code:duration<=86400000?code:'uncertain',duration_ms:duration<=86400000?duration:undefined,...(options.milestone?{milestone:options.milestone}:{}),...(options.disposition?{disposition:options.disposition}:{}),...(span.checks.length?{checks:span.checks}:{}),...(usage?{model_usage:usage}:{})}}));span.closed=true;
  }
  async span<T>(step:Step,run:(span:Span)=>Promise<T>|T,options:SpanOptions={}):Promise<T>{
   const span=this.openSpan(step,options);

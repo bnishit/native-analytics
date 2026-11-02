@@ -34,13 +34,13 @@ test('consumer cancellation closes upstream once and records cancellation',async
  const {tracer,events}=fixture();let cancelled=0;
  const result=await tracer.response({workflow:'answer'},()=>new Response(new ReadableStream({pull(c){c.enqueue(new Uint8Array([1]))},cancel(){cancelled++}},{highWaterMark:0})));
  const reader=result.response.body!.getReader();await reader.read();await reader.cancel('private-reason');assert.equal(await result.finished,'cancelled');await tracer.flush();
- assert.equal(cancelled,1);const terminal=facts(events).filter(x=>x.state!=='started');assert.equal(terminal.length,2);assert.equal(terminal[0].state,'cancelled');assert.equal(terminal[0].outcome_code,'cancelled');assert.ok(!JSON.stringify(events).includes('private-reason'));
+ assert.equal(cancelled,1);const terminal=facts(events).filter(x=>x.state!=='started');assert.equal(terminal.length,2);assert.equal(terminal[0].state,'failed');assert.equal(terminal[0].outcome_code,'cancelled');assert.ok(!JSON.stringify(events).includes('private-reason'));
 });
 test('stream return cleans up the source and records cancellation without replay',async()=>{
  const {tracer,events}=fixture();let closed=0,calls=0;
  await tracer.task({workflow:'answer'},async()=>{
   for await(const chunk of tracer.stream('model',async function*(){calls++;try{yield 'first';yield 'second'}finally{closed++}})){assert.equal(chunk,'first');break}
- });await tracer.flush();assert.equal(calls,1);assert.equal(closed,1);assert.equal(facts(events).find(x=>x.step==='model'&&x.state!=='started').state,'cancelled');
+ });await tracer.flush();assert.equal(calls,1);assert.equal(closed,1);assert.equal(facts(events).find(x=>x.step==='model'&&x.state!=='started').outcome_code,'cancelled');
 });
 test('handler and stream errors remain original and never leak to telemetry',async()=>{
  const {tracer,events}=fixture();const problem=Error('private-error');
@@ -65,7 +65,7 @@ test('cancelling a pending pull cannot be mistaken for a successful EOF',async()
  const pulling=new Promise<void>(r=>{entered=r}),cleaning=new Promise<void>(r=>{cleanup=r});
  const result=await tracer.response({workflow:'answer'},()=>new Response(new ReadableStream({pull(){entered();return new Promise(()=>{})},cancel(){cancelled++;return cleaning}},{highWaterMark:0})));
  const reader=result.response.body!.getReader();const pending=reader.read();await pulling;const cancel=reader.cancel();await pending;cleanup();await cancel;
- assert.equal(await result.finished,'cancelled');await tracer.flush();assert.equal(cancelled,1);assert.equal(facts(events).filter(x=>x.state==='succeeded').length,0);
+ assert.equal(await result.finished,'cancelled');await tracer.flush();assert.equal(cancelled,1);assert.equal(facts(events).filter(x=>x.state==='succeeded').length,0);assert.ok(facts(events).filter(x=>x.state!=='started').every(x=>x.state==='failed'&&x.outcome_code==='cancelled'));
 });
 test('even an undefined thrown stream error must fail the trace',async()=>{
  const {tracer,events}=fixture();const result=await tracer.response({workflow:'answer'},()=>new Response(new ReadableStream({pull(){throw undefined}})));

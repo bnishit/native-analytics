@@ -20,6 +20,11 @@ class ReleaseOutcomeTests(unittest.TestCase):
             self.goal={**self.f.goal,'traffic_kind':'user','min_sample_size':1}
             self.f.save(1,self.goal).raise_for_status()
         self.binding=self.binding_for(2)
+        self.pulse_instance=str(uuid.uuid4())
+        with patch('time.time',return_value=self.now-1000):
+            self.client.put('/api/collection/sources?project=alpha',headers=self.auth,json={'source':'export_worker','environment':'staging','workflow':'document_export','interval_seconds':60}).raise_for_status()
+        for i,seconds in enumerate([670,610,550,490,370,310,250,190,130]):self.health_pulse(self.now-seconds,i)
+
         self.case_id=str(uuid.uuid4())
         with patch('time.time',return_value=self.now-800):
             case={'title':'Checked source list','privacy_reviewed':True,'input':{'request':'list experiments in production'},'expected':{'count':2}}
@@ -32,6 +37,17 @@ class ReleaseOutcomeTests(unittest.TestCase):
             'baseline_run':self.baseline_run,'candidate_run':self.candidate_run,
             'before':{'start':stamp(self.now-650),'end':stamp(self.now-550),'as_of':stamp(self.now-500)},
             'after':{'start':stamp(self.now-350),'end':stamp(self.now-250),'as_of':stamp(self.now-150)}}
+    def health_pulse(self,at,sequence,**changes):
+        pulse={'schema_version':'collection-health-v1','source':'export_worker','environment':'staging','workflow':'document_export','instance_id':self.pulse_instance,'sequence':sequence,
+               'observed_at_ms':int(at*1000),'process_started_at_ms':int((self.now-1100)*1000),'interval_seconds':60,'delivery_mode':'durable','queued':0,'capacity':100,
+               'dropped':0,'rejected':0,'delivery_failures':0,'evaluator_failures':0,**changes}
+        with patch('time.time',return_value=at+1):
+            response=self.f.fixture.ingest({'id':str(uuid.uuid4()),'name':'analytics.pipeline','timestamp':stamp(pulse['observed_at_ms']/1000),'properties':{'afterspan_health':pulse}})
+            response.raise_for_status()
+    def test_collection_loss_or_missing_evidence_blocks_a_clean_release_comparison(self):
+        self.health_pulse(self.now-170,10,dropped=1)
+        r=self.compare().json();self.assertEqual(r['status'],'unknown');self.assertIn('after_collection_evidence_incomplete',r['reasons'])
+        self.assertEqual(r['after']['collection_health']['status'],'attention');self.assertIsNone(r['satisfied_fraction_difference'])
     def tearDown(self):self.f.tearDown()
     def binding_for(self,version):
         saved=self.client.get(f'/api/outcomes/goals/{self.f.id}?project=alpha&version={version}',headers=self.auth).json()

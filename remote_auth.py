@@ -13,9 +13,9 @@ from mcp.server.auth.provider import AccessToken,AuthorizationCode,AuthorizeErro
 from mcp.shared.auth import OAuthClientInformationFull,OAuthToken
 from pydantic import BaseModel,ConfigDict,Field
 
-SCOPES=['analytics:read','charts:write','audit:read','goals:write','experiments:write','debug:read']
+SCOPES=['analytics:read','charts:write','audit:read','goals:write','experiments:write','debug:read','collection:write']
 
-EDITOR_SCOPES={'charts:write','goals:write','experiments:write','debug:read'}
+EDITOR_SCOPES={'charts:write','goals:write','experiments:write','debug:read','collection:write'}
 
 class Decision(BaseModel):
     model_config=ConfigDict(extra='forbid')
@@ -148,16 +148,17 @@ class OAuthProvider:
         if not token:raise HTTPException(401,'agent access expired or revoked')
         path=request.url.path
         allowed={'/api/overview','/api/catalog','/api/query','/api/charts','/api/setup','/api/journeys','/api/funnels','/api/funnels/analyze','/api/segments','/api/segments/analyze','/api/retention','/api/retention/analyze'}
-        audit=(request.method=='GET' and (path=='/api/outcomes/goals' or bool(re.fullmatch(r'/api/outcomes/goals/[0-9a-f-]{36}',path)))) or path in {'/api/audit/catalog','/api/audit/review','/api/audit/trace','/api/audit/evaluate','/api/audit/onboarding','/api/outcomes/evaluate','/api/traces/search','/api/traces/open','/api/traces/catalog','/api/traces/review','/api/traces/detail'}
+        collection_write=request.method=='PUT' and path=='/api/collection/sources'
+        audit=(request.method=='GET' and (path=='/api/outcomes/goals' or bool(re.fullmatch(r'/api/outcomes/goals/[0-9a-f-]{36}',path)))) or path in {'/api/audit/catalog','/api/audit/review','/api/audit/trace','/api/audit/evaluate','/api/audit/onboarding','/api/outcomes/evaluate','/api/collection/health','/api/collection/sources','/api/traces/search','/api/traces/open','/api/traces/catalog','/api/traces/review','/api/traces/detail'}
         chart=path=='/api/charts' or bool(re.fullmatch(r'/api/charts/[0-9a-f-]{36}',path))
         goal_write=request.method=='PUT' and bool(re.fullmatch(r'/api/outcomes/goals/[0-9a-f-]{36}',path))
         release_view=request.method=='GET' and path=='/api/outcomes/releases' or request.method=='POST' and path=='/api/outcomes/releases/compare'
         experiment=bool(re.fullmatch(r'/api/experiments/(cases|datasets|runs)(/[0-9a-f-]{36})?',path)) and (request.method=='GET' or request.method=='PUT' and bool(re.fullmatch(r'/api/experiments/(cases|datasets|runs)/[0-9a-f-]{36}',path))) or path=='/api/experiments/compare' and request.method=='POST' or release_view
         debug=request.method=='GET' and path=='/api/debug/policy' or request.method=='POST' and path=='/api/debug/review'
-        scope='debug:read' if debug else 'experiments:write' if experiment else 'goals:write' if goal_write else 'audit:read' if audit else 'charts:write' if chart and request.method!='GET' else 'analytics:read'
+        scope='collection:write' if collection_write else 'debug:read' if debug else 'experiments:write' if experiment else 'goals:write' if goal_write else 'audit:read' if audit else 'charts:write' if chart and request.method!='GET' else 'analytics:read'
         if release_view and not {'audit:read','experiments:write'}<=set(token.scopes):raise HTTPException(403,'release comparisons require audit and experiment access')
         if chart and request.method not in {'GET','POST','PUT'}:raise HTTPException(403,'agent access cannot remove charts')
-        if project!=token.project or scope not in token.scopes or not (path in allowed or audit or chart or goal_write or experiment or debug) or role=='owner' or role=='editor' and not (chart or goal_write or experiment or debug):
+        if project!=token.project or scope not in token.scopes or not (path in allowed or audit or chart or goal_write or experiment or debug or collection_write) or role=='owner' or role=='editor' and not (chart or goal_write or experiment or debug or collection_write):
             raise HTTPException(403,'agent scope does not allow this action')
 
     def install(self,app):

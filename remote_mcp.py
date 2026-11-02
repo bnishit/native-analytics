@@ -101,6 +101,21 @@ def install(app,provider):
         return await call('/api/outcomes/evaluate',query)
 
     @mcp.tool(annotations=READ)
+    async def collection_health(query:dict)->dict:
+        """Requires audit:read. Inspect expected-source pulses, queue/drops/rejections/delay/evaluator coverage and backend rejection counters in a bounded environment/window. Observed is not a complete task ledger. Unknown and stale evidence remain explicit."""
+        return await call('/api/collection/health',query)
+
+    @mcp.tool(annotations=READ)
+    async def collection_sources()->dict:
+        """Requires audit:read. List current editor-declared source expectations and revisions; no private event payloads or keys."""
+        return await call('/api/collection/sources')
+
+    @mcp.tool(annotations=WRITE)
+    async def save_collection_source(definition:dict,revision:int=0)->dict:
+        """Requires separate collection:write consent and editor membership. Declare a source/environment/workflow and pulse interval using the current revision (0 for new). Existing analytics/audit grants cannot change expectations. This does not prove the source is running."""
+        return await call('/api/collection/sources?revision='+str(revision),definition,'PUT')
+
+    @mcp.tool(annotations=READ)
     async def overview(days:int=7)->dict:
         """Read activity and collection health, not raw events."""
         # API query parameters own validation; body-free GET keeps the shared engine unchanged.

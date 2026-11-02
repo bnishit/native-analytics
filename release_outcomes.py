@@ -5,6 +5,7 @@ import time
 import uuid
 from fastapi import Depends,HTTPException,Query
 from pydantic import model_validator
+from collection_health import HealthQuery
 from outcomes import OutcomeBinding,OutcomeQuery,OutcomeGoal
 from product_analytics import Model,Window
 from product_loop import released_artifact
@@ -34,8 +35,8 @@ def public_release(action,release):
             **{k:release.get(k) for k in ['provider','commit','base_commit','environment','released_at','deployment_id','timestamp_basis']}}
 
 class ReleaseOutcomes:
-    def __init__(self,app,connect,editor,outcomes,regressions,loop):
-        self.connect=connect;self.outcomes=outcomes;self.regressions=regressions;self.loop=loop
+    def __init__(self,app,connect,editor,outcomes,regressions,loop,collection):
+        self.connect=connect;self.outcomes=outcomes;self.regressions=regressions;self.loop=loop;self.collection=collection
         @app.get('/api/outcomes/releases',dependencies=[Depends(editor)])
         def releases(project:str,environment:Environment,limit:int=Query(20,ge=1,le=100),offset:int=Query(0,ge=0,le=10000)):
             return self.list(project,environment,limit,offset)
@@ -103,6 +104,10 @@ class ReleaseOutcomes:
                 if result['counts']['unclassified'] or result['satisfied_fraction'] is None:reasons.append(label+'_evidence_incomplete')
                 if window.start.timestamp()<time.time()-self.loop.retention_days*86400:reasons.append(label+'_retention_gap')
                 reports[label]={k:result[k] for k in ['counts','mature_denominator','satisfied_fraction','coverage','model_cost','query','snapshot','tasks','total','has_more','trace_query']}
+                health=self.collection.report(project,HealthQuery(start=window.start,end=window.as_of,as_of=window.as_of,environment=goal.environment,workflow=goal.workflow))
+                reports[label]['collection_health']={k:health[k] for k in ['status','reasons','collection_completeness','query','fingerprint','limits']}
+                reports[label]['collection_health'].update(backend=health['backend'],backend_scope=health['backend_scope'],sources=[{k:s[k] for k in ['source','status','reasons']} for s in health['sources']])
+                if health['status']!='observed':reasons.append(label+'_collection_evidence_incomplete')
         reasons=sorted(set(reasons));comparable=not reasons
         result={'status':'comparable' if comparable else 'unknown','reasons':reasons,
             'outcome_goal':req.outcome_goal.model_dump(mode='json'),'query':req.model_dump(mode='json'),

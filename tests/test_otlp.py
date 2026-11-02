@@ -55,6 +55,9 @@ class OTLPTests(unittest.TestCase):
         report=ExportTraceServiceResponse.FromString(response.content)
         self.assertEqual(report.partial_success.rejected_spans,1);self.assertEqual(len(self.traces()),1)
         self.assertNotIn('private',report.partial_success.error_message)
+        with test_analytics.analytics.connect() as c:health=c.execute("SELECT rejected_spans,accepted_requests FROM collection_ingestion WHERE project='alpha' AND transport='otlp'").fetchone()
+        self.assertEqual(health['rejected_spans'],1);self.assertEqual(health['accepted_requests'],1)
+
     def test_json_hex_ids_and_gzip_share_exact_identity_with_protobuf(self):
         message,span=self.payload();data=MessageToDict(message)
         s=data['resourceSpans'][0]['scopeSpans'][0]['spans'][0]

@@ -101,6 +101,10 @@ def parser():
         if name=='experiment-get':command.add_argument('--version',type=int,default=1)
         if name=='experiment-save':command.add_argument('--revision',type=int,default=0)
         if name in ['experiment-save','experiment-compare']:command.add_argument('--file',required=True)
+    for name in ['collection-health','collection-sources','collection-save']:
+        command=sub.add_parser(name);command.add_argument('--project',required=True)
+        if name!='collection-sources':command.add_argument('--file',required=True)
+        if name=='collection-save':command.add_argument('--revision',required=True,type=int)
     command=sub.add_parser('outcome-releases');command.add_argument('--project',required=True);command.add_argument('--environment',choices=['production','staging','development','test','local'],required=True);command.add_argument('--offset',type=int,default=0)
     command=sub.add_parser('outcome-release-compare');command.add_argument('--project',required=True);command.add_argument('--file',required=True)
     command=sub.add_parser('debug-policy');command.add_argument('--project',required=True);command.add_argument('--file');command.add_argument('--revision',type=int)
@@ -222,6 +226,10 @@ def main(argv=None):
         if command=='experiment-get':params['version']=args.version
         if command=='experiment-save':params['revision']=args.revision;body=private_json(args.file);method='PUT'
     if command=='experiment-compare':path='/api/experiments/compare';body=private_json(args.file);method='POST'
+    if command in ['collection-health','collection-sources','collection-save']:
+        path='/api/collection/health' if command=='collection-health' else '/api/collection/sources'
+        if command!='collection-sources':body=private_json(args.file);method='POST' if command=='collection-health' else 'PUT'
+        if command=='collection-save':params['revision']=args.revision
     if command=='outcome-releases':path='/api/outcomes/releases';params['environment']=args.environment;params['offset']=args.offset
     if command=='outcome-release-compare':path='/api/outcomes/releases/compare';body=private_json(args.file);method='POST'
     if command=='debug-policy':
@@ -277,7 +285,7 @@ def main(argv=None):
     key_name='NATIVE_ANALYTICS_WRITE_KEY' if command in ['send','identify','debug-capture'] else 'ANALYTICS_ADMIN_TOKEN'
     key=os.environ.get(key_name)
     if key_name!='NATIVE_ANALYTICS_WRITE_KEY' and command!='assign-existing':key=os.environ.get('AFTERSPAN_WORKSPACE_KEY') or key
-    if command in ['projects','overview','query','journeys','setup','charts','funnels','segments','retention','analyze-funnel','analyze-segment','analyze-retention','catalog','audit-catalog','audit-review','audit-trace','audit-evaluate','audit-onboarding','outcome-evaluate','outcome-goals','outcome-goal','loop-goals','loop-status','loop-observe','loop-compare']:
+    if command in ['projects','overview','query','journeys','setup','charts','funnels','segments','retention','analyze-funnel','analyze-segment','analyze-retention','catalog','audit-catalog','audit-review','audit-trace','audit-evaluate','audit-onboarding','outcome-evaluate','outcome-goals','outcome-goal','collection-health','collection-sources','loop-goals','loop-status','loop-observe','loop-compare']:
         key=os.environ.get('AFTERSPAN_READ_KEY') or key
     public=command in ['health','schema','login','complete-login','login-existing']
     session_file=os.environ.get('AFTERSPAN_SESSION_FILE')

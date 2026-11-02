@@ -32,6 +32,7 @@ from otlp import install as install_otlp
 from regressions import Regressions
 from debugging import Debugging
 from release_outcomes import ReleaseOutcomes
+from collection_health import CollectionHealth,CollectionPulse,pipeline_summary
 
 from journeys import JourneyContext,project_journeys,summarize
 
@@ -110,6 +111,7 @@ def init_db():
         OAuthProvider.init_db(c)
         billing.init_db(c)
         ProductAnalytics.init_db(c)
+        CollectionHealth.init_db(c)
         Outcomes.init_db(c)
         Regressions.init_db(c)
         Debugging.init_db(c)
@@ -125,6 +127,7 @@ def prune():
     cutoff = time.time() - RETENTION_DAYS * 86400
     with closing(connect()) as c, c:
         c.execute('DELETE FROM events WHERE ts < ?', (cutoff,))
+        c.execute('DELETE FROM collection_ingestion WHERE bucket < ?',(cutoff,))
         c.execute('DELETE FROM regression_objects WHERE expires<=?',(time.time(),))
         c.execute('DELETE FROM debug_snapshots WHERE expires<=?',(time.time(),))
         c.execute('DELETE FROM people WHERE last_seen < ?', (cutoff,))
@@ -203,6 +206,12 @@ class Event(Model):
 
     @model_validator(mode='after')
     def subject_matches(self):
+        if 'afterspan_health' in self.properties:
+            if self.name!='analytics.pipeline' or self.distinct_id is not None or self.attributes or self.journey is not None or set(self.properties)!={'afterspan_health'}:
+                raise ValueError('health pulses accept only the collection contract')
+            pulse=CollectionPulse.model_validate(self.properties['afterspan_health'])
+            if self.timestamp is None or abs(self.timestamp.timestamp()*1000-pulse.observed_at_ms)>1:raise ValueError('pulse timestamp must match observed clock')
+            self.properties['afterspan_health']=pulse.model_dump(mode='json')
         if 'afterspan_evidence' in self.properties:
             if self.name!='evidence.observed' or self.distinct_id is not None or self.attributes or self.journey is not None or set(self.properties)!={'afterspan_evidence'}:
                 raise ValueError('evidence events accept only the evidence contract')
@@ -368,6 +377,7 @@ def writer(request: Request):
     with closing(connect()) as c:
         row=c.execute('SELECT id FROM projects WHERE key_hash=?',(hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
     if not row:raise HTTPException(401,'invalid project write key')
+    request.state.ingest_project=row['id']
     with _limit_lock:
         now=time.monotonic();start,count=_limits.get(row['id'],(now,0))
         if now-start>=60:start,count=now,0
@@ -393,7 +403,13 @@ async def headers_and_size(request,call_next):
             return {'type':'http.disconnect'}
         request._receive=receive
         request._body=bytes(body)
-    response=await call_next(request)
+    try:response=await call_next(request)
+    except Exception:
+        if request.url.path in {'/v1/events','/v1/traces'} and getattr(request.state,'ingest_project',None):
+            collection_health.record_ingestion(request.state.ingest_project,'otlp' if request.url.path=='/v1/traces' else 'native',500)
+        raise
+    if request.url.path in {'/v1/events','/v1/traces'} and getattr(request.state,'ingest_project',None):
+        collection_health.record_ingestion(request.state.ingest_project,'otlp' if request.url.path=='/v1/traces' else 'native',response.status_code,getattr(request.state,'rejected_spans',0))
     response.headers.update({'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer',
                              'X-Robots-Tag':'noindex, nofollow','X-Frame-Options':'DENY',
                              'Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"})
@@ -792,7 +808,7 @@ def aggregate(rows,q):
 def query_data(project,q):
     q=freeze(q)
     clause,params=where(project,q)
-    clause+=" AND name NOT IN ('trace.observed','evidence.observed') AND json_type(properties,'$.afterspan_trace') IS NULL AND json_type(properties,'$.afterspan_evidence') IS NULL"
+    clause+=" AND name NOT IN ('trace.observed','evidence.observed') AND json_type(properties,'$.afterspan_trace') IS NULL AND json_type(properties,'$.afterspan_evidence') IS NULL AND json_type(properties,'$.afterspan_health') IS NULL"
     if q.event is None:clause=product_only(clause)
     with closing(connect()) as c:
         count=c.execute('SELECT count(*) FROM events WHERE '+clause,params).fetchone()[0]
@@ -838,7 +854,7 @@ def overview(project:str,days:int=7):
                   error_rate=100*(totals['errors'] or 0)/(totals['requests'] or 1))
     series=query_data(project,Query(**q.model_dump(include={'days','start','end','as_of'}),event='http.request' if totals['requests'] else None,interval='hour' if days==1 else 'day',breakdown='operation' if totals['requests'] else None))
     if not totals['requests']:series['breakdown']=[{'label':n['name'],'value':n['count']} for n in names[:20]]
-    return {'totals':totals,'traffic':series,'event_names':names,'pipeline':{**json.loads(pulse['properties']),'received':pulse['received']} if pulse else None,'retention_days':RETENTION_DAYS,'mode':'requests' if totals['requests'] else 'events'}
+    return {'totals':totals,'traffic':series,'event_names':names,'pipeline':{**pipeline_summary(json.loads(pulse['properties'])),'received':pulse['received']} if pulse else None,'retention_days':RETENTION_DAYS,'mode':'requests' if totals['requests'] else 'events'}
 
 
 
@@ -1038,13 +1054,14 @@ Catalog(app,products,reader,editor)
 
 request_audit=Audit(app,connect,audit_reader,freeze,evidence_metadata,editor)
 workflow_tracing=Tracing(app,connect,audit_reader,freeze,evidence_metadata)
+collection_health=CollectionHealth(app,connect,editor,audit_reader,freeze,evidence_metadata,RETENTION_DAYS)
 outcomes=Outcomes(app,connect,reader,editor,audit_reader,freeze,evidence_metadata,workflow_tracing)
 from trace_explorer import TraceExplorer
 trace_explorer=TraceExplorer(app,request_audit,workflow_tracing,audit_reader,freeze,evidence_metadata)
 regressions=Regressions(app,connect,editor,trace_explorer,RETENTION_DAYS,outcomes)
 debugging=Debugging(app,connect,owner,editor,writer,trace_explorer,audit_project,RETENTION_DAYS)
 product_loop=ProductLoop(app,connect,reader,editor,owner,RETENTION_DAYS,store_events=store_events,audit=request_audit)
-release_outcomes=ReleaseOutcomes(app,connect,editor,outcomes,regressions,product_loop)
+release_outcomes=ReleaseOutcomes(app,connect,editor,outcomes,regressions,product_loop,collection_health)
 
 
 @app.get('/.well-known/afterspan')

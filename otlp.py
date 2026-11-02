@@ -108,6 +108,7 @@ def install(app,writer,connect,store_events,event_type,retention_days):
             with closing(connect()) as c,c:
                 c.execute('BEGIN IMMEDIATE')
                 for offset in range(0,len(events),100):store_events(c,project,events[offset:offset+100])
+        request.state.rejected_spans=rejected
         result=ExportTraceServiceResponse()
         if rejected:
             result.partial_success.rejected_spans=rejected

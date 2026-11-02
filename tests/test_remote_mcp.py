@@ -28,7 +28,7 @@ class RemoteMCPTests(unittest.TestCase):
     join=test_workspaces.WorkspaceTests.join
 
     def register(self):
-        r=self.client.post('/register',json={'client_name':'Fresh test agent','redirect_uris':['http://127.0.0.1:19191/callback'],'grant_types':['authorization_code','refresh_token'],'response_types':['code'],'token_endpoint_auth_method':'none','scope':'analytics:read charts:write audit:read goals:write experiments:write debug:read'})
+        r=self.client.post('/register',json={'client_name':'Fresh test agent','redirect_uris':['http://127.0.0.1:19191/callback'],'grant_types':['authorization_code','refresh_token'],'response_types':['code'],'token_endpoint_auth_method':'none','scope':'analytics:read charts:write audit:read goals:write experiments:write debug:read collection:write'})
         self.assertEqual(r.status_code,201,r.text);return r.json()['client_id']
 
     def begin(self,cid,scope='analytics:read charts:write',**overrides):
@@ -149,7 +149,7 @@ class RemoteMCPTests(unittest.TestCase):
         self.assertEqual(owner.get('/auth/mcp/connections').json()['connections'],[])
 
     def test_remote_transport_tools_and_idempotent_chart_storage(self):
-        owner,uid,w,p,cid,t,*_=self.grant('analytics:read charts:write audit:read goals:write experiments:write debug:read')
+        owner,uid,w,p,cid,t,*_=self.grant('analytics:read charts:write audit:read goals:write experiments:write debug:read collection:write')
         with TestClient(app.app,base_url=ORIGIN) as client:
             headers={'Authorization':'Bearer '+t['access_token'],'Accept':'application/json, text/event-stream'}
             def rpc(method,params=None):
@@ -164,6 +164,11 @@ class RemoteMCPTests(unittest.TestCase):
                 result=rpc('tools/call',{'name':name,'arguments':args})['result']
                 self.assertFalse(result.get('isError'),result);return json.loads(result['content'][0]['text'])
             self.assertEqual(call('connection_status')['project'],p)
+            self.assertEqual(call('collection_sources')['sources'],[])
+            self.assertEqual(call('save_collection_source',{'definition':{'source':'worker','environment':'staging','interval_seconds':60},'revision':0})['revision'],1)
+            health=call('collection_health',{'query':{'environment':'staging'}})
+            self.assertEqual(health['collection_completeness'],'not_established');self.assertIn('pulse_missing',health['sources'][0]['reasons'])
+
             self.assertIn('instructions',call('get_workflow',{'name':'build-dashboard'}))
             self.assertIn('events',call('event_catalog',{'query':{'days':30}}))
             self.assertIn('meanings',call('workflow_trace_catalog'))
@@ -267,5 +272,21 @@ class RemoteMCPTests(unittest.TestCase):
         self.assertEqual(app.outcomes.list(p)['goals'],[])
         self.assertEqual(self.client.get('/api/debug/policy?project='+p,headers={'Authorization':'Bearer '+t['access_token']}).status_code,403)
         self.assertEqual(self.client.get('/api/experiments/cases?project='+p,headers={'Authorization':'Bearer '+t['access_token']}).status_code,403)
+
+
+    def test_collection_writes_need_separate_scope_and_current_editor_membership(self):
+        owner,uid,w,p,cid,t,*_=self.grant('audit:read')
+        definition={'source':'worker','environment':'staging','interval_seconds':60}
+        headers={'Authorization':'Bearer '+t['access_token']}
+        self.assertEqual(self.client.get('/api/collection/sources?project='+p,headers=headers).status_code,200)
+        self.assertEqual(self.client.put('/api/collection/sources?project='+p,headers=headers,json=definition).status_code,403)
+        owner,uid,w,p,cid,t,*_=self.grant('audit:read collection:write');headers={'Authorization':'Bearer '+t['access_token']}
+        self.assertEqual(self.client.put('/api/collection/sources?project='+p,headers=headers,json=definition).status_code,200)
+        self.assertEqual(self.client.get('/api/collection/sources?project=other-project',headers=headers).status_code,403)
+        with closing(app.connect()) as c,c:c.execute("UPDATE memberships SET role='reader' WHERE workspace=? AND user_id=?",(w,uid))
+        self.assertEqual(self.client.put('/api/collection/sources?project='+p+'&revision=1',headers=headers,json={**definition,'enabled':False}).status_code,403)
+        self.assertEqual(self.client.get('/api/collection/sources?project='+p,headers=headers).status_code,200)
+        self.client.post('/revoke',data={'client_id':cid,'token':t['access_token']}).raise_for_status()
+        self.assertEqual(self.client.get('/api/collection/sources?project='+p,headers=headers).status_code,401)
 
 if __name__=='__main__':unittest.main()

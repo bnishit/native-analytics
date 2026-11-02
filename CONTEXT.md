@@ -19,3 +19,7 @@ Afterspan connects product work, its execution evidence, and the result a user n
 **Evidence**: A scoped observation or receipt supporting a claim. Missing, conflicting or expired evidence cannot become a verified success.
 
 **Experiment**: A comparison of candidate behaviors against the same versioned cases and checks. Passing examples alone do not establish a production improvement.
+
+**Collection health**: Bounded evidence about declared sources, queue delivery, missing pulses and failures. Observed health does not prove that every task was instrumented.
+
+**Source expectation**: Current editor configuration naming the source, environment, optional workflow and expected reporting interval. It is not a historical deployment inventory.

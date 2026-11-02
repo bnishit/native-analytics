@@ -1,6 +1,7 @@
 /** Node tracing context and metadata-only receipts. Flush via the host's after/waitUntil hook. */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { isUint8Array } from 'node:util/types';
 import type { createAnalytics } from './native-analytics.ts';
 import { ModelObservation, type ModelUsage } from './model-observation.ts';
 
@@ -12,6 +13,14 @@ type Phase = 'before_delivery'|'after_delivery';
 type Result = 'passed'|'failed'|'unknown';
 type Milestone = 'completion'|'delivery'|'usefulness';
 type Disposition = 'delivered'|'withheld'|'clarification'|'partial';
+type SpanOptions = {milestone?:Milestone;disposition?:Disposition};
+type TaskOptions = {workflow?:string;environment?:Environment;releaseSha?:string;context?:TraceContext;trafficKind?:TrafficKind};
+class StreamCancelled extends Error {}
+class ResponseFailed extends Error {
+ readonly code:'rejected'|'unavailable';
+ constructor(status:number){super();this.code=status===0||status>=500?'unavailable':'rejected'}
+}
+function failure(error:unknown){return error instanceof StreamCancelled?{state:'cancelled',code:'cancelled'}:{state:'failed',code:error instanceof ResponseFailed?error.code:'internal'}}
 export interface TraceContext {
  traceId:string; attemptId:string; attemptNumber:number; workflow:string; environment:Environment;
  requestStartedAtMs:number; releaseSha?:string; spanId?:string; sampled:boolean; trafficKind?:TrafficKind;
@@ -98,21 +107,75 @@ export class WorkflowTracer {
   if(current.getStore()?.sampled===false){this.sampledOutEvents++;return}
   try{const job=this.client.track(name,null,properties).catch(()=>{this.emitFailures++});this.pending.add(job);void job.finally(()=>this.pending.delete(job))}catch{this.emitFailures++}
  }
- async task<T>(options:{workflow?:string;environment?:Environment;releaseSha?:string;context?:TraceContext;trafficKind?:TrafficKind},run:(span:Span)=>Promise<T>|T):Promise<T>{
+ async task<T>(options:TaskOptions,run:(span:Span)=>Promise<T>|T):Promise<T>{
   const context=validate(options.context||{traceId:randomBytes(16).toString('hex'),attemptId:randomUUID(),attemptNumber:1,workflow:options.workflow||'',environment:options.environment||'production',requestStartedAtMs:Date.now(),releaseSha:options.releaseSha,sampled:true,trafficKind:options.trafficKind||'unknown'});
   return current.run(context,()=>this.span('processing',run));
  }
- async span<T>(step:Step,run:(span:Span)=>Promise<T>|T,options:{milestone?:Milestone;disposition?:Disposition}={}):Promise<T>{
-  const context=current.getStore();if(!context)throw Error('Start or continue a task first');
+ private openSpan(step:Step,options:SpanOptions,context=current.getStore()):Span {
+  if(!context)throw Error('Start or continue a task first');
   if(!steps.has(step)||options.milestone!==undefined&&!['completion','delivery','usefulness'].includes(options.milestone)||options.disposition!==undefined&&(!['delivered','withheld','clarification','partial'].includes(options.disposition)||step!=='response'))throw Error('Invalid span declaration');
-  const child=validate({...context,spanId:randomBytes(8).toString('hex')});const span=new Span(this,child,context.spanId?mappedId(context.traceId,context.spanId):undefined,step);
-  return current.run(child,async()=>{
-   let state='succeeded',code='none';this.emit('trace.observed',{afterspan_trace:{...span.facts(),state:'started'}});
-   try{return await run(span)}catch(error){state='failed';code='internal';throw error}finally{
-    const duration=performance.now()-span.started,usage=span.modelResult(duration);
-    this.emit('trace.observed',{afterspan_trace:{...span.facts(),state:duration<=86400000?state:'unknown',outcome_code:duration<=86400000?code:'uncertain',duration_ms:duration<=86400000?duration:undefined,...(options.milestone?{milestone:options.milestone}:{}),...(options.disposition?{disposition:options.disposition}:{}),...(span.checks.length?{checks:span.checks}:{}),...(usage?{model_usage:usage}:{})}});span.closed=true;
-   }
+  const child=validate({...context,spanId:randomBytes(8).toString('hex')}),span=new Span(this,child,context.spanId?mappedId(context.traceId,context.spanId):undefined,step);
+  current.run(child,()=>this.emit('trace.observed',{afterspan_trace:{...span.facts(),state:'started'}}));return span;
+ }
+ private finishSpan(span:Span,options:SpanOptions,state:string,code:string):void {
+  const duration=performance.now()-span.started,usage=span.modelResult(duration);
+  current.run(span.context,()=>this.emit('trace.observed',{afterspan_trace:{...span.facts(),state:duration<=86400000?(state==='cancelled'?'failed':state):'unknown',outcome_code:duration<=86400000?code:'uncertain',duration_ms:duration<=86400000?duration:undefined,...(options.milestone?{milestone:options.milestone}:{}),...(options.disposition?{disposition:options.disposition}:{}),...(span.checks.length?{checks:span.checks}:{}),...(usage?{model_usage:usage}:{})}}));span.closed=true;
+ }
+ async span<T>(step:Step,run:(span:Span)=>Promise<T>|T,options:SpanOptions={}):Promise<T>{
+  const span=this.openSpan(step,options);
+  return current.run(span.context,async()=>{
+   let state='succeeded',code='none';
+   try{return await run(span)}catch(error){({state,code}=failure(error));throw error}finally{this.finishSpan(span,options,state,code)}
   });
+ }
+ stream<T>(step:Step,source:(span:Span)=>AsyncIterable<T>,options:SpanOptions={}):AsyncIterable<T> {
+  const context=current.getStore();if(!context)throw Error('Start or continue a task first');
+  const tracer=this;let cancelRequested=false;
+  const stream=(async function*(){
+   const span=tracer.openSpan(step,options,context);let iterator:AsyncIterator<T>|undefined,state='cancelled',code='cancelled';
+   try {
+    iterator=current.run(span.context,()=>source(span)[Symbol.asyncIterator]());
+    while(true){
+     const value=await current.run(span.context,()=>iterator!.next());
+     if(value.done){state=cancelRequested?'cancelled':'succeeded';code=cancelRequested?'cancelled':'none';return}
+     yield value.value;
+    }
+   }catch(error){({state,code}=failure(cancelRequested?new StreamCancelled():error));throw error}finally{
+    try {if(state!=='succeeded'&&iterator?.return)await current.run(span.context,()=>iterator!.return!())}
+    catch(error){const alreadyFailed=state==='failed';state='failed';code='internal';if(!alreadyFailed)throw error}
+    finally{tracer.finishSpan(span,options,state,code)}
+   }
+  })();
+  const iterator:AsyncIterableIterator<T>={
+   [Symbol.asyncIterator](){return this},next:()=>stream.next(),
+   return(value){cancelRequested=true;return stream.return(value)},throw:error=>stream.throw(error)
+  };
+  return iterator;
+ }
+ async response(options:TaskOptions,handler:(span:Span)=>Response|Promise<Response>):Promise<{response:Response;finished:Promise<'completed'|'failed'|'cancelled'>}> {
+  let ready!:(response:Response)=>void,unavailable!:(error:unknown)=>void;
+  const responseReady=new Promise<Response>((resolve,reject)=>{ready=resolve;unavailable=reject});
+  const finished=this.task(options,async root=>{
+   const original=await handler(root);
+   await this.span('response',async()=>{
+    if(!original.body){ready(original);if(original.status===0||original.status>=400)throw new ResponseFailed(original.status);return}
+    const reader=original.body.getReader();let settle!:(failed:boolean,error?:unknown)=>void,settled=false,cancelling=false;
+    const consumed=new Promise<void>((resolve,reject)=>{settle=(failed,error)=>{if(settled)return;settled=true;reader.releaseLock();if(failed)reject(error);else resolve()}});
+    const body=new ReadableStream<Uint8Array>({
+     async pull(controller){
+      try{const value=await reader.read();if(settled||cancelling)return;if(value.done){controller.close();settle(false)}else{if(!isUint8Array(value.value))throw new TypeError('Response body must yield Uint8Array');controller.enqueue(value.value)}}
+      catch(error){if(!settled&&!cancelling){controller.error(error);void reader.cancel(error).catch(()=>{});settle(true,error)}}
+     },
+     async cancel(reason){
+      cancelling=true;
+      try{await reader.cancel(reason)}catch(error){settle(true,error);throw error}finally{settle(true,new StreamCancelled())}
+     }
+    },{highWaterMark:0});
+    ready(new Response(body,{status:original.status,statusText:original.statusText,headers:original.headers}));
+    await consumed;if(original.status===0||original.status>=400)throw new ResponseFailed(original.status);
+   });
+  }).then(()=> 'completed' as const,error=>{unavailable(error);return error instanceof StreamCancelled?'cancelled' as const:'failed' as const});
+  return {response:await responseReady,finished};
  }
  async flush(){await Promise.all([...this.pending]);try{await this.client.flush()}catch{this.emitFailures++}}
  status(){return {emit_failures:this.emitFailures,sampled_out_events:this.sampledOutEvents,model_metadata_errors:this.modelMetadataErrors,...this.client.status()}}

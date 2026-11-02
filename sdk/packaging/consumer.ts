@@ -11,3 +11,9 @@ void tracer.task({ workflow: 'typed_probe', environment: 'test', context }, () =
 observation.observeResponses({type:'response.created'});
 observation.observeAnthropic({type:'ping'});
 void tracer.span('model',span=>{span.modelUsage({provider:'example',model:'fixture/model'});span.observeResponses({});span.observeAnthropic({});});
+
+const streaming=tracer.response({workflow:'typed_stream',environment:'test'},()=>{
+  const events=tracer.stream('model',async function*(span){span.modelUsage({provider:'example',model:'fixture/model'});yield 'synthetic'});
+  void events;return new Response('synthetic');
+});
+void streaming.then(async({response,finished})=>{await response.text();return finished});

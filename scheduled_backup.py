@@ -48,7 +48,7 @@ def load(database):
     if path.stat().st_mode&0o077 or path.stat().st_size>65536:raise ValueError('state_invalid')
     state=json.loads(path.read_text())
     if not isinstance(state,dict) or state.get('status') not in {'waiting','running','succeeded','failed'} or not isinstance(state.get('history'),list) or len(state['history'])>32:raise ValueError('state_invalid')
-    for name in ['last_attempt','last_success']:
+    for name in ['last_attempt','last_success','last_recovery_point']:
         if name in state and (type(state[name]) not in {int,float} or not math.isfinite(state[name]) or state[name]<0):raise ValueError('state_invalid')
     if state.get('reason') not in {None,'readback_invalid','pending_invalid','size_limit','retention_scope_invalid','storage_or_recovery_failed'}:raise ValueError('state_invalid')
     return state
@@ -68,13 +68,14 @@ def status(database,now=None):
     try:
         state=load(database)
         if state.get('configuration',cfg['fingerprint'])!=cfg['fingerprint']:raise ValueError('configuration_changed')
-        if max(state.get('last_attempt',0),state.get('last_success',0))>now+60:return {'enabled':True,'status':'failed','reason':'clock_invalid','overdue':True}
-        result={k:state[k] for k in ['status','reason','last_attempt','last_success'] if k in state}
-        return {'enabled':True,**result,'overdue':not state.get('last_success') or now-state['last_success']>cfg['interval']+600,'verified_copies':len(state['history'])}
+        if max(state.get('last_attempt',0),state.get('last_success',0),state.get('last_recovery_point',0))>now+60:return {'enabled':True,'status':'failed','reason':'clock_invalid','overdue':True}
+        result={k:state[k] for k in ['status','reason','last_attempt','last_success','last_recovery_point'] if k in state}
+        return {'enabled':True,**result,'overdue':not state.get('last_recovery_point') or now-state['last_recovery_point']>cfg['interval']+600,'verified_copies':len(state['history'])}
     except (ValueError,OSError,KeyError):return {'enabled':True,'status':'failed','reason':'state_or_configuration_changed','overdue':True}
 
 def validate_pending(cfg,pending):
     if type(pending.get('bytes')) is not int or not 0<pending['bytes']<=cfg['max_bytes'] or not re.fullmatch(re.escape(cfg['PREFIX'])+r'[a-f0-9-]{36}\.asb',pending.get('key','')) or not re.fullmatch(r'[a-f0-9]{64}',pending.get('sha256','')):raise ValueError('pending_invalid')
+    if type(pending.get('captured_at')) not in {int,float} or not math.isfinite(pending['captured_at']) or pending['captured_at']<0:raise ValueError('pending_invalid')
 
 def verify(store,cfg,pending,directory):
     validate_pending(cfg,pending)
@@ -107,12 +108,14 @@ def run_due(database,now=None):
         try:state=load(database)
         except (ValueError,OSError):return {'status':'failed','reason':'state_invalid'}
         if state.get('configuration',cfg['fingerprint'])!=cfg['fingerprint']:return {'status':'failed','reason':'configuration_changed'}
-        if max(state.get('last_attempt',0),state.get('last_success',0))>now+60:return {'status':'failed','reason':'clock_invalid'}
+        if max(state.get('last_attempt',0),state.get('last_success',0),state.get('last_recovery_point',0))>now+60:return {'status':'failed','reason':'clock_invalid'}
         pending=state.get('pending')
         if pending is not None:
             try:validate_pending(cfg,pending)
             except (ValueError,TypeError,AttributeError):return {'status':'failed','reason':'pending_invalid'}
-        if 'last_attempt' in state and now-state['last_attempt']<(900 if state['status'] in {'failed','running'} else cfg['interval']):return status(database,now)
+            if pending['captured_at']>now+60:return {'status':'failed','reason':'clock_invalid'}
+        if 'last_attempt' in state and state['status'] in {'failed','running'} and now-state['last_attempt']<900:return status(database,now)
+        if not pending and not state.get('cleanup_pending') and 'last_recovery_point' in state and now-state['last_recovery_point']<cfg['interval']:return status(database,now)
         state.update(configuration=cfg['fingerprint'],last_attempt=now,status='running');state.pop('reason',None);save(database,state)
         try:
             store=client(cfg)
@@ -129,7 +132,7 @@ def run_due(database,now=None):
                     backup(database,archive)
                     if archive.stat().st_size>cfg['max_bytes']:raise ValueError('size_limit')
                     with archive.open('rb') as src:checksum=hashlib.file_digest(src,'sha256').hexdigest()
-                    pending={'key':cfg['PREFIX']+str(uuid.uuid4())+'.asb','bytes':archive.stat().st_size,'sha256':checksum}
+                    pending={'key':cfg['PREFIX']+str(uuid.uuid4())+'.asb','bytes':archive.stat().st_size,'sha256':checksum,'captured_at':now}
                     state['pending']=pending;save(database,state)
                 valid=False
                 if resuming:
@@ -146,8 +149,8 @@ def run_due(database,now=None):
                         # A timed-out PUT may have committed. Reconcile this exact immutable object.
                         verified=verify(store,cfg,pending,directory);valid=True
                 if not valid:verified=verify(store,cfg,pending,directory)
-                state['history'].append({'key':pending['key'],'verified_at':now,'verified':verified})
-                state.update(last_success=now,status='succeeded',cleanup_pending=True);state.pop('pending',None);save(database,state);archive.unlink(missing_ok=True)
+                state['history'].append({'key':pending['key'],'captured_at':pending['captured_at'],'verified_at':now,'verified':verified})
+                state.update(last_success=now,last_recovery_point=pending['captured_at'],status='succeeded',cleanup_pending=True);state.pop('pending',None);save(database,state);archive.unlink(missing_ok=True)
                 prune(database,state,store,cfg)
         except Exception as error:
             reason=str(error) if isinstance(error,ValueError) and str(error) in {'readback_invalid','pending_invalid','size_limit','retention_scope_invalid'} else 'storage_or_recovery_failed'

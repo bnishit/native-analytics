@@ -2,10 +2,11 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY release_evidence.py outcome_adapters.py collection_health.py release_outcomes.py debugging.py private_storage.py regressions.py otlp.py outcomes.py trace_explorer.py tracing.py remote_auth.py remote_mcp.py product_loop.py loop_onboarding.py loop_sources.py loop_measurement.py loop_github.py loop_recipe.py app.py audit.py retention.py catalog.py product_analytics.py journeys.py accounts.py billing.py payments.py AGENTS.md ./
+COPY scheduled_backup.py release_evidence.py outcome_adapters.py collection_health.py release_outcomes.py debugging.py private_storage.py regressions.py otlp.py outcomes.py trace_explorer.py tracing.py remote_auth.py remote_mcp.py product_loop.py loop_onboarding.py loop_sources.py loop_measurement.py loop_github.py loop_recipe.py app.py audit.py retention.py catalog.py product_analytics.py journeys.py accounts.py billing.py payments.py AGENTS.md ./
 COPY sdk/python/afterspan_experiments.py ./sdk/python/
 COPY scripts/backup.py ./scripts/
 COPY static ./static
 COPY skills ./skills
+RUN python -c "import app"
 ENV ANALYTICS_DB=/data/analytics.db PORT=8080
 CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT} --no-access-log"]

@@ -86,6 +86,14 @@ class ScheduledBackupTests(unittest.TestCase):
         original=self.jobs.pending_path(self.db).read_bytes()
         with closing(sqlite3.connect(self.db)) as c,c:c.execute('INSERT INTO events VALUES("after-capture","one")')
         self.assertEqual(self.jobs.run_due(self.db,now=101000)['status'],'succeeded');self.assertEqual(next(iter(self.store.objects.values())),original)
+    def test_old_pending_snapshot_stays_overdue_and_a_fresh_snapshot_is_due_after_reconciliation(self):
+        with patch.object(self.store,'upload_file',side_effect=OSError('offline')):self.jobs.run_due(self.db,now=100000)
+        with closing(sqlite3.connect(self.db)) as c,c:c.execute('INSERT INTO events VALUES("newer","one")')
+        reconciled=self.jobs.run_due(self.db,now=532000)
+        self.assertEqual(reconciled['last_recovery_point'],100000);self.assertTrue(reconciled['overdue'])
+        fresh=self.jobs.run_due(self.db,now=532060);self.assertFalse(fresh['overdue']);self.assertEqual(fresh['last_recovery_point'],532060);self.assertEqual(len(self.store.uploads),2)
+        archive=self.root/'fresh.asb';archive.write_bytes(self.store.objects[self.store.uploads[-1]]);destination=self.root/'fresh.db';self.jobs.restore(archive,destination)
+        with closing(sqlite3.connect(destination)) as c:self.assertEqual(c.execute('SELECT id FROM events').fetchone()[0],'newer')
     def test_corrupted_state_and_clock_rollback_do_not_start_storage_work(self):
         self.jobs.state_path(self.db).write_text('{broken');self.jobs.state_path(self.db).chmod(0o600)
         self.assertEqual(self.jobs.run_due(self.db,now=100000)['reason'],'state_invalid');self.assertFalse(self.store.uploads)

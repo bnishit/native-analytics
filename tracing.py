@@ -6,11 +6,21 @@ import hmac
 import json
 from typing import Literal
 from fastapi import Depends,HTTPException
-from pydantic import BaseModel,ConfigDict,Field,UUID4,model_validator
+from pydantic import BaseModel,ConfigDict,Field,UUID4,StrictBool,model_validator
 from product_analytics import Window
 
 STEPS=('receive','queue','processing','model','tool','retrieval','storage','http','response','availability','booking','provider_send','provider_delivery')
 Environment=Literal['production','staging','development','test','local']
+class WorkflowCheck(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    name:str=Field(pattern=r'^[a-z][a-z0-9_.-]{0,63}$')
+    version:int=Field(ge=1,le=1000000,strict=True)
+    result:Literal['passed','failed','unknown']
+    required:StrictBool
+    method:Literal['source','code','model','human']
+    phase:Literal['before_delivery','after_delivery']
+    evidence_ref:UUID4|None=None
+
 class SpanObservation(BaseModel):
     model_config=ConfigDict(extra='forbid')
     schema_version:Literal['workflow-trace-v1']
@@ -29,8 +39,13 @@ class SpanObservation(BaseModel):
     receipt_count:int|None=Field(default=None,ge=1,le=20,strict=True)
     linked_trace_ids:list[UUID4]|None=Field(default=None,max_length=20)
 
+    checks:list[WorkflowCheck]|None=Field(default=None,min_length=1,max_length=20)
+
     @model_validator(mode='after')
     def coherent(self):
+        if self.checks is not None:
+            if self.state=='started':raise ValueError('checks belong to a terminal observation')
+            if len({c.name for c in self.checks})!=len(self.checks):raise ValueError('check names must be unique on one observation')
         if (self.receipt_count is None)!=(self.linked_trace_ids is None):raise ValueError('batch receipt count and links must occur together')
         if self.linked_trace_ids is not None:
             if self.step!='processing' or self.state!='started':raise ValueError('batch links belong only to processing start')
@@ -57,7 +72,7 @@ def summarize_span(rows,labels):
     starts=[r for r in rows if r['facts']['state']=='started']
     conflict=conflict or len({(r['facts'].get('receipt_count'),tuple(r['facts'].get('linked_trace_ids') or [])) for r in starts})>1
     ends=[r for r in rows if r['facts']['state']!='started']
-    signatures={(r['facts']['state'],r['facts'].get('duration_ms'),r['facts']['outcome_code']) for r in ends}
+    signatures={(r['facts']['state'],r['facts'].get('duration_ms'),r['facts']['outcome_code'],json.dumps(r['facts'].get('checks'),sort_keys=True)) for r in ends}
     conflict=conflict or len(signatures)>1 or len({r['ts'] for r in starts})>1 or len({r['ts'] for r in ends})>1 or bool(starts and ends and min(r['ts'] for r in starts)>min(r['ts'] for r in ends))
     state='conflict' if conflict else ends[0]['facts']['state'] if ends else 'incomplete'
     parent=first.get('parent_span_id')
@@ -65,6 +80,8 @@ def summarize_span(rows,labels):
             'step':first['step'],'attempt_number':first['attempt_number'],'state':state,'missing_start':not starts,
             'duration_ms':ends[0]['facts']['duration_ms'] if ends and not conflict else None,
             'outcome_code':ends[0]['facts']['outcome_code'] if ends and not conflict else 'uncertain',
+            'checks':[{**{k:v for k,v in check.items() if k!='evidence_ref'},'evidence_present':check.get('evidence_ref') is not None}
+                      for check in ends[0]['facts'].get('checks') or []] if ends and not conflict else [],
             'first_seen':min(r['ts'] for r in rows),'last_seen':max(r['ts'] for r in rows)}
 
 
@@ -115,6 +132,7 @@ def project_trace(rows,reference,reference_for=None,available=None):
             'release_sha':next(iter({r['facts'].get('release_sha') for r in rows})) if len({r['facts'].get('release_sha') for r in rows})==1 else None,
             'latest_attempt':latest,'observed_attempts':len(slots),'last_seen':max(r['ts'] for r in rows),'spans':spans,
             'completion':completion,'issues':sorted(set(issues)),'batch':batch,
+            'checks':[{**check,'span':s['span'],'attempt_number':s['attempt_number']} for s in current for check in s['checks']],
             'reported_failures':[s['span'] for s in spans if s['state']=='failed'],'business_outcome':'not_established'}
 
 

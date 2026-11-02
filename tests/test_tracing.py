@@ -21,6 +21,41 @@ class TracingTests(unittest.TestCase):
     def review(self,**changes):
         r=self.client.post('/api/traces/review?project=alpha',headers=self.admin,json={'environment':'staging',**changes})
         self.assertEqual(r.status_code,200,r.text);return r.json()
+    def test_generic_checks_are_separate_from_step_success_and_hide_receipt_refs(self):
+        receipt=str(uuid.uuid4())
+        check={'name':'source_facts','version':1,'result':'failed','required':True,
+               'method':'source','phase':'before_delivery','evidence_ref':receipt}
+        self.assertEqual(self.ingest(self.event(),self.event('succeeded',1,checks=[check])).status_code,200)
+        report=self.review();trace=report['traces'][0]
+        self.assertEqual(trace['completion']['provider_send']['state'],'succeeded')
+        self.assertEqual(trace['checks'][0]['result'],'failed')
+        self.assertTrue(trace['checks'][0]['evidence_present'])
+        self.assertEqual(trace['business_outcome'],'not_established')
+        self.assertNotIn(receipt,json.dumps(report))
+        response=self.client.post('/api/traces/open?project=alpha',headers=self.admin,
+            json={'environment':'staging','reference':trace['trace']})
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['trace']['checks'],trace['checks'])
+        self.assertEqual(response.json()['trace']['status'],'failed')
+        searched=self.client.post('/api/traces/search?project=alpha',headers=self.admin,
+            json={'environment':'staging','search':'source_facts','status':'failed'}).json()
+        self.assertEqual(searched['total'],1)
+        self.ingest(self.event('succeeded',2,checks=[{**check,'result':'passed'}]))
+        conflicted=self.review()['traces'][0]
+        self.assertIn('span_conflict',conflicted['issues'])
+        self.assertEqual(conflicted['checks'],[])
+
+    def test_checks_are_bounded_terminal_only_and_not_free_text(self):
+        check={'name':'schema_valid','version':1,'result':'unknown','required':True,
+               'method':'code','phase':'after_delivery'}
+        invalid=[self.event(checks=[check]),self.event('succeeded',checks=[check,check]),
+                 self.event('succeeded',checks=[{**check,'required':'true'}]),
+                 self.event('succeeded',checks=[{**check,'reason':'private output'}]),
+                 self.event('succeeded',checks=[{**check,'evidence_ref':'raw-source-id'}])]
+        for event in invalid:self.assertEqual(self.ingest(event).status_code,422)
+        self.assertEqual(self.ingest(self.event(),self.event('succeeded',1,checks=[check])).status_code,200)
+        self.assertEqual(self.review()['traces'][0]['checks'][0]['result'],'unknown')
+
     def test_acceptance_is_not_delivery_or_booking_and_retries_deduplicate(self):
         start=self.event();end=self.event('succeeded',1)
         self.assertEqual(self.ingest(end,start).status_code,200)

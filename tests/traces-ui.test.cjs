@@ -37,3 +37,10 @@ test('read targets remain distinct from request scope',()=>{
  assert.match(html,/Request environment: production/);assert.match(html,/Read target environments: production, staging/);
  assert.match(vm.runInContext(`traceReadTargets({environment:'production'})`,context),/Read target environments: unknown/);
 });
+
+test('generic checks label failed evaluations separately from task completion',()=>{
+ const context=vm.createContext({location:{hash:''},URLSearchParams,traceStepLabel:{},esc:v=>String(v??'').replaceAll('<','&lt;'),fmt:String});
+ vm.runInContext(fs.readFileSync('static/traces.js','utf8'),context);
+ const html=vm.runInContext(`traceWorkflowChecks([{name:'source_facts',version:1,result:'failed',required:true,method:'source',phase:'before_delivery',evidence_present:false}])`,context);
+ assert.match(html,/source_facts v1/);assert.match(html,/failed/);assert.match(html,/not proof of task completion/);assert.match(html,/evidence not supplied/);
+});

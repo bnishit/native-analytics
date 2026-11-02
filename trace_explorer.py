@@ -52,15 +52,15 @@ def workflow_trace(row):
     evidence=[{'name':s['step'],'state':s['state'],'outcome':s['outcome_code']} for s in row['spans']]
     return {'reference':row['trace'],'contract':'workflow-trace-v1','name':row['workflow'],
             'environment':row['environment'],'release':row['release_sha'],'started_at':origin,'last_seen':row['last_seen'],
-            'attempts':row['observed_attempts'],'spans':spans,'evidence':evidence,'issues':row['issues'],
+            'attempts':row['observed_attempts'],'checks':row['checks'],'spans':spans,'evidence':evidence,'issues':row['issues'],
             'unobserved_categories':[], 'links':row['batch']['inputs'] if row['batch'] else [],
             'clock':'first observed event; earlier work may be absent', 'business_outcome':'not_independently_verified'}
 
 
 def finish_trace(row):
     gaps={'missing','unknown','conflict','unclosed','incomplete','missing_start'}
-    row['has_gaps']=bool(row['issues']) or not row['spans'] or any(e['state'] in gaps for e in row['evidence']) or any(s['parent_missing'] or s['state'] in gaps for s in row['spans'])
-    row['status']='failed' if any(s['state']=='failed' for s in row['spans']) else 'gaps' if row['has_gaps'] else 'observed'
+    row['has_gaps']=any(c['required'] and c['result']=='unknown' for c in row.get('checks',[])) or bool(row['issues']) or not row['spans'] or any(e['state'] in gaps for e in row['evidence']) or any(s['parent_missing'] or s['state'] in gaps for s in row['spans'])
+    row['status']='failed' if any(c['result']=='failed' for c in row.get('checks',[])) or any(s['state']=='failed' for s in row['spans']) else 'gaps' if row['has_gaps'] else 'observed'
     ends=[s['end_ms'] for s in row['spans'] if s['end_ms'] is not None]
     row['duration_ms']=max(ends) if ends else None
     return row
@@ -91,7 +91,7 @@ class TraceExplorer:
         coverage['other_environment_requests']=sum(r['environment'] not in {q.environment,'conflict'} for r in rows)
         rows=[finish_trace(r) for r in rows if r['environment']==q.environment]
         needle=q.search.strip().lower()
-        rows=[r for r in rows if (not needle or needle in ' '.join([r['reference'],r['name'],r['release'] or '',*(s['step'] for s in r['spans'])]).lower())
+        rows=[r for r in rows if (not needle or needle in ' '.join([r['reference'],r['name'],r['release'] or '',*(s['step'] for s in r['spans']),*(c['name'] for c in r.get('checks',[]))]).lower())
               and (q.status=='all' or r['status']==q.status)
               and (q.min_duration_ms==0 or r['duration_ms'] is not None and r['duration_ms']>=q.min_duration_ms)]
         rows.sort(key=lambda r:(-r['last_seen'],r['reference']))

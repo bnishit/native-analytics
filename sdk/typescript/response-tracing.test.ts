@@ -90,3 +90,21 @@ test('malformed response bytes fail the trace and cancel upstream rather than le
  try{assert.equal(await Promise.race([result.finished,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Trace stayed open')),1000)})]),'failed')}finally{clearTimeout(timer)}
  await tracer.flush();assert.equal(cancelled,1);assert.equal(facts(events).filter(x=>x.state==='failed').length,2);assert.ok(!JSON.stringify(events).includes('private-invalid-chunk'));
 });
+test('an explicit return request during a pending provider read records cancellation',async()=>{
+ const {tracer,events}=fixture();const abort=new AbortController(),aborted=new DOMException('private-abort','AbortError');let pendingStarted!:()=>void;
+ const waiting=new Promise<void>(resolve=>{pendingStarted=resolve});
+ await tracer.task({workflow:'answer'},async()=>{
+  const stream=tracer.stream('model',async function*(){yield 'first';await new Promise((_,reject)=>{abort.signal.addEventListener('abort',()=>reject(aborted),{once:true});pendingStarted()});});
+  const iterator=stream[Symbol.asyncIterator]();await iterator.next();const pending=iterator.next();await waiting;
+  abort.abort();const returned=iterator.return!();await assert.rejects(pending,error=>error===aborted);await returned;
+ });await tracer.flush();const model=facts(events).find(x=>x.step==='model'&&x.state!=='started');assert.equal(model.state,'failed');assert.equal(model.outcome_code,'cancelled');assert.ok(!JSON.stringify(events).includes('private-abort'));
+});
+test('genuine source and cleanup failures retain their failure reason',async()=>{
+ for(const cleanup of [false,true]){
+  const {tracer,events}=fixture(),problem=Error('private-provider');
+  await assert.rejects(tracer.task({workflow:'answer'},async()=>{
+   for await(const _ of tracer.stream('model',async function*(){try{if(!cleanup)throw problem;yield 1}finally{if(cleanup)throw problem}}))break;
+  }),error=>error===problem);
+  await tracer.flush();const model=facts(events).find(x=>x.step==='model'&&x.state!=='started');assert.equal(model.state,'failed');assert.equal(model.outcome_code,'internal');
+ }
+});

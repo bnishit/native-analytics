@@ -130,8 +130,8 @@ export class WorkflowTracer {
  }
  stream<T>(step:Step,source:(span:Span)=>AsyncIterable<T>,options:SpanOptions={}):AsyncIterable<T> {
   const context=current.getStore();if(!context)throw Error('Start or continue a task first');
-  const tracer=this;
-  return (async function*(){
+  const tracer=this;let cancelRequested=false;
+  const stream=(async function*(){
    const span=tracer.openSpan(step,options,context);let iterator:AsyncIterator<T>|undefined,state='cancelled',code='cancelled';
    try {
     iterator=current.run(span.context,()=>source(span)[Symbol.asyncIterator]());
@@ -140,12 +140,17 @@ export class WorkflowTracer {
      if(value.done){state='succeeded';code='none';return}
      yield value.value;
     }
-   }catch(error){({state,code}=failure(error));throw error}finally{
+   }catch(error){({state,code}=failure(cancelRequested?new StreamCancelled():error));throw error}finally{
     try {if(state!=='succeeded'&&iterator?.return)await current.run(span.context,()=>iterator!.return!())}
     catch(error){const alreadyFailed=state==='failed';state='failed';code='internal';if(!alreadyFailed)throw error}
     finally{tracer.finishSpan(span,options,state,code)}
    }
   })();
+  const iterator:AsyncIterableIterator<T>={
+   [Symbol.asyncIterator](){return this},next:()=>stream.next(),
+   return(value){cancelRequested=true;return stream.return(value)},throw:error=>stream.throw(error)
+  };
+  return iterator;
  }
  async response(options:TaskOptions,handler:(span:Span)=>Response|Promise<Response>):Promise<{response:Response;finished:Promise<'completed'|'failed'|'cancelled'>}> {
   let ready!:(response:Response)=>void,unavailable!:(error:unknown)=>void;

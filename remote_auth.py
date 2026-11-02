@@ -13,7 +13,7 @@ from mcp.server.auth.provider import AccessToken,AuthorizationCode,AuthorizeErro
 from mcp.shared.auth import OAuthClientInformationFull,OAuthToken
 from pydantic import BaseModel,ConfigDict,Field
 
-SCOPES=['analytics:read','charts:write','audit:read','goals:write']
+SCOPES=['analytics:read','charts:write','audit:read','goals:write','experiments:write']
 
 class Decision(BaseModel):
     model_config=ConfigDict(extra='forbid')
@@ -82,7 +82,7 @@ class OAuthProvider:
             g=self.grant(c,t['grant_id']) if t else None
         if not g:return None
         scopes=json.loads(t['scopes'])
-        if ROLES[g['role']]<ROLES['editor']:scopes=[s for s in scopes if s not in {'charts:write','goals:write'}]
+        if ROLES[g['role']]<ROLES['editor']:scopes=[s for s in scopes if s not in {'charts:write','goals:write','experiments:write'}]
         return ProjectToken(token=raw,client_id=g['client'],scopes=scopes,expires_at=int(t['expires']),resource=self.resource,subject=g['user_id'],project=g['project'],grant_id=g['id'],workspace=g['workspace'])
 
     async def load_access_token(self,token):return self.token(token,'access')
@@ -97,7 +97,7 @@ class OAuthProvider:
 
     def issue(self,c,g,scopes):
         access='as_oauth_'+secrets.token_urlsafe(32);refresh='as_refresh_'+secrets.token_urlsafe(32);now=time.time()
-        if ROLES[g['role']]<ROLES['editor']:scopes=[s for s in scopes if s not in {'charts:write','goals:write'}]
+        if ROLES[g['role']]<ROLES['editor']:scopes=[s for s in scopes if s not in {'charts:write','goals:write','experiments:write'}]
         expiry=min(now+3600,g['expires']);refresh_expiry=g['expires']
         for raw,kind,end in [(access,'access',expiry),(refresh,'refresh',refresh_expiry)]:
             c.execute('INSERT INTO oauth_tokens VALUES(?,?,?,?,?,0)',(digest(raw),g['id'],kind,json.dumps(scopes),end))
@@ -149,9 +149,10 @@ class OAuthProvider:
         audit=(request.method=='GET' and (path=='/api/outcomes/goals' or bool(re.fullmatch(r'/api/outcomes/goals/[0-9a-f-]{36}',path)))) or path in {'/api/audit/catalog','/api/audit/review','/api/audit/trace','/api/audit/evaluate','/api/audit/onboarding','/api/outcomes/evaluate','/api/traces/search','/api/traces/open','/api/traces/catalog','/api/traces/review','/api/traces/detail'}
         chart=path=='/api/charts' or bool(re.fullmatch(r'/api/charts/[0-9a-f-]{36}',path))
         goal_write=request.method=='PUT' and bool(re.fullmatch(r'/api/outcomes/goals/[0-9a-f-]{36}',path))
-        scope='goals:write' if goal_write else 'audit:read' if audit else 'charts:write' if chart and request.method!='GET' else 'analytics:read'
+        experiment=bool(re.fullmatch(r'/api/experiments/(cases|datasets|runs)(/[0-9a-f-]{36})?',path)) and (request.method=='GET' or request.method=='PUT' and bool(re.fullmatch(r'/api/experiments/(cases|datasets|runs)/[0-9a-f-]{36}',path))) or path=='/api/experiments/compare' and request.method=='POST'
+        scope='experiments:write' if experiment else 'goals:write' if goal_write else 'audit:read' if audit else 'charts:write' if chart and request.method!='GET' else 'analytics:read'
         if chart and request.method not in {'GET','POST','PUT'}:raise HTTPException(403,'agent access cannot remove charts')
-        if project!=token.project or scope not in token.scopes or not (path in allowed or audit or chart or goal_write) or role=='owner' or role=='editor' and not (chart or goal_write):
+        if project!=token.project or scope not in token.scopes or not (path in allowed or audit or chart or goal_write or experiment) or role=='owner' or role=='editor' and not (chart or goal_write or experiment):
             raise HTTPException(403,'agent scope does not allow this action')
 
     def install(self,app):
@@ -200,7 +201,7 @@ class OAuthProvider:
                 if not r:raise HTTPException(400,'request expired or already decided')
                 params=json.loads(r['params']);redirect=params['redirect_uri']
                 if req.approve:
-                    minimum='editor' if set(params['scopes']) & {'charts:write','goals:write'} else 'reader'
+                    minimum='editor' if set(params['scopes']) & {'charts:write','goals:write','experiments:write'} else 'reader'
                     row=c.execute('SELECT p.workspace,m.role FROM projects p JOIN memberships m ON m.workspace=p.workspace WHERE p.id=? AND m.user_id=?',(req.project,p['id'])).fetchone()
                     if not row or ROLES[row['role']]<ROLES[minimum]:raise HTTPException(403,'project role does not allow requested access')
                     if c.execute('SELECT count(*) FROM oauth_grants WHERE user_id=? AND revoked=0 AND expires>?',(p['id'],time.time())).fetchone()[0]>=30:raise HTTPException(422,'revoke an unused connection first')

@@ -26,7 +26,7 @@ class RemoteMCPTests(unittest.TestCase):
     join=test_workspaces.WorkspaceTests.join
 
     def register(self):
-        r=self.client.post('/register',json={'client_name':'Fresh test agent','redirect_uris':['http://127.0.0.1:19191/callback'],'grant_types':['authorization_code','refresh_token'],'response_types':['code'],'token_endpoint_auth_method':'none','scope':'analytics:read charts:write audit:read goals:write'})
+        r=self.client.post('/register',json={'client_name':'Fresh test agent','redirect_uris':['http://127.0.0.1:19191/callback'],'grant_types':['authorization_code','refresh_token'],'response_types':['code'],'token_endpoint_auth_method':'none','scope':'analytics:read charts:write audit:read goals:write experiments:write'})
         self.assertEqual(r.status_code,201,r.text);return r.json()['client_id']
 
     def begin(self,cid,scope='analytics:read charts:write',**overrides):
@@ -147,7 +147,7 @@ class RemoteMCPTests(unittest.TestCase):
         self.assertEqual(owner.get('/auth/mcp/connections').json()['connections'],[])
 
     def test_remote_transport_tools_and_idempotent_chart_storage(self):
-        owner,uid,w,p,cid,t,*_=self.grant('analytics:read charts:write audit:read goals:write')
+        owner,uid,w,p,cid,t,*_=self.grant('analytics:read charts:write audit:read goals:write experiments:write')
         with TestClient(app.app,base_url=ORIGIN) as client:
             headers={'Authorization':'Bearer '+t['access_token'],'Accept':'application/json, text/event-stream'}
             def rpc(method,params=None):
@@ -191,6 +191,22 @@ class RemoteMCPTests(unittest.TestCase):
             self.assertEqual(outcome['counts']['unclassified'],1)
             self.assertIsNone(outcome['satisfied_fraction'])
 
+            case_id=str(uuid.uuid4());dataset_id=str(uuid.uuid4())
+            case={'title':'Reviewed read request','privacy_reviewed':True,'input':{'request':'list experiments in production'},'expected':{'count':2}}
+            saved=call('save_experiment_object',{'kind':'cases','id':case_id,'definition':case})
+            self.assertEqual(saved['version'],1)
+            self.assertEqual(call('save_experiment_object',{'kind':'cases','id':case_id,'definition':case})['sha256'],saved['sha256'])
+            self.assertNotIn('input',call('experiment_objects',{'kind':'cases'})['items'][0]['definition'])
+            dataset={'title':'Read requests','cases':[{'id':case_id,'version':1}]}
+            call('save_experiment_object',{'kind':'datasets','id':dataset_id,'definition':dataset})
+            ids=[]
+            for variant,count in [('baseline',3),('candidate',2)]:
+                run_id=str(uuid.uuid4());ids.append(run_id)
+                definition={'dataset':dataset_id,'dataset_version':1,'variant':variant,'release_sha':'a'*40,'evaluator_runner_sha256':'b'*64,'privacy_reviewed':True,'results':[{'id':case_id,'version':1,'output':{'count':count},'duration_ms':10}]}
+                call('save_experiment_object',{'kind':'runs','id':run_id,'definition':definition})
+            compared=call('compare_experiments',{'baseline':ids[0],'candidate':ids[1]})
+            self.assertTrue(compared['eligible_for_review']);self.assertFalse(compared['deployment_authorized'])
+
             batch_event=app.Event(name='trace.observed',properties={'afterspan_trace':{
                 **trace_event.properties['afterspan_trace'],'trace_id':str(uuid.uuid4()),'span_id':str(uuid.uuid4()),
                 'step':'processing','receipt_count':1,'linked_trace_ids':[trace_event.properties['afterspan_trace']['trace_id']]}})
@@ -207,6 +223,8 @@ class RemoteMCPTests(unittest.TestCase):
             with closing(app.connect()) as c,c:c.execute("UPDATE memberships SET role='reader' WHERE workspace=? AND user_id=?",(w,uid))
             downgraded=rpc('tools/call',{'name':'save_outcome_goal','arguments':{**args,'revision':1}})['result']
             self.assertTrue(downgraded['isError'])
+            downgraded=rpc('tools/call',{'name':'experiment_objects','arguments':{'kind':'cases'}})['result']
+            self.assertTrue(downgraded['isError'])
 
 
 
@@ -217,5 +235,6 @@ class RemoteMCPTests(unittest.TestCase):
         response=self.client.put('/api/outcomes/goals/'+str(uuid.uuid4())+'?project='+p+'&revision=0',headers={'Authorization':'Bearer '+t['access_token']},json=definition)
         self.assertEqual(response.status_code,403)
         self.assertEqual(app.outcomes.list(p)['goals'],[])
+        self.assertEqual(self.client.get('/api/experiments/cases?project='+p,headers={'Authorization':'Bearer '+t['access_token']}).status_code,403)
 
 if __name__=='__main__':unittest.main()

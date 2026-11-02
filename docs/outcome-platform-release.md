@@ -27,8 +27,8 @@ All items require implementation plus direct evidence. Proposed targets are acce
 | 2 Interoperability | OpenTelemetry ingestion with explicit safe mapping and W3C propagation | Official exporter → production ingestion → trace readback | Local official HTTP exporter / protobuf / JSON / gzip tested; production pending |
 | 2 Model evidence | Provider/model and prompt version, token usage, cost and streaming timing | Bounds/unit tests and real provider observations; no invented cost | Local metadata contract and trace UI tested; provider/live proof pending |
 | 2 Privacy | Content off by default; explicit governed redacted debugging content | Consent/access/retention tests and secret/PII adversarial cases | Pending |
-| 3 Regression cases | Sanitized immutable cases from failures; versioned datasets and checks | Trace-to-case readback and no raw secret transfer | Pending |
-| 3 Experiments | Same cases/check versions, candidate/baseline, per-case differences | Real controlled experiment, regression failure and reproducibility | Pending |
+| 3 Regression cases | Sanitized immutable cases from failures; versioned datasets and checks | Trace-to-case readback and no raw secret transfer | Local versioned fixtures/datasets, privacy checks and trace link tested; live proof pending |
+| 3 Experiments | Same cases/check versions, candidate/baseline, per-case differences | Real controlled experiment, regression failure and reproducibility | Local callback baseline/candidate via CLI/MCP/UI; pinned facts, missing counts and negative control pass; production pending |
 | 3 Release loop | Approved change → checks → exact release → normal-use outcome window | Existing policy preserved; exact deployment and outcome evidence | Pending generic extension |
 | 4 Collection health | Queue, drop, rejection, delay, stale evidence and evaluator failure visibility | Fault injection plus real health UI/API/MCP readback | Pending integrated experience |
 | 4 Recovery | Durable delivery where promised; restart/retry/duplicate behavior | Process restart, outage recovery and no duplicate business writes | Pending proof |

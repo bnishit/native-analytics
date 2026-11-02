@@ -94,6 +94,13 @@ def parser():
         if name!='outcome-goals':command.add_argument('--id',required=True)
         if name=='outcome-goal':command.add_argument('--version',required=True,type=int)
         if name=='outcome-save':command.add_argument('--revision',required=True,type=int);command.add_argument('--file',required=True)
+    for name in ['experiment-list','experiment-get','experiment-save','experiment-compare']:
+        command=sub.add_parser(name);command.add_argument('--project',required=True)
+        if name!='experiment-compare':command.add_argument('--kind',choices=['cases','datasets','runs'],required=True)
+        if name in ['experiment-get','experiment-save']:command.add_argument('--id',required=True)
+        if name=='experiment-get':command.add_argument('--version',type=int,default=1)
+        if name=='experiment-save':command.add_argument('--revision',type=int,default=0)
+        if name in ['experiment-save','experiment-compare']:command.add_argument('--file',required=True)
     connect=sub.add_parser('connect-audit');connect.add_argument('--project',required=True);connect.add_argument('--label',default='Codex request audit');connect.add_argument('--days',type=int,default=7);connect.add_argument('--output',required=True)
     key=sub.add_parser('create-read-key');key.add_argument('--purpose',choices=['analytics','audit'],default='analytics');key.add_argument('--project',required=True);key.add_argument('--label',required=True);key.add_argument('--days',type=int,default=30);key.add_argument('--output',required=True)
     key=sub.add_parser('read-keys');key.add_argument('--project',required=True)
@@ -204,6 +211,12 @@ def main(argv=None):
         if command=='outcome-goal':params['version']=args.version
         if command=='outcome-save':params['revision']=args.revision;body=json.loads(Path(args.file).read_text());method='PUT'
     if command=='outcome-evaluate':path='/api/outcomes/evaluate';body=json.loads(Path(args.file).read_text());method='POST'
+    if command in ['experiment-list','experiment-get','experiment-save']:
+        path='/api/experiments/'+args.kind
+        if command!='experiment-list':path+='/'+urllib.parse.quote(args.id,safe='')
+        if command=='experiment-get':params['version']=args.version
+        if command=='experiment-save':params['revision']=args.revision;body=private_json(args.file);method='PUT'
+    if command=='experiment-compare':path='/api/experiments/compare';body=private_json(args.file);method='POST'
     if command=='attach-audit-evidence':
         path='/api/audit/evidence/'+urllib.parse.quote(args.id,safe='');body=json.loads(Path(args.file).read_text());method='PUT'
     if command=='assign-existing':

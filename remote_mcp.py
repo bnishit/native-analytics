@@ -61,6 +61,21 @@ def install(app,provider):
         return await call('/api/outcomes/goals')
 
     @mcp.tool(annotations=READ)
+    async def experiment_objects(kind:Literal['cases','datasets','runs'],id:UUID|None=None,version:int=1)->dict:
+        """Requires separately approved experiments:write and editor role, including for reads. Read reviewed fixture inputs/results or immutable dataset/run definitions. These are not raw trace exports. Expired fixtures cannot establish reproducibility."""
+        return await call('/api/experiments/'+kind+('/'+str(id)+'?version='+str(version) if id else ''))
+
+    @mcp.tool(annotations=WRITE)
+    async def save_experiment_object(kind:Literal['cases','datasets','runs'],id:UUID,definition:dict,revision:int=0)->dict:
+        """Requires experiments:write and editor role. Save reviewed sanitized fixtures, pin case versions into a dataset, or submit application-side results. Stable UUID retries are idempotent; changed versions require current revision. Never upload real credentials or personal data. The service runs fixed JSON checks, never repository code."""
+        return await call('/api/experiments/'+kind+'/'+str(id)+'?revision='+str(revision),definition,'PUT')
+
+    @mcp.tool(annotations=READ)
+    async def compare_experiments(baseline:UUID,candidate:UUID)->dict:
+        """Requires experiments:write and editor role. Compare the same pinned dataset/check versions. Missing cases remain counted. Eligibility for review is not deployment authority or production impact."""
+        return await call('/api/experiments/compare',{'baseline':str(baseline),'candidate':str(candidate)})
+
+    @mcp.tool(annotations=READ)
     async def evaluate_outcomes(query:dict)->dict:
         """Requires audit:read. Evaluate a saved goal_id and version over the task-entry window. Reuse returned query for frozen pages. Satisfaction means declared producer-evidence criteria, not independent business proof."""
         return await call('/api/outcomes/evaluate',query)

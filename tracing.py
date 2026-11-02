@@ -7,7 +7,7 @@ import hmac
 import json
 from typing import Literal
 from fastapi import Depends,HTTPException
-from pydantic import BaseModel,ConfigDict,Field,UUID4,StrictBool,model_validator,field_validator
+from pydantic import BaseModel,ConfigDict,Field,UUID4,StrictBool,model_validator,field_validator,model_serializer
 from product_analytics import Window
 
 STEPS=('receive','queue','processing','model','tool','retrieval','storage','http','response','availability','booking','provider_send','provider_delivery')
@@ -23,9 +23,27 @@ class CheckResult(BaseModel):
     method:Literal['source','code','model','human']
     phase:Literal['before_delivery','after_delivery']
 
+CheckExecution=Literal['completed','not_run']
+CheckReason=Literal['evidence_absent','evidence_binding_rejected']
+def validate_check_execution(execution,reason,result,has_evidence):
+    if reason is not None and execution!='not_run':raise ValueError('reason requires a check that did not run')
+    if execution=='not_run' and (result!='unknown' or has_evidence):raise ValueError('a check that did not run must stay unknown and have no evidence')
+
 class WorkflowCheck(CheckResult):
     required:StrictBool
     evidence_ref:UUID4|None=None
+    execution:CheckExecution|None=None
+    reason_code:CheckReason|None=None
+    @model_validator(mode='after')
+    def execution_consistent(self):
+        validate_check_execution(self.execution,self.reason_code,self.result,self.evidence_ref is not None)
+        return self
+    @model_serializer(mode='wrap')
+    def optional_diagnostics(self,handler):
+        result=handler(self)
+        for field in ('execution','reason_code'):
+            if getattr(self,field) is None:result.pop(field,None)
+        return result
 
 class WorkflowEvidence(CheckResult):
     schema_version:Literal['workflow-evidence-v1']
@@ -227,16 +245,18 @@ class Tracing:
         def catalog(project:str):
             return {'schema':SpanObservation.model_json_schema(),'steps':list(STEPS),'integrations':integrations or [],
                     'meanings':{'receive':'Application receipt; not a queue or reply guarantee.',
+                    'checks.execution':'Optional completed or not_run diagnostic, separate from the result. Missing stays unspecified; a closed operation does not prove its check ran.',
+                    'checks.reason_code':'Optional bounded reason for not_run: evidence_absent or evidence_binding_rejected. This is producer-reported metadata, not source truth.',
                     'queue':'Queue handling; not end-user delivery.','processing':'Application work; not business outcome or delivery proof.',
                     'model':'Model call completed; not answer correctness.','tool':'Tool call completed; not verified business state.',
                     'retrieval':'Context lookup; not source correctness.','storage':'Storage operation; not independent durable-state verification.',
                     'http':'HTTP call; status alone is not business success.','response':'Application response prepared; not receipt or reading.',
                     'availability':'Availability lookup completed; not a reservation.',
                     'booking':'Producer reports its booking operation completed; independent readback still required.',
-                    'provider_send':'Provider accepted the send; not patient delivery.',
+                    'provider_send':'Provider accepted the send; not final delivery.',
                     'provider_delivery':'Producer observed a delivery receipt; not proof of reading.'},
                     'limits':['Absent spans stay missing. Closed spans without a start stay incomplete evidence.',
-                    'Workflow observations accept bounded identities, categories, timings, checks and model usage. No raw messages, patient identifiers or errors.',
+                    'Workflow observations accept bounded identities, categories, timings, checks and model usage. No raw messages, private identifiers or errors.',
                     'This catalog describes native workflow observations; OTLP/HTTP uses /v1/traces with a separate metadata allowlist.']}
         @app.post('/api/traces/review',dependencies=[Depends(reader)])
         def review(project:str,req:TraceReview):return self.review(project,req)

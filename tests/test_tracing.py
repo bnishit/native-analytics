@@ -21,6 +21,23 @@ class TracingTests(unittest.TestCase):
     def review(self,**changes):
         r=self.client.post('/api/traces/review?project=alpha',headers=self.admin,json={'environment':'staging',**changes})
         self.assertEqual(r.status_code,200,r.text);return r.json()
+    def test_check_execution_diagnostics_are_optional_searchable_and_not_proof(self):
+        from tracing import WorkflowCheck,WorkflowEvidence
+        from pydantic import ValidationError
+        base={'name':'source_facts','version':1,'result':'unknown','required':True,'method':'source','phase':'before_delivery'}
+        old=WorkflowCheck.model_validate(base).model_dump(mode='json')
+        self.assertNotIn('execution',old);self.assertNotIn('reason_code',old)
+        diagnostic={**base,'execution':'not_run','reason_code':'evidence_absent'}
+        self.assertEqual(self.ingest(self.event(),self.event('succeeded',1,checks=[diagnostic])).status_code,200)
+        row=self.review()['traces'][0]['checks'][0]
+        self.assertEqual(row['execution'],'not_run');self.assertEqual(row['reason_code'],'evidence_absent');self.assertFalse(row['evidence_present'])
+        for query in ['not_run','not run','evidence_absent','evidence absent']:
+            response=self.client.post('/api/traces/search?project=alpha',headers=self.admin,json={'environment':'staging','search':query})
+            self.assertEqual(response.status_code,200);self.assertEqual(response.json()['total'],1)
+        for changes in [{'result':'passed'},{'result':'failed'},{'evidence_ref':str(uuid.uuid4())},{'execution':'completed'},{'execution':None},{'reason_code':'private arbitrary text'}]:
+            with self.subTest(changes=changes),self.assertRaises(ValidationError):WorkflowCheck.model_validate({**diagnostic,**changes})
+        self.assertNotIn('execution',WorkflowEvidence.model_fields);self.assertNotIn('reason_code',WorkflowEvidence.model_fields)
+
     def test_generic_checks_are_separate_from_step_success_and_hide_receipt_refs(self):
         receipt=str(uuid.uuid4())
         check={'name':'source_facts','version':1,'result':'failed','required':True,

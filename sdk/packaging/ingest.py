@@ -18,6 +18,8 @@ try:
     assert len(traces) == 2, traces
     assert all(trace['completion']['response']['state'] == 'succeeded' for trace in traces)
     assert all(trace['checks'][0]['evidence_status'] == 'resolved' for trace in traces)
+    assert all(trace['checks'][0]['execution'] == 'completed' for trace in traces)
+    assert all(trace['checks'][1]['execution'] == 'not_run' and trace['checks'][1]['reason_code'] == 'evidence_absent' and trace['checks'][1]['result'] == 'unknown' and not trace['checks'][1]['evidence_present'] for trace in traces)
     print(json.dumps({'ingested_languages': 2, 'traces': len(traces)}))
 finally:
     fixture.tearDown()

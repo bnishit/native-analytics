@@ -178,7 +178,11 @@ class RemoteMCPTests(unittest.TestCase):
                 'schema_version':'workflow-trace-v1','trace_id':str(uuid.uuid4()),'attempt_id':str(uuid.uuid4()),
                 'attempt_number':1,'span_id':str(uuid.uuid4()),'workflow':'appointment_request',
                 'environment':'staging','step':'receive','state':'started'}})
-            with closing(app.connect()) as c,c:app.store_events(c,p,[trace_event])
+            child={**trace_event.properties['afterspan_trace'],'span_id':str(uuid.uuid4()),'parent_span_id':trace_event.properties['afterspan_trace']['span_id'],'step':'processing'}
+            check={'name':'source_facts','version':1,'result':'unknown','required':True,'method':'source','phase':'before_delivery','execution':'not_run','reason_code':'evidence_absent'}
+            check_start=app.Event(name='trace.observed',properties={'afterspan_trace':child})
+            check_end=app.Event(name='trace.observed',properties={'afterspan_trace':{**child,'state':'succeeded','duration_ms':1.0,'checks':[check]}})
+            with closing(app.connect()) as c,c:app.store_events(c,p,[trace_event,check_start,check_end])
             reviewed=call('workflow_trace_review',{'query':{'environment':'staging'}})
             detail=call('workflow_trace_detail',{'trace':reviewed['traces'][0]['trace'],'query':reviewed['query']})
             self.assertEqual(detail['trace'],reviewed['traces'][0])
@@ -187,6 +191,11 @@ class RemoteMCPTests(unittest.TestCase):
             opened=call('open_trace',{'reference':searched['traces'][0]['reference'],'query':searched['query']})
             self.assertTrue(opened['trace']['has_gaps'])
             self.assertEqual(opened['trace']['business_outcome'],'not_independently_verified')
+            self.assertEqual(opened['trace']['checks'][0]['execution'],'not_run')
+            self.assertEqual(opened['trace']['checks'][0]['reason_code'],'evidence_absent')
+            diagnostic=call('search_traces',{'query':{'environment':'staging','search':'not run'}})
+            self.assertEqual(diagnostic['total'],1)
+            self.assertEqual(call('open_trace',{'reference':diagnostic['traces'][0]['reference'],'query':diagnostic['query']})['trace']['checks'],opened['trace']['checks'])
             self.assertFalse(call('debug_capture_policy')['active'])
             with patch.dict(os.environ,{'AFTERSPAN_CONNECTION_KEY':base64.urlsafe_b64encode(b'k'*32).decode()}):
                 policy={'enabled':True,'workflow':'appointment_request','environment':'staging','privacy_reviewed':True}

@@ -17,12 +17,27 @@ class TracingSDKTests(unittest.TestCase):
     def tearDown(self):self.fixture.tearDown()
     def events(self):
         with self.collector.db() as c:return [json.loads(r[0]) for r in c.execute('SELECT payload FROM outbox ORDER BY created')]
+    def test_explicit_not_run_emits_diagnostics_without_creating_evidence(self):
+        with self.tracer.task('document_export','test'):
+            with self.tracer.span('processing') as span:
+                for options in [dict(execution='not_run',evidence_digest='a'*64),dict(execution='completed',reason_code='evidence_absent'),dict(reason_code='evidence_absent'),dict(execution='raw text')]:
+                    with self.assertRaises(ValueError):span.check('bad','unknown',**options)
+                with self.assertRaises(ValueError):span.check('bad','passed',execution='not_run')
+                span.check('source_facts','unknown',execution='not_run',reason_code='evidence_absent')
+                span.check('old','unknown')
+        events=self.events();self.assertFalse(any(e['name']=='evidence.observed' for e in events))
+        self.assertEqual(self.fixture.ingest(events).status_code,200)
+        reviewed=self.fixture.client.post('/api/traces/review?project=alpha',headers=self.fixture.admin,json={'environment':'test'}).json()
+        checks=reviewed['traces'][0]['checks'];self.assertEqual(checks[0]['execution'],'not_run');self.assertNotIn('execution',checks[1])
+
     def test_durable_sdk_events_round_trip_into_nested_trace_and_resolved_receipt(self):
         with self.tracer.task('document_export','test'):
             with self.tracer.span('processing',milestone='completion') as span:
-                span.check('source_facts','passed',evidence_digest='a'*64)
+                span.check('source_facts','passed',evidence_digest='a'*64,execution='completed')
             with self.tracer.span('response',milestone='delivery',disposition='delivered'):pass
         events=self.events();self.assertEqual(len(events),7)
+        receipt=next(e['properties']['afterspan_evidence'] for e in events if e['name']=='evidence.observed')
+        self.assertNotIn('execution',receipt);self.assertNotIn('reason_code',receipt)
         reopened=Collector('https://analytics.example','synthetic-write-key',self.path)
         self.assertEqual(reopened.status()['queued'],7)
         response=self.fixture.ingest(events);self.assertEqual(response.status_code,200,response.text)
@@ -30,6 +45,7 @@ class TracingSDKTests(unittest.TestCase):
         trace=reviewed['traces'][0]
         self.assertEqual(trace['checks'][0]['evidence_status'],'resolved')
         self.assertEqual(trace['checks'][0]['result'],'passed')
+        self.assertEqual(trace['checks'][0]['execution'],'completed')
         self.assertEqual(trace['issues'],[])
         self.assertEqual(trace['completion']['response']['state'],'succeeded')
     def test_model_chunks_export_only_usage_and_first_meaningful_output(self):

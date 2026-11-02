@@ -9,8 +9,8 @@ The Python distribution is `afterspan-sdk`; the server-only ESM Node package is 
 Pinned Git installation is verified at the released commit below in fresh consumers. Node also passed a production `--omit=dev` lockfile install with a fresh cache and SSH disabled. Python preserves the existing flat-module imports. No registry account or publication is needed. npm Git installation runs the reviewed `prepare` build and downloads its pinned build dependencies.
 
 ```sh
-python -m pip install 'afterspan-sdk @ git+https://github.com/bnishit/native-analytics.git@6b866d010b4de5025167da14041b49851252569c#subdirectory=sdk/python'
-npm install 'git+https://github.com/bnishit/native-analytics.git#6b866d010b4de5025167da14041b49851252569c'
+python -m pip install 'afterspan-sdk @ git+https://github.com/bnishit/native-analytics.git@1f1a9f9c9485384146d4dd654641f10e76ab5c69#subdirectory=sdk/python'
+npm install 'git+https://github.com/bnishit/native-analytics.git#1f1a9f9c9485384146d4dd654641f10e76ab5c69'
 ```
 
 ### Build and verify artifacts locally
@@ -201,7 +201,7 @@ return response;
 
 These are local observation boundaries, not proof of remote HTTP receipt or human reading. Neither helper automatically declares a completion/delivery/usefulness milestone, a passed check or a satisfied goal. Active trace emission is nonblocking through the existing bounded collector; final background flush is best effort. Collector failure never reruns the handler, stream factory or business operation. Node's queue is still in memory. Application adapters must bind any account erasure identity themselves; do not attach raw user identifiers or leave private account traces outside the account's erasure scope.
 
-The streaming unit passes 50 Node checks, including 12 response/stream boundary cases. Fresh installed-package consumers emit completed and cancelled stream lifecycles accepted by the local service. Fresh Node Git installation at the pin above executes a consumed response successfully. These are synthetic local checks, not a deployed customer-product adoption or proof of native provider calls.
+The streaming unit passes 53 Node checks, including 15 response/stream boundary cases. Fresh installed-package consumers emit completed and cancelled stream lifecycles accepted by the local service. Fresh Node Git installation at the pin above executes a consumed response successfully. These are synthetic local checks, not a deployed customer-product adoption or proof of native provider calls.
 
 ## HTTP and queue handoff
 

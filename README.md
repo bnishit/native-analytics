@@ -39,7 +39,7 @@ Open http://127.0.0.1:8769/app. This loopback preview creates private local emai
 
 ### Generic workflow outcomes
 
-[Governed debug snapshots](docs/debugging.md) add default-off, owner-scoped capture windows, SDK redaction before upload, encrypted expiring storage and separately consented editor reads. These are selected reviewed snapshots, not automatic prompt capture.
+[Governed debug snapshots](docs/debugging.md) add default-off, owner-scoped capture windows, SDK redaction before upload, encrypted expiring storage and separately consented editor reads. These are selected reviewed snapshots, not automatic prompt capture. An isolated production-service test verified selected redacted reads, bounded retries, read denials and revoke/purge; remote debug consent and broader adoption remain separate gates.
 
 [Regression cases and experiments](docs/experiments.md) have a primary screen, versioned datasets, a Python application-side runner and scoped CLI/MCP surfaces. Fixed JSON checks do not establish production impact. In Outcomes, an editor can prepare exact GitHub/Railway deployment evidence and an owner can adopt its immutable proof. The production owner UI and account CLI have verified this path on Tracker’s current deployment. It keeps source identity separate from review, CI, release permission and user improvement; see [release evidence and outcome windows](docs/release-outcomes.md).
 

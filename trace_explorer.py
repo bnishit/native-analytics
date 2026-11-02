@@ -47,8 +47,8 @@ def workflow_trace(row):
     origin=original/1000 if original is not None and 'request_clock_conflict' not in row['issues'] else min(s['first_seen'] for s in row['spans'])
     spans=[{'id':s['span'],'parent':s['parent'],'step':s['step'],'attempt':s['attempt_number'],
             'state':s['state'],'start_ms':round((s['first_seen']-origin)*1000,3) if not s['missing_start'] else None,
-            'duration_ms':s['duration_ms'],'end_ms':round((s['last_seen']-origin)*1000,3) if s['state'] in {'succeeded','failed'} and not s['missing_start'] else None,
-            'parent_missing':s['parent_missing']} for s in row['spans']]
+            'duration_ms':s['duration_ms'],'end_ms':round((s['last_seen']-origin)*1000,3) if s['state'] in {'succeeded','failed','unknown'} and not s['missing_start'] else None,
+            'parent_missing':s['parent_missing'],'model_usage':s.get('model_usage')} for s in row['spans']]
     # Absent domain-specific steps are not requirements for other products.
     evidence=[{'name':s['step'],'state':s['state'],'outcome':s['outcome_code']} for s in row['spans']]
     return {'reference':row['trace'],'contract':'workflow-trace-v1','name':row['workflow'],

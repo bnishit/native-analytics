@@ -28,6 +28,7 @@ from product_loop import ProductLoop
 from catalog import Catalog
 from product_analytics import Window,PropertyFilter,ProductAnalytics
 from outcomes import Outcomes
+from otlp import install as install_otlp
 
 from journeys import JourneyContext,project_journeys,summarize
 
@@ -618,6 +619,9 @@ def ingest(req:Batch,project=Depends(writer)):
     except ValueError as exc:raise HTTPException(422,str(exc)) from None
 
 
+install_otlp(app,writer,connect,store_events,Event,RETENTION_DAYS)
+
+
 @app.post('/v1/identify')
 def identify(req:Identify,project=Depends(writer)):
     try:
@@ -1035,7 +1039,7 @@ def capabilities():
       'analytics':{'catalog':'/api/catalog','funnels':'/api/funnels/analyze','retention':'/api/retention/analyze','unit':'explicit opaque identity; not automatically a person'},
       'product_loop':{'goals':'/api/loop/goals','contract':'committed goals, scoped tracking PRs, independent answer checks and mature observational outcomes','local_mcp':'agent/loop_server.py','production_release_proof':'separate from PR and merge','repo_onboarding':{'sources':'/api/loop/sources','scans':'/api/loop/scans/{UUID}','jobs':'/api/loop/jobs/{UUID}','contract':'afterspan-repo-goal-v2','unit':'declared logged events or observed read requests, not unique people','measurements':['event-outcome-v1','slack-read-outcome-v1'],'credentials':'owner-only encrypted project connections','release':'/api/loop/actions/{id}/release'}},
       'outcomes':{'goals':'/api/outcomes/goals','evaluate':'/api/outcomes/evaluate','contract':'workflow-outcome-v1','scope':'project audit-purpose read; editor writes goal versions','evidence':'producer-reported criteria, not independent business proof'},
-      'traces':{'search':'/api/traces/search','open':'/api/traces/open','contracts':['slack-request-v1','workflow-trace-v1'],'scope':'project audit-purpose read key','raw_data':False},
+      'traces':{'search':'/api/traces/search','open':'/api/traces/open','contracts':['slack-request-v1','workflow-trace-v1'],'otlp':{'endpoint':'/v1/traces','transport':'OTLP/HTTP protobuf or JSON','content_capture':False,'max_spans':500,'mapping_version':'afterspan-otel-v1'},'scope':'project audit-purpose read key','raw_data':False},
       'audit':{'catalog':'/api/audit/catalog','review':'/api/audit/review','trace':'/api/audit/trace','evaluate':'/api/audit/evaluate','onboarding':'/api/audit/onboarding','quality_metric':'answer-quality-v1','contract':'properties.afterspan_audit / slack-request-v1','scope':'project audit-purpose read key','historical_evidence':'/api/audit/evidence/{UUIDv4}','max_requests':60,'raw_data':False,'overall_readiness_claim':False},
       'connection':{'transport':'local stdio MCP','bootstrap':'An owner uses connect-audit to issue a private, expiring audit-only connection receipt. No operator token fallback.','launcher':'agent/run_audit.py PRIVATE_RECEIPT','remote_oauth':True,'remote_mcp':'/mcp','consent':'/assets/mcp-connect.html','scopes':SCOPES}}
 

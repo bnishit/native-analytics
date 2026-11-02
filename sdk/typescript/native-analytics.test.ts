@@ -85,3 +85,11 @@ test('deployment whitespace does not change endpoint, key or source',async()=>{
  await client.track('test.event');
  assert.deepEqual(captured,{url:'https://example.test/v1/events',auth:'Bearer write-key',source:'shelf'});
 });
+
+test('collection health exposes retained delivery failures and callback errors do not escape',async()=>{
+ const client=createAnalytics({url:'https://analytics.example',writeKey:'synthetic-key',fetch:async()=>new Response('',{status:503}),onError:()=>{throw Error('private callback error')}});
+ await client.track('export.completed');
+ assert.equal(client.status().queued,1);assert.equal(client.status().last_error,'delivery_failed');assert.ok(client.status().oldest_queued_at);
+ await client.track('bad event that normalizes','identity',Object.fromEntries(Array.from({length:65},(_,i)=>['field'+i,'x'.repeat(2000)])));
+ assert.equal(client.status().rejected,1);
+});

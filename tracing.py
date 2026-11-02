@@ -34,6 +34,32 @@ class WorkflowEvidence(CheckResult):
     release_sha:str|None=Field(default=None,pattern=r'^[a-f0-9]{40}$')
     evidence_digest:str=Field(pattern=r'^[a-f0-9]{64}$')
 
+class ModelUsage(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    provider:str=Field(pattern=r'^[a-z][a-z0-9_.-]{0,63}$')
+    model:str=Field(pattern=r'^[A-Za-z0-9][A-Za-z0-9_./:-]{0,127}$')
+    template_version:str|None=Field(default=None,pattern=r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$')
+    unit:Literal['token']='token'
+    input_count:int|None=Field(default=None,ge=0,le=1000000000,strict=True)
+    output_count:int|None=Field(default=None,ge=0,le=1000000000,strict=True)
+    cache_read_count:int|None=Field(default=None,ge=0,le=1000000000,strict=True)
+    reasoning_count:int|None=Field(default=None,ge=0,le=1000000000,strict=True)
+    usage_source:Literal['provider_reported','estimated']|None=None
+    cost_microusd:int|None=Field(default=None,ge=0,le=1000000000000,strict=True)
+    cost_source:Literal['provider_reported','price_table']|None=None
+    price_version:str|None=Field(default=None,pattern=r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$')
+    first_output_ms:float|None=Field(default=None,ge=0,le=86400000,strict=True,allow_inf_nan=False)
+
+    @model_validator(mode='after')
+    def provenance(self):
+        has_usage=any(getattr(self,k) is not None for k in ('input_count','output_count','cache_read_count','reasoning_count'))
+        if has_usage!=(self.usage_source is not None):raise ValueError('usage requires its source')
+        if (self.cost_microusd is not None)!=(self.cost_source is not None):raise ValueError('cost requires its source')
+        if (self.cost_source=='price_table')!=(self.price_version is not None):raise ValueError('price-table cost requires a pinned price version')
+        if self.input_count is not None and self.cache_read_count is not None and self.cache_read_count>self.input_count:raise ValueError('cached units exceed input units')
+        if self.output_count is not None and self.reasoning_count is not None and self.reasoning_count>self.output_count:raise ValueError('reasoning units exceed output units')
+        return self
+
 def resolve_evidence(check,facts,at,receipts):
     reference=check.get('evidence_ref')
     if reference is None:return 'not_referenced'
@@ -70,9 +96,13 @@ class SpanObservation(BaseModel):
     milestone:Literal['completion','delivery','usefulness']|None=None
     disposition:Literal['delivered','withheld','clarification']|None=None
     checks:list[WorkflowCheck]|None=Field(default=None,min_length=1,max_length=20)
+    model_usage:ModelUsage|None=None
 
     @model_validator(mode='after')
     def coherent(self):
+        if self.model_usage is not None:
+            if self.step!='model' or self.state=='started':raise ValueError('model usage belongs to a terminal model step')
+            if self.model_usage.first_output_ms is not None and (self.duration_ms is None or self.model_usage.first_output_ms>self.duration_ms):raise ValueError('first output must fall inside measured duration')
         if self.state=='started' and (self.milestone is not None or self.disposition is not None):raise ValueError('milestones and dispositions belong to terminal observations')
         if self.disposition is not None and self.step!='response':raise ValueError('disposition belongs to response')
         if self.checks is not None:
@@ -104,7 +134,7 @@ def summarize_span(rows,labels):
     starts=[r for r in rows if r['facts']['state']=='started']
     conflict=conflict or len({(r['facts'].get('receipt_count'),tuple(r['facts'].get('linked_trace_ids') or [])) for r in starts})>1
     ends=[r for r in rows if r['facts']['state']!='started']
-    signatures={(r['facts']['state'],r['facts'].get('duration_ms'),r['facts']['outcome_code'],json.dumps([r['facts'].get(k) for k in ['checks','milestone','disposition']],sort_keys=True)) for r in ends}
+    signatures={(r['facts']['state'],r['facts'].get('duration_ms'),r['facts']['outcome_code'],json.dumps([r['facts'].get(k) for k in ['checks','milestone','disposition','model_usage']],sort_keys=True)) for r in ends}
     conflict=conflict or len(signatures)>1 or len({r['ts'] for r in starts})>1 or len({r['ts'] for r in ends})>1 or bool(starts and ends and min(r['ts'] for r in starts)>min(r['ts'] for r in ends))
     state='conflict' if conflict else ends[0]['facts']['state'] if ends else 'incomplete'
     parent=first.get('parent_span_id')
@@ -114,6 +144,7 @@ def summarize_span(rows,labels):
             'outcome_code':ends[0]['facts']['outcome_code'] if ends and not conflict else 'uncertain',
             'milestone':ends[0]['facts'].get('milestone') if ends and not conflict else None,
             'disposition':ends[0]['facts'].get('disposition') if ends and not conflict else None,
+            'model_usage':ends[0]['facts'].get('model_usage') if ends and not conflict else None,
             'checks':[{**{k:v for k,v in check.items() if k not in {'evidence_ref','_evidence_status'}},'evidence_present':check.get('evidence_ref') is not None,'evidence_status':check.get('_evidence_status','not_resolved')}
                       for check in ends[0]['facts'].get('checks') or []] if ends and not conflict else [],
             'first_seen':min(r['ts'] for r in rows),'last_seen':max(r['ts'] for r in rows)}

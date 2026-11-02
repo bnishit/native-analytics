@@ -44,3 +44,12 @@ test('generic checks label failed evaluations separately from task completion',(
  const html=vm.runInContext(`traceWorkflowChecks([{name:'source_facts',version:1,result:'failed',required:true,method:'source',phase:'before_delivery',evidence_present:false}])`,context);
  assert.match(html,/source_facts v1/);assert.match(html,/failed/);assert.match(html,/not proof of task completion/);assert.match(html,/evidence not resolved/);
 });
+
+
+test('model usage preserves unknowns, zero price and provenance without quality claims',()=>{
+ const context=vm.createContext({traceStepLabel:{},esc:v=>String(v??'').replaceAll('<','&lt;'),fmt:String});
+ vm.runInContext(fs.readFileSync('static/traces.js','utf8'),context);
+ const html=vm.runInContext(`traceModelUsage([{id:'span_1',model_usage:{provider:'example',model:'model-v1',input_count:0,output_count:null,cost_microusd:0,cost_source:'provider_reported',usage_source:'estimated'}}])`,context);
+ assert.match(html,/Input 0 tokens/);assert.match(html,/output unknown tokens/);assert.match(html,/Cost \$0.000000/);assert.match(html,/estimated/);assert.match(html,/not answer quality/);
+ assert.equal(vm.runInContext('traceModelUsage([{id:1}])',context),'');
+});

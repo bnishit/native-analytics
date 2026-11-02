@@ -1,0 +1,133 @@
+"""Context-local workflow tracing over the durable Collector. No content capture."""
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, replace
+import hashlib
+import re
+import secrets
+import time
+import uuid
+from urllib.parse import quote, unquote
+
+_current=ContextVar('afterspan_trace_context',default=None)
+_STEPS={'receive','queue','processing','model','tool','retrieval','storage','http','response'}
+_ENVIRONMENTS={'production','staging','development','test','local'}
+
+def mapped_id(trace_id,span_id=None):
+    if not re.fullmatch(r'[0-9a-f]{32}',trace_id) or int(trace_id,16)==0:raise ValueError('invalid W3C trace ID')
+    if span_id is not None and (not re.fullmatch(r'[0-9a-f]{16}',span_id) or int(span_id,16)==0):raise ValueError('invalid W3C span ID')
+    value='afterspan-otel-v1\0'+trace_id+('\0'+span_id if span_id is not None else '')
+    return str(uuid.UUID(bytes=hashlib.sha256(value.encode()).digest()[:16],version=4))
+
+@dataclass(frozen=True)
+class TraceContext:
+    trace_id:str
+    attempt_id:str
+    attempt_number:int
+    workflow:str
+    environment:str
+    request_started_at_ms:int
+    release_sha:str|None=None
+    span_id:str|None=None
+    sampled:bool=True
+
+    def validate(self):
+        mapped_id(self.trace_id,self.span_id)
+        if type(self.sampled) is not bool:raise ValueError('invalid sampling decision')
+        if str(uuid.UUID(self.attempt_id,version=4))!=self.attempt_id:raise ValueError('invalid attempt ID')
+        if type(self.attempt_number) is not int or not 1<=self.attempt_number<=10000:raise ValueError('invalid attempt number')
+        if not isinstance(self.workflow,str) or not re.fullmatch(r'[a-z][a-z0-9_.-]{0,63}',self.workflow) or self.environment not in _ENVIRONMENTS:raise ValueError('invalid workflow context')
+        if type(self.request_started_at_ms) is not int or not 0<=self.request_started_at_ms<=4102444800000:raise ValueError('invalid original clock')
+        if self.release_sha is not None and not re.fullmatch(r'[a-f0-9]{40}',self.release_sha):raise ValueError('invalid release')
+        return self
+
+    def retry(self):
+        return replace(self,attempt_id=str(uuid.uuid4()),attempt_number=self.attempt_number+1,span_id=None).validate()
+
+def inject(context=None):
+    context=(context or _current.get())
+    if context is None or context.span_id is None:return {}
+    context.validate()
+    values={'workflow':context.workflow,'environment':context.environment,'attempt':context.attempt_id,
+            'number':str(context.attempt_number),'clock':str(context.request_started_at_ms)}
+    if context.release_sha:values['release']=context.release_sha
+    return {'traceparent':'00-'+context.trace_id+'-'+context.span_id+('-01' if context.sampled else '-00'),
+            'baggage':','.join('afterspan.'+k+'='+quote(v,safe='') for k,v in values.items())}
+
+def extract(headers,*,trusted=False):
+    if not trusted:return None
+    try:
+        headers={k.lower():v for k,v in headers.items()}
+        parent=headers.get('traceparent','');baggage=headers.get('baggage','')
+        if len(baggage)>1024 or not re.fullmatch(r'00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}',parent):return None
+        values={}
+        for item in baggage.split(','):
+            key,value=item.strip().split('=',1)
+            if key.startswith('afterspan.'):
+                key=key[10:]
+                if key in values:return None
+                values[key]=unquote(value)
+        return TraceContext(parent[3:35],values['attempt'],int(values['number']),values['workflow'],values['environment'],int(values['clock']),values.get('release'),parent[36:52],bool(int(parent[-2:],16)&1)).validate()
+    except (ValueError,TypeError,KeyError,AttributeError):return None
+
+class Span:
+    def __init__(self,tracer,context,parent,step):
+        self.tracer=tracer;self.context=context;self.parent=parent;self.step=step;self.checks=[];self.closed=False
+    def facts(self):
+        c=self.context
+        return {'schema_version':'workflow-trace-v1','trace_id':mapped_id(c.trace_id),'attempt_id':c.attempt_id,
+                'attempt_number':c.attempt_number,'span_id':mapped_id(c.trace_id,c.span_id),'parent_span_id':self.parent,
+                'workflow':c.workflow,'environment':c.environment,'release_sha':c.release_sha,'request_started_at_ms':c.request_started_at_ms,'step':self.step}
+    def check(self,name,result,*,version=1,method='source',phase='before_delivery',required=True,evidence_digest=None):
+        if self.closed:raise ValueError('span already closed')
+        if not isinstance(name,str) or not re.fullmatch(r'[a-z][a-z0-9_.-]{0,63}',name) or result not in {'passed','failed','unknown'} or type(version) is not int or not 1<=version<=1000000:raise ValueError('invalid check')
+        if method not in {'source','code','model','human'} or phase not in {'before_delivery','after_delivery'} or type(required) is not bool:raise ValueError('invalid check definition')
+        if len(self.checks)>=20 or any(c['name']==name for c in self.checks):raise ValueError('checks must be unique and bounded')
+        check={'name':name,'version':version,'result':result,'method':method,'phase':phase,'required':required}
+        if evidence_digest is not None:
+            if not isinstance(evidence_digest,str) or not re.fullmatch(r'[a-f0-9]{64}',evidence_digest):raise ValueError('provide a SHA-256 evidence digest, never source content')
+            receipt=str(uuid.uuid4());facts=self.facts()
+            evidence={k:check[k] for k in ['name','version','result','method','phase']}
+            evidence.update({k:facts[k] for k in ['trace_id','attempt_id','span_id','workflow','environment','release_sha']})
+            evidence.update(schema_version='workflow-evidence-v1',receipt_id=receipt,evidence_digest=evidence_digest)
+            self.tracer.emit('evidence.observed',{'afterspan_evidence':evidence})
+            check['evidence_ref']=receipt
+        self.checks.append(check)
+        return result
+
+class WorkflowTracer:
+    def __init__(self,collector):self.collector=collector;self.emit_failures=0;self.sampled_out_events=0
+    def emit(self,name,properties):
+        context=_current.get()
+        if context is not None and not context.sampled:self.sampled_out_events+=1;return
+        try:
+            if self.collector.track(name,properties=properties) is None:self.emit_failures+=1
+        except Exception:self.emit_failures+=1
+    @contextmanager
+    def task(self,workflow=None,environment='production',release_sha=None,*,context=None):
+        context=context or TraceContext(secrets.token_hex(16),str(uuid.uuid4()),1,workflow,environment,int(time.time()*1000),release_sha)
+        context.validate();token=_current.set(context)
+        try:
+            with self.span('processing') as span:yield span
+        finally:_current.reset(token)
+    @contextmanager
+    def span(self,step,*,milestone=None,disposition=None):
+        context=_current.get()
+        if context is None:raise ValueError('start or continue a task before a span')
+        if step not in _STEPS:raise ValueError('unsupported span step')
+        if milestone not in {None,'completion','delivery','usefulness'} or disposition not in {None,'delivered','withheld','clarification'} or disposition is not None and step!='response':raise ValueError('invalid terminal declaration')
+        parent=mapped_id(context.trace_id,context.span_id) if context.span_id else None
+        child=replace(context,span_id=secrets.token_hex(8));span=Span(self,child,parent,step)
+        token=_current.set(child);started=time.monotonic();state='succeeded';code='none'
+        self.emit('trace.observed',{'afterspan_trace':{**span.facts(),'state':'started'}})
+        try:yield span
+        except BaseException:
+            state='failed';code='internal';raise
+        finally:
+            duration=(time.monotonic()-started)*1000
+            end={**span.facts(),'state':state if duration<=86400000 else 'unknown','outcome_code':code if duration<=86400000 else 'uncertain','duration_ms':duration if duration<=86400000 else None}
+            if milestone:end['milestone']=milestone
+            if disposition:end['disposition']=disposition
+            if span.checks:end['checks']=span.checks
+            self.emit('trace.observed',{'afterspan_trace':end});span.closed=True;_current.reset(token)
+    def status(self):return {'emit_failures':self.emit_failures,'sampled_out_events':self.sampled_out_events,**self.collector.status()}

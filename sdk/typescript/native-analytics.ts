@@ -45,7 +45,12 @@ export function safeProperties(value: unknown, depth = 0): unknown {
 }
 export function createAnalytics(config: AnalyticsConfig = {}) {
   config = { ...config, url: config.url?.trim(), writeKey: config.writeKey?.trim(), source: config.source?.trim() };
-  const queue: object[] = [];
+  const queue: Array<{id:string;timestamp:string;[key:string]:unknown}> = [];
+  let dropped=0,rejected=0,lastDelivery:number|null=null,lastError:string|null=null;
+  function report(code:string){
+    lastError=code;if(code==='queue_full')dropped++;if(code.startsWith('invalid_'))rejected++;
+    try{config.onError?.({code,queued:queue.length})}catch{}
+  }
   let running: Promise<void> | undefined;
   const enabled = Boolean(config.url && config.writeKey);
   if (config.url && !/^https:\/\//.test(config.url) && !/^http:\/\/127\.0\.0\.1:\d+/.test(config.url)) throw new Error('Native Analytics requires HTTPS');
@@ -67,25 +72,26 @@ export function createAnalytics(config: AnalyticsConfig = {}) {
             if (receipt.accepted + receipt.duplicates !== batch.length) throw new Error('invalid_receipt');
             delivered = true; break;
           } catch {
-            if (attempt === 1) config.onError?.({ code: 'delivery_failed', queued: queue.length });
+            if (attempt === 1) report('delivery_failed');
           }
         }
         if (!delivered) break;
-        queue.splice(0, batch.length);
+        queue.splice(0, batch.length);lastDelivery=Date.now()/1000;lastError=null;
       }
     })();
     try { await running; } finally { running = undefined; }
   }
   function track(name: string, distinctId?: string | null, properties: Properties = {}, attributes: Properties = {}, journey?: JourneyContext): Promise<void> {
     if (!enabled) return Promise.resolve();
-    if (queue.length >= 500) { config.onError?.({ code: 'queue_full', queued: queue.length }); return Promise.resolve(); }
-    if (journey && (!validJourney(journey) || journey.subject_kind === 'anonymous' && distinctId)) { config.onError?.({code:'invalid_journey',queued:queue.length}); return Promise.resolve(); }
+    if (queue.length >= 500) { report('queue_full'); return Promise.resolve(); }
+    if (journey && (!validJourney(journey) || journey.subject_kind === 'anonymous' && distinctId)) { report('invalid_journey'); return Promise.resolve(); }
     const normalized = name.replace(/^\$ai_generation$/, 'ai.generation').replace(/^[^A-Za-z0-9]+/, '').replace(/[^A-Za-z0-9_.:@/-]/g, '_').slice(0, 160);
     const identity = distinctId?.replace(/[^A-Za-z0-9_.:@/-]/g, '_').slice(0, 160) || null;
-    const clean = safeProperties({ ...properties, source: config.source ?? properties.source }) as Properties;
+    const contract = normalized === 'trace.observed' && Object.keys(properties).length === 1 && 'afterspan_trace' in properties || normalized === 'evidence.observed' && Object.keys(properties).length === 1 && 'afterspan_evidence' in properties;
+    const clean = safeProperties(contract ? properties : { ...properties, source: config.source ?? properties.source }) as Properties;
     const traits = safeProperties(attributes) as Properties;
     if (!normalized || JSON.stringify(clean).length > 15000 || JSON.stringify(traits).length > 15000) {
-      config.onError?.({ code: 'invalid_event', queued: queue.length }); return Promise.resolve();
+      report('invalid_event'); return Promise.resolve();
     }
     queue.push({ id: crypto.randomUUID(), name: normalized, distinct_id: identity, timestamp: new Date().toISOString(), properties: clean, attributes: traits, ...(journey ? {journey: {...journey}} : {}) });
     return flush();
@@ -98,5 +104,5 @@ export function createAnalytics(config: AnalyticsConfig = {}) {
     if (receipt.ok !== true || receipt.stale_identity_blocked !== true) throw new Error('analytics_erasure_unconfirmed');
   }
   return { track, trackJourney: (name: string, journey: JourneyContext, id?: string | null, properties: Properties = {}, attributes: Properties = {}) => track(name, id, properties, attributes, journey), flush, erase, identify: (id: string, attributes: Properties) => track('user.identified', id, {}, attributes),
-    status: () => ({ enabled, queued: queue.length }) };
+    status: () => ({ enabled, queued: queue.length,dropped,rejected,last_delivery:lastDelivery,last_error:lastError,oldest_queued_at:queue.length?Date.parse(queue[0].timestamp)/1000:null }) };
 }

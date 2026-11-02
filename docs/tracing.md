@@ -81,3 +81,7 @@ Terminal workflow observations can carry up to 20 versioned checks. Each declare
 A successfully completed model span can carry a failed source check. Conflicting terminal checks invalidate the span rather than selecting the favorable result. Only the latest observed attempt's checks are projected into its trace; historical attempts do not clear current failures. Failed checks appear in failed trace searches, and required unknown checks leave evidence gaps. Code-owned check names can be searched without searching private content.
 
 These are producer evaluations, not independent service verification or completed user outcomes. Missing checks cannot establish goal completeness; the generic goal and outcome evaluator remains part of the tracked platform release.
+
+## Context helpers (unreleased)
+
+The outcome-platform branch adds Python and Node workflow helpers over the same event contract. See [SDK integration and delivery limits](tracing-sdk.md). Cross-language propagation is locally tested. The branch also adds [OTLP/HTTP intake](otlp.md) with metadata-only model usage. Production rollout remains a separate release gate.

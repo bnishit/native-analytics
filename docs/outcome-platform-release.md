@@ -23,9 +23,9 @@ All items require implementation plus direct evidence. Proposed targets are acce
 | 1 Evidence | Resolve check evidence against scoped immutable receipts, not just pointer presence | Missing/cross-task/wrong-version receipts cannot satisfy required evidence | Local receipt resolution and adversarial tests pass; live proof pending |
 | 1 Task accounting | Completion, correctness, delivery and usefulness stay distinct | Mature denominator includes failure, withheld and unclassified; retries never restart clocks | Local engine tested |
 | 1 Outcome screen | Goal → failing tasks → evidence → next action | Real running UI and agent workflow | Local running synthetic UI/CLI/MCP tested; production pending |
-| 2 Instrumentation | Python and Node tracing helpers with nested context and lifecycle | Running apps, background jobs and queue/HTTP propagation tests | Pending |
-| 2 Interoperability | OpenTelemetry ingestion with explicit safe mapping and W3C propagation | Official exporter → production ingestion → trace readback | Pending |
-| 2 Model evidence | Provider/model and prompt version, token usage, cost and streaming timing | Bounds/unit tests and real provider observations; no invented cost | Pending |
+| 2 Instrumentation | Python and Node tracing helpers with nested context and lifecycle | Running apps, background jobs and queue/HTTP propagation tests | Local Python/Node helpers; cross-language HTTP carrier and async isolation tested; live adoption pending |
+| 2 Interoperability | OpenTelemetry ingestion with explicit safe mapping and W3C propagation | Official exporter → production ingestion → trace readback | Local official HTTP exporter / protobuf / JSON / gzip tested; production pending |
+| 2 Model evidence | Provider/model and prompt version, token usage, cost and streaming timing | Bounds/unit tests and real provider observations; no invented cost | Local metadata contract and trace UI tested; provider/live proof pending |
 | 2 Privacy | Content off by default; explicit governed redacted debugging content | Consent/access/retention tests and secret/PII adversarial cases | Pending |
 | 3 Regression cases | Sanitized immutable cases from failures; versioned datasets and checks | Trace-to-case readback and no raw secret transfer | Pending |
 | 3 Experiments | Same cases/check versions, candidate/baseline, per-case differences | Real controlled experiment, regression failure and reproducibility | Pending |

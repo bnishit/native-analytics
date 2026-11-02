@@ -14,7 +14,7 @@ root = Path(sys.argv[1])
 assert Path(importlib.metadata.distribution('afterspan-sdk').locate_file('afterspan_model.py')).is_relative_to(Path(sys.prefix))
 collector = Collector('https://analytics.invalid', 'synthetic-package-key', root / 'outbox.db')
 assert collector.max_queue == 100000
-tracer = WorkflowTracer(collector)
+tracer = WorkflowTracer(collector, subject_id='account_'+'a'*64)
 with tracer.task('package_probe', 'test', traffic_kind='synthetic'):
     with tracer.span('model') as span:
         span.model_usage(provider='openai', model='fixture/model')

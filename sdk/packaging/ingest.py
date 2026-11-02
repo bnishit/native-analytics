@@ -11,6 +11,7 @@ fixture.setUp()
 try:
     for name in ['python-events.json', 'node-events.json']:
         events = json.loads((artifacts / name).read_text())
+        assert all(event['distinct_id']=='account_'+'a'*64 and not event.get('attributes') for event in events)
         response = fixture.ingest(events)
         assert response.status_code == 200, response.text
         assert response.json()['accepted'] == len(events), response.text
@@ -38,6 +39,10 @@ try:
         assert usage['fixture/messages']['input_count']==20 and usage['fixture/messages']['output_count']==5, usage
         assert usage['fixture/messages']['cache_read_count']==10, usage
         assert all(usage[key]['first_output_ms'] is not None and usage[key]['cost_usd_decimal'] is None for key in ['fixture/responses','fixture/messages']), usage
-    print(json.dumps({'ingested_languages': 2, 'traces': len(traces)+len(streamed), 'stream_lifecycles': len(streamed)}))
+    assert all('account_' not in json.dumps(trace) for trace in traces+list(streamed.values()))
+    erased=fixture.client.post('/v1/erase',headers=fixture.a,json={'distinct_id':'account_'+'a'*64})
+    assert erased.status_code==200 and erased.json()['erased_events']>0
+    assert fixture.client.post('/api/traces/review?project=alpha',headers=fixture.admin,json={'environment':'test'}).json()['traces']==[]
+    print(json.dumps({'ingested_languages': 2, 'traces': len(traces)+len(streamed), 'stream_lifecycles': len(streamed), 'subject_erasure': 'passed'}))
 finally:
     fixture.tearDown()

@@ -33,7 +33,7 @@ No new event store, credential type or duplicate Tracker stream. Existing `slack
 
 ## Generic producer integration
 
-Send `trace.observed` through `/v1/events` using the project's server-side write key. Its only property is `afterspan_trace`; no identity or extra properties are accepted. The catalog at `/api/traces/catalog` exposes the full validated schema.
+Send `trace.observed` through `/v1/events` using the project's server-side write key. Its only property is `afterspan_trace`; attributes and extra properties are rejected. Account-bound workflows may supply the optional opaque `distinct_id` described in [the SDK guide](tracing-sdk.md#account-linked-traces-and-erasure). Anonymous is the default. The catalog at `/api/traces/catalog` exposes the full validated schema.
 
 ```json
 {

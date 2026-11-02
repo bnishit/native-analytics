@@ -23,7 +23,7 @@ from remote_auth import OAuthProvider,SCOPES
 from accounts import Accounts
 from billing import Billing
 from audit import Audit,Observation
-from tracing import WorkflowEvidence,Tracing,SpanObservation
+from tracing import WorkflowEvidence,Tracing,SpanObservation,TRACE_SUBJECT_PATTERN,init_trace_subjects,bind_trace_subject,erase_trace_subject
 from retention import Retention
 from product_loop import ProductLoop
 from catalog import Catalog
@@ -120,6 +120,7 @@ def init_db():
         Catalog.init_db(c)
         Audit.init_db(c)
         ProductLoop.init_db(c)
+        init_trace_subjects(c)
         if 'origins' not in {r['name'] for r in c.execute('PRAGMA table_info(relay_projects)')}:
             c.execute("ALTER TABLE relay_projects ADD COLUMN origins TEXT NOT NULL DEFAULT '[]'")
     prune()
@@ -129,6 +130,7 @@ def prune():
     cutoff = time.time() - RETENTION_DAYS * 86400
     with closing(connect()) as c, c:
         c.execute('DELETE FROM events WHERE ts < ?', (cutoff,))
+        c.execute('DELETE FROM workflow_trace_subjects WHERE erased IS NULL AND last_seen < ?',(cutoff-300,))
         c.execute('DELETE FROM collection_ingestion WHERE bucket < ?',(cutoff,))
         c.execute('DELETE FROM regression_objects WHERE expires<=?',(time.time(),))
         c.execute('DELETE FROM debug_snapshots WHERE expires<=?',(time.time(),))
@@ -215,13 +217,15 @@ class Event(Model):
             pulse=CollectionPulse.model_validate(self.properties['afterspan_health'])
             if self.timestamp is None or abs(self.timestamp.timestamp()*1000-pulse.observed_at_ms)>1:raise ValueError('pulse timestamp must match observed clock')
             self.properties['afterspan_health']=pulse.model_dump(mode='json')
+        if any(k in self.properties for k in ['afterspan_trace','afterspan_evidence']) and self.distinct_id is not None and not re.fullmatch(TRACE_SUBJECT_PATTERN,self.distinct_id):
+            raise ValueError('native trace subject must be an opaque project-scoped digest')
         if 'afterspan_evidence' in self.properties:
-            if self.name!='evidence.observed' or self.distinct_id is not None or self.attributes or self.journey is not None or set(self.properties)!={'afterspan_evidence'}:
+            if self.name!='evidence.observed' or self.attributes or self.journey is not None or set(self.properties)!={'afterspan_evidence'}:
                 raise ValueError('evidence events accept only the evidence contract')
             self.properties['afterspan_evidence']=WorkflowEvidence.model_validate(self.properties['afterspan_evidence']).model_dump(mode='json')
         if 'afterspan_trace' in self.properties:
-            if self.name!='trace.observed' or self.distinct_id is not None or self.attributes or self.journey is not None or set(self.properties)!={'afterspan_trace'}:
-                raise ValueError('trace events accept only the trace contract, without identities or extra properties')
+            if self.name!='trace.observed' or self.attributes or self.journey is not None or set(self.properties)!={'afterspan_trace'}:
+                raise ValueError('trace events accept only the trace contract and optional opaque subject, without attributes or extra properties')
             self.properties['afterspan_trace']=SpanObservation.model_validate(self.properties['afterspan_trace']).model_dump(mode='json')
         if 'afterspan_audit' in self.properties:
             self.properties['afterspan_audit']=Observation.model_validate(self.properties['afterspan_audit']).model_dump(mode='json',exclude_unset=True)
@@ -628,7 +632,10 @@ def store_events(c,project,events):
         records.append((event,ts))
     for event,ts in records:
         if billing.seen(c,project,event.id):continue
-        if event.distinct_id and c.execute('SELECT 1 FROM erased_identities WHERE project=? AND distinct_id=?',(project,event.distinct_id)).fetchone():continue
+        identity_erased=bool(event.distinct_id and c.execute('SELECT 1 FROM erased_identities WHERE project=? AND distinct_id=?',(project,event.distinct_id)).fetchone())
+        native=event.properties.get('afterspan_trace') or event.properties.get('afterspan_evidence')
+        if native is not None and not bind_trace_subject(c,project,native,event.distinct_id,identity_erased,now):continue
+        if identity_erased:continue
         if event.journey and c.execute('SELECT 1 FROM erased_journeys WHERE project=? AND environment=? AND workflow=? AND journey_id=?',(project,event.journey.environment,event.journey.workflow,event.journey.id)).fetchone():continue
         changed=c.execute('INSERT OR IGNORE INTO events VALUES(?,?,?,?,?,?,?)',
             (project,event.id,event.name,event.distinct_id,ts,now,json.dumps(event.properties))).rowcount
@@ -668,6 +675,7 @@ class Erase(Model):
 def erase_identity(req:Erase,project=Depends(writer)):
     with closing(connect()) as c,c:
         c.execute('INSERT OR IGNORE INTO erased_journeys SELECT j.project,j.environment,j.workflow,j.journey_id,? FROM journey_events j JOIN events e ON e.project=j.project AND e.id=j.event_id WHERE e.project=? AND e.distinct_id=?',(time.time(),project,req.distinct_id))
+        erase_trace_subject(c,project,req.distinct_id,time.time())
         removed=c.execute('DELETE FROM events WHERE project=? AND distinct_id=?',(project,req.distinct_id)).rowcount
         c.execute('DELETE FROM people WHERE project=? AND distinct_id=?',(project,req.distinct_id))
         c.execute('INSERT OR IGNORE INTO erased_identities VALUES(?,?,?)',(project,req.distinct_id,time.time()))

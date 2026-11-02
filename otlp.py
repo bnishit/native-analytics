@@ -64,6 +64,8 @@ def convert(span,resource,event_type,retention_days):
     trace_id=span.trace_id.hex();span_id=span.span_id.hex()
     trace=mapped_id(trace_id);sid=mapped_id(trace_id,span_id)
     values={**attributes(resource.attributes),**attributes(span.attributes)}
+    subject=values.get('afterspan.subject_id')
+    if 'afterspan.subject_id' in values and subject is None:raise ValueError('invalid explicit trace subject')
     start=span.start_time_unix_nano/1e9;end=span.end_time_unix_nano/1e9
     now=time.time()
     if not now-retention_days*86400<=start<=end<=now+300 or end-start>86400:raise ValueError('invalid span clock')
@@ -89,8 +91,8 @@ def convert(span,resource,event_type,retention_days):
     terminal=SpanObservation.model_validate(facts).model_dump(mode='json')
     events=[]
     for at,observation in [(start,begin),(end,terminal)]:
-        payload=json.dumps([at,observation],sort_keys=True,separators=(',',':'))
-        events.append(event_type(id='otel_'+hashlib.sha256(payload.encode()).hexdigest(),name='trace.observed',timestamp=datetime.fromtimestamp(at,timezone.utc),properties={'afterspan_trace':observation}))
+        payload=json.dumps([at,observation]+([subject] if subject is not None else []),sort_keys=True,separators=(',',':'))
+        events.append(event_type(id='otel_'+hashlib.sha256(payload.encode()).hexdigest(),name='trace.observed',distinct_id=subject,timestamp=datetime.fromtimestamp(at,timezone.utc),properties={'afterspan_trace':observation}))
     return events
 
 def install(app,writer,connect,store_events,event_type,retention_days):

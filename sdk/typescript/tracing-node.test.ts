@@ -158,3 +158,12 @@ test('check execution diagnostics preserve unknown and never create evidence',as
  const checks=events.find(e=>e.properties.afterspan_trace?.checks)?.properties.afterspan_trace.checks;
  assert.equal(checks[0].execution,'not_run');assert.equal(checks[0].reason_code,'evidence_absent');assert.ok(!('execution' in checks[1]));
 });
+
+test('opaque subject binds native steps and evidence without entering propagation',async()=>{
+ const {client,events}=fixture(),subject='account_'+'a'.repeat(64),tracer=new WorkflowTracer(client,{subjectId:subject});
+ await tracer.task({workflow:'subject_probe',environment:'test'},async()=>{
+  assert.ok(!JSON.stringify(inject()).includes(subject));
+  await tracer.span('processing',span=>span.check('scope','passed',{method:'code',execution:'completed',evidenceDigest:'a'.repeat(64)}));
+ });await tracer.flush();assert.equal(events.length,5);assert.ok(events.every(e=>e.distinct_id===subject&&Object.keys(e.attributes||{}).length===0&&Object.keys(e.properties).length===1));assert.ok(events.some(e=>e.name==='evidence.observed'));
+ for(const value of ['person@example.com','1234567890',subject+'\n','account_'+'a'.repeat(63),'A_'+'a'.repeat(64)])assert.throws(()=>new WorkflowTracer(client,{subjectId:value}));
+});

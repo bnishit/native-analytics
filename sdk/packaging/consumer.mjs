@@ -9,7 +9,7 @@ const client=createAnalytics({url:'https://analytics.invalid',writeKey:'syntheti
   const batch=JSON.parse(options.body).events;events.push(...batch);
   return new Response(JSON.stringify({accepted:batch.length,duplicates:0}));
 }});
-const tracer=new WorkflowTracer(client);
+const tracer=new WorkflowTracer(client,{subjectId:'account_'+'a'.repeat(64)});
 await tracer.task({workflow:'package_probe',environment:'test',trafficKind:'synthetic'},async()=>{
   await tracer.span('model',span=>{
     span.modelUsage({provider:'openai',model:'fixture/model'});

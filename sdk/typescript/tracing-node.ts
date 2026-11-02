@@ -101,11 +101,14 @@ export class Span {
 export class WorkflowTracer {
  private pending=new Set<Promise<void>>();private emitFailures=0;private sampledOutEvents=0;
  modelMetadataErrors=0;
- readonly client:ReturnType<typeof createAnalytics>;
- constructor(client:ReturnType<typeof createAnalytics>){this.client=client}
+ readonly client:ReturnType<typeof createAnalytics>;private readonly subjectId?:string;
+ constructor(client:ReturnType<typeof createAnalytics>,options:{subjectId?:string}={}){
+  if(options.subjectId!==undefined&&(typeof options.subjectId!=='string'||options.subjectId.trim()!==options.subjectId||!/^[a-z][a-z0-9_]{0,31}_[a-f0-9]{64}$/.test(options.subjectId)))throw Error('Subject must be an opaque project-scoped digest');
+  this.client=client;this.subjectId=options.subjectId;
+ }
  emit(name:string,properties:Record<string,unknown>):void {
   if(current.getStore()?.sampled===false){this.sampledOutEvents++;return}
-  try{const job=this.client.track(name,null,properties).catch(()=>{this.emitFailures++});this.pending.add(job);void job.finally(()=>this.pending.delete(job))}catch{this.emitFailures++}
+  try{const job=this.client.track(name,this.subjectId??null,properties).catch(()=>{this.emitFailures++});this.pending.add(job);void job.finally(()=>this.pending.delete(job))}catch{this.emitFailures++}
  }
  async task<T>(options:TaskOptions,run:(span:Span)=>Promise<T>|T):Promise<T>{
   const context=validate(options.context||{traceId:randomBytes(16).toString('hex'),attemptId:randomUUID(),attemptNumber:1,workflow:options.workflow||'',environment:options.environment||'production',requestStartedAtMs:Date.now(),releaseSha:options.releaseSha,sampled:true,trafficKind:options.trafficKind||'unknown'});

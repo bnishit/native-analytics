@@ -28,7 +28,7 @@ Remote MCP requires a separate **`debug:read`** grant and editor membership. It 
 
 ## SDK and CLI
 
-Python: `prepare_debug_snapshot(span, content, policy_revision, kind='context', privacy_reviewed=True)` in `sdk/python/afterspan_tracing.py`. Copy the adjacent `afterspan_experiments.py` redaction helper as well. Node: `prepareDebugSnapshot(span, content, policyRevision, {kind:'context', privacyReviewed:true})` in `sdk/typescript/tracing-node.ts`. These helpers only prepare a redacted body; they do not send it, automatically capture content, retry business work or alter normal telemetry. Save the returned body under one stable snapshot UUID for upload retries. After native metadata flush, use an explicitly bounded host/background call to the private endpoint.
+Install the [pinned SDK](tracing-sdk.md) first. Python: import `prepare_debug_snapshot` from `afterspan_tracing` and call it with `(span, content, policy_revision, kind='context', privacy_reviewed=True)`. Node: import `prepareDebugSnapshot` from `@afterspan/sdk` and call it with `(span, content, policyRevision, {kind:'context', privacyReviewed:true})`. These helpers only prepare a redacted body; they do not send it, automatically capture content, retry business work or alter normal telemetry. Save the returned body under one stable snapshot UUID for upload retries. After native metadata flush, use an explicitly bounded host/background call to the private endpoint.
 
 ```sh
 python cli/native_analytics.py debug-policy --project PROJECT

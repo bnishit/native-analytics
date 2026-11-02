@@ -24,6 +24,8 @@ The baseline window starts after its verified deployment; its entire goal follow
 
 The deployed adapter prepared and adopted Tracker PR #192 through the real owner UI. Its complete 19-file manifest and exact production commit/deployment matched; account-scoped CLI receipt/catalog reads agreed. The recorded baseline is available for a later candidate comparison. This does not establish improved normal-user outcomes or exercise a new remote OAuth grant; see [release acceptance](outcome-platform-release.md).
 
+The SDK release additionally verified both exact deployment receipts with matching predeployment baseline/candidate runs and a goal-bound dataset. The production UI/API comparison stays unknown when the unchanged 25-task minimum or collection evidence is unmet. Passing fixed synthetic cases does not substitute for missing real-user evidence.
+
 ## Population and cost
 
 New goals explicitly choose user, synthetic, internal or all traffic. Old observations default to unknown. Producers classify trusted task entry points and propagate that classification; a label is not independently verified human identity. Only user-task goals qualify for normal-use release comparisons. Known synthetic/internal tasks are excluded, while unknown population labels prevent a clean fraction. Retry attempts retain the original task clock and classification.

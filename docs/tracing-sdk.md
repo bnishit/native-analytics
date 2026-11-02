@@ -107,6 +107,10 @@ The metadata setter accepts the existing wire fields: input/output/cache/reasoni
 
 No prompt, output, refusal text, tool arguments or raw provider error is retained by these observers. Selected debugging remains a separate opt-in path. The server still enforces model-step, terminal-observation, usage-provenance and first-output-within-duration rules. The SDK's two languages and actual cross-language ingestion are tested locally; current production adoption is tracked separately in [release acceptance](outcome-platform-release.md).
 
+## Bounded installed-helper production adoption
+
+Tracker imports `ModelObservation` from the pinned `@afterspan/sdk/model` package in production, replacing its identical copied helper while keeping one existing request trace stream. Runtime import and one actual source-checked Slack reply verified model usage, cost and two streamed first-output timings. This does not exercise the full native workflow tracer, other providers/frameworks or a second product; see [release evidence](outcome-platform-release.md).
+
 ## HTTP and queue handoff
 
 Inside a span, call `inject()` and send its W3C `traceparent` and bounded `baggage` as headers or queue metadata. At a trusted internal boundary, Python `extract(headers, trusted=True)` or Node `extract(headers, true)` validates that carrier, then pass the returned context to `task`. Public headers are untrusted by default. Do not forward arbitrary baggage or credentials. Invalid carriers return no context; the application chooses whether to start a separate task or reject its own request.

@@ -8,6 +8,7 @@ import secrets
 import time
 import uuid
 from urllib.parse import quote, unquote
+from afterspan_model import ModelObservation
 
 _current=ContextVar('afterspan_trace_context',default=None)
 _STEPS={'receive','queue','processing','model','tool','retrieval','storage','http','response'}
@@ -75,6 +76,22 @@ def extract(headers,*,trusted=False):
 class Span:
     def __init__(self,tracer,context,parent,step):
         self.tracer=tracer;self.context=context;self.parent=parent;self.step=step;self.checks=[];self.closed=False
+        self.started=time.monotonic()*1000;self._model=None
+    def model_usage(self,**fields):
+        if self.closed or self.step!='model':raise ValueError('model metadata requires an open model span')
+        observation=self._model or ModelObservation(fields.get('provider'),fields.get('model'),fields.get('template_version'),started_at_ms=self.started)
+        observation.record(**fields);self._model=observation
+    def first_output(self):
+        if self.closed or self._model is None:raise ValueError('declare model identity on an open model span first')
+        return self._model.first_output()
+    def observe_openai(self,chunk,exact_cost_usd=None):
+        if self.closed or self._model is None:raise ValueError('declare model identity on an open model span first')
+        return self._model.observe_openai(chunk,exact_cost_usd)
+    def model_result(self,duration):
+        if self._model is None:return None
+        result=self._model.close();self.tracer.model_metadata_errors+=self._model.rejected_updates
+        if duration>86400000:result.pop('first_output_ms',None)
+        return result
     def facts(self):
         c=self.context
         return {'schema_version':'workflow-trace-v1','trace_id':mapped_id(c.trace_id),'attempt_id':c.attempt_id,
@@ -98,7 +115,7 @@ class Span:
         return result
 
 class WorkflowTracer:
-    def __init__(self,collector):self.collector=collector;self.emit_failures=0;self.sampled_out_events=0
+    def __init__(self,collector):self.collector=collector;self.emit_failures=0;self.sampled_out_events=0;self.model_metadata_errors=0
     def emit(self,name,properties):
         context=_current.get()
         if context is not None and not context.sampled:self.sampled_out_events+=1;return
@@ -120,19 +137,21 @@ class WorkflowTracer:
         if milestone not in {None,'completion','delivery','usefulness'} or disposition not in {None,'delivered','withheld','clarification','partial'} or disposition is not None and step!='response':raise ValueError('invalid terminal declaration')
         parent=mapped_id(context.trace_id,context.span_id) if context.span_id else None
         child=replace(context,span_id=secrets.token_hex(8));span=Span(self,child,parent,step)
-        token=_current.set(child);started=time.monotonic();state='succeeded';code='none'
+        token=_current.set(child);state='succeeded';code='none'
         self.emit('trace.observed',{'afterspan_trace':{**span.facts(),'state':'started'}})
         try:yield span
         except BaseException:
             state='failed';code='internal';raise
         finally:
-            duration=(time.monotonic()-started)*1000
+            duration=time.monotonic()*1000-span.started
             end={**span.facts(),'state':state if duration<=86400000 else 'unknown','outcome_code':code if duration<=86400000 else 'uncertain','duration_ms':duration if duration<=86400000 else None}
             if milestone:end['milestone']=milestone
             if disposition:end['disposition']=disposition
             if span.checks:end['checks']=span.checks
+            usage=span.model_result(duration)
+            if usage is not None:end['model_usage']=usage
             self.emit('trace.observed',{'afterspan_trace':end});span.closed=True;_current.reset(token)
-    def status(self):return {'emit_failures':self.emit_failures,'sampled_out_events':self.sampled_out_events,**self.collector.status()}
+    def status(self):return {'emit_failures':self.emit_failures,'sampled_out_events':self.sampled_out_events,'model_metadata_errors':self.model_metadata_errors,**self.collector.status()}
 
 
 def prepare_debug_snapshot(span,content,policy_revision,*,kind='context',privacy_reviewed=False):

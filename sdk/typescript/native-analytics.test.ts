@@ -104,3 +104,8 @@ test('native model count metrics survive but raw inputs and string impostors sta
  const result=safeProperties({input_count:2,output_count:3,input:'private prompt',input_count_text:'private value'}) as any;
  assert.equal(result.input_count,2);assert.equal(result.input,'[redacted]');assert.equal(result.input_count_text,'[redacted]');assert.equal(result.output_count,3);const impostor=safeProperties({input_count:'private value',output_count:'private value'}) as any;assert.equal(impostor.input_count,'[redacted]');assert.equal(impostor.output_count,'[redacted]');
 });
+
+test('only bounded numeric first-output timing passes the content redactor',()=>{
+ const result=safeProperties({first_output_ms:12.5,output:'private output',nested:{first_output_ms:'private timing text'},negative:{first_output_ms:-1},oversized:{first_output_ms:86400001}}) as any;
+ assert.equal(result.first_output_ms,12.5);assert.equal(result.output,'[redacted]');assert.equal(result.nested.first_output_ms,'[redacted]');assert.equal(result.negative.first_output_ms,'[redacted]');assert.equal(result.oversized.first_output_ms,'[redacted]');
+});

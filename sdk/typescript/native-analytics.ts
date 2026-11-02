@@ -37,7 +37,7 @@ export function safeProperties(value: unknown, depth = 0): unknown {
   if (Array.isArray(value)) return value.slice(0, 100).map(v => safeProperties(v, depth + 1));
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).slice(0, 64).map(([raw, v]) => {
     const key = raw.replace(/^\$/, '').replace(/[^A-Za-z0-9_]/g, '_').slice(0, 100);
-    const metric = typeof v === 'number' && Number.isFinite(v) && numericMetric.test(raw);
+    const metric = typeof v === 'number' && Number.isFinite(v) && (numericMetric.test(raw) || raw === 'first_output_ms' && v >= 0 && v <= 86400000);
     return [key, forbidden.test(raw) && !metric ? '[redacted]' : safeProperties(v, depth + 1)];
   }));
   if (typeof value === 'bigint') return String(value);

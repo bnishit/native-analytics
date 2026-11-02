@@ -35,7 +35,7 @@ def slack_trace(audit, project, key, group, q):
             'environment':row['environment'] if row['environment']!='unknown' else next(iter(environments)) if len(environments)==1 else 'conflict',
             'release':row['release_sha'], 'started_at':min(r['ts'] for r in group),
             'last_seen':max(r['ts'] for r in group), 'attempts':row['business_attempts_observed'],
-            'spans':spans, 'evidence':evidence, 'issues':sorted(set(row['issues']+timing.get('issues',[])+(['timing_environment_mixed'] if len(environments)>1 else []))),
+            'spans':spans, 'answer_check':row['answer_check'], 'evidence':evidence, 'issues':sorted(set(row['issues']+timing.get('issues',[])+(['timing_environment_mixed'] if len(environments)>1 else []))),
             'unobserved_categories':timing.get('missing_steps',[]), 'links':[],
             'clock':'request start' if timing.get('spans') else 'unavailable',
             'business_outcome':'not_independently_verified'}

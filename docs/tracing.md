@@ -65,3 +65,9 @@ Existing Slack request spans appear immediately through the adapter; no re-inges
 Check safe search before paging, frozen readback, mixed environments, cross-project denial, redaction, failed/missing starts, unknown terminals and overlapping parent/child timing. Verify the real UI and both MCP tools against retained production data. Synthetic tests are not live traffic.
 
 Future independent work: OTLP/W3C propagation with an explicit privacy mapping, richer model usage/cost semantics, sampling/retention controls, trace-derived alerts and saved queries. These require their own contracts and scale evidence; they are not implied by this release. No heyAnaya integration is part of this work.
+
+## Answer checks before delivery
+
+A producer can check its candidate answer before sending it. Quality observations accept a fixed `source-facts-v1` verifier for other products, alongside the existing `growthbook-catalog-v1` adapter. Both use bounded counts (at most 15 candidate facts); a repo goal declares the source and exact criteria. Afterspan does not fetch that source or judge free-form answer usefulness.
+
+Send `answer_disposition` (`verified`, `withheld`, `clarification`) together with `check_phase` (`before_reply`, `after_reply`) on the quality stage. `verified` requires a successful check. Record the failed or unknown candidate check even when the application sends a safe replacement. Reply success still means provider acceptance of the actual reply. Historical observations without these fields stay unknown; they are not silently treated as gated. The API, MCP and Traces detail share the same candidate counts and disposition. Stage clocks must agree with the declared phase. Pre-send checks belong after tool work and before reply; older post-send checks remain readable.

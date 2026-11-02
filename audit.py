@@ -48,7 +48,9 @@ class Observation(BaseModel):
     trace_step:Literal['preparation','parser','model','feature_list','feature_lookup','policy','mutation','readback','slack_delivery','webhook_ack','background','total']|None=None
     span_state:Literal['started','succeeded','failed']|None=None
     completion_kind:Literal['processing','delivered']|None=None
-    check_version:Literal['growthbook-catalog-v1']|None=None
+    check_version:Literal['growthbook-catalog-v1','source-facts-v1']|None=None
+    answer_disposition:Literal['verified','withheld','clarification']|None=None
+    check_phase:Literal['before_reply','after_reply']|None=None
     checked_claims:int|None=Field(default=None,ge=0,le=15,strict=True)
     mismatched_claims:int|None=Field(default=None,ge=0,le=15,strict=True)
     unknown_claims:int|None=Field(default=None,ge=0,le=15,strict=True)
@@ -67,11 +69,14 @@ class Observation(BaseModel):
         elif any(v is not None for v in trace_fields):raise ValueError('trace fields belong to the trace stage')
         counts=(self.checked_claims,self.mismatched_claims,self.unknown_claims)
         if self.stage!='quality':
-            if self.check_version is not None or any(v is not None for v in counts):raise ValueError('quality fields belong to the quality stage')
+            if self.check_version is not None or self.answer_disposition is not None or self.check_phase is not None or any(v is not None for v in counts):raise ValueError('quality fields belong to the quality stage')
         elif self.check_version is not None:
             if any(v is None for v in counts) or self.mismatched_claims>self.checked_claims or self.checked_claims+self.unknown_claims>15:raise ValueError('inconsistent quality counts')
             outcome='unknown' if self.unknown_claims or not self.checked_claims else 'failed' if self.mismatched_claims else 'succeeded'
             if self.reported_outcome!=outcome:raise ValueError('quality outcome must match counts')
+        if self.answer_disposition=='verified' and (self.check_version is None or self.reported_outcome!='succeeded'):
+            raise ValueError('verified disposition requires a successful source check')
+        if (self.answer_disposition is None)!=(self.check_phase is None):raise ValueError('disposition and check phase belong together')
         return self
 
 MEANINGS={
@@ -83,8 +88,10 @@ MEANINGS={
  'command_kind':'Bounded parsed read-command category. Missing in older producers; never infer it from reply text or a source check.',
  'release_sha':'Exact producer Git revision. Missing or conflicting revisions cannot qualify a release-bound request outcome.',
  'request_started_at_ms':'Verified incoming event time when valid, otherwise server handling start, Unix milliseconds. It survives business retries; message sends never restart this clock.',
- 'check_version':'growthbook-catalog-v1: producer-side deterministic check of the exact rendered catalog answer against a separate uncached GrowthBook read. Not a second model vote or an independent Afterspan source fetch.',
- 'checked_claims':'Number of displayed catalog rows with a matching source version checked for presence, enabled state and explicit Identity $in list-entry count. Not active users or SDK eligibility.',
+ 'answer_disposition':'Producer reports verified answer, withheld factual answer, or clarification. Source-check counts refer to the candidate, not a replacement reply.',
+ 'check_phase':'Producer-declared before_reply or after_reply. Timestamps must agree; missing historical phase stays unknown.',
+ 'check_version':'source-facts-v1 is a bounded producer check of displayed facts against a declared source; its exact criteria belong to the repo goal. growthbook-catalog-v1: producer-side deterministic check of the exact rendered catalog answer against a separate uncached GrowthBook read. Not a second model vote or an independent Afterspan source fetch.',
+ 'checked_claims':'Number of candidate facts checked against the repo-declared source criteria. growthbook-catalog-v1 checks catalog row presence, source version, enabled state and Identity $in entry count; never usage or eligibility.',
  'mismatched_claims':'Checked rows which disagreed with the source. Nonzero forces failed; never averaged into a clean pass.',
  'unknown_claims':'Rows not checkable, including changed or missing source versions. Missing checks and unsupported answers remain unknown.',
  'schema_version':'Version of this producer diagnostic contract; it is not an inferred event schema.',
@@ -146,7 +153,7 @@ class QualityGoal(BaseModel):
     safe_test:str=Field(min_length=1,max_length=1000)
     metric:Literal['answer-quality-v1']
     environment:Literal['production','staging']
-    verifier:Literal['growthbook-catalog-v1','unconfigured']
+    verifier:Literal['growthbook-catalog-v1','source-facts-v1','unconfigured']
     tracking:QualityTracking
 
 class GoalQuery(ReviewQuery):
@@ -360,7 +367,12 @@ class Audit:
             elif p['context_digest']!=s['context_digest']:issues.append('planner_input_mismatch')
             else:comparison='agree' if p['decision_digest']==s['decision_digest'] else 'disagree'
         elif declared:issues.append('incomplete_or_conflicting_comparison')
-        ordering=[by_stage[s][0]['ts'] for s in ['parser','planner','confirmation','tool','reply','quality'] if len(by_stage.get(s,[]))==1]
+        ordering=[by_stage[s][0]['ts'] for s in ['parser','planner','confirmation','tool','reply'] if len(by_stage.get(s,[]))==1]
+        quality=by_stage.get('quality',[]);reply=by_stage.get('reply',[])
+        if len(quality)==1:
+            phase=quality[0]['facts'].get('check_phase');at=quality[0]['ts']
+            prior=[by_stage[s][0]['ts'] for s in ['parser','planner','confirmation','tool'] if len(by_stage.get(s,[]))==1]
+            if any(t>at for t in prior) or len(reply)==1 and (phase=='before_reply' and at>reply[0]['ts'] or phase=='after_reply' and at<reply[0]['ts']):issues.append('stage_time_conflict');comparison='unavailable'
         if ordering!=sorted(ordering):issues.append('stage_time_conflict');comparison='unavailable'
         return {'request':reference,'environment':('conflict' if len(environments)!=1 else next(iter(environments))) if comparison_group else 'unknown',
             'environment_mismatch':bool(comparison_group) and any(env!=q.expected_environment for env in environments),'request_kind':values['request_kind'] or 'unknown',
@@ -369,7 +381,7 @@ class Audit:
             'comparison_declared_eligible':declared,'comparison':comparison,'trace':trace,'stages':stages,'issues':sorted(set(issues)),
             'producer_reported_unsafe':any(f.get('proposal_safe') is False for f in facts),'business_state':'not_independently_verified',
             'release_coverage':[self.ref(key,project,'release',r) if available(r) else 'unavailable' for r in sorted(releases,key=str)],
-            'answer_check':({field:by_stage['quality'][0]['facts'].get(field) for field in ['check_version','checked_claims','mismatched_claims','unknown_claims','reported_outcome']}
+            'answer_check':({field:by_stage['quality'][0]['facts'].get(field) for field in ['check_version','checked_claims','mismatched_claims','unknown_claims','reported_outcome','answer_disposition','check_phase']}
                             if len(by_stage.get('quality',[]))==1 else None)}
     def evaluate(self,project,req):
         report=self.review(project,ReviewQuery(**req.model_dump(exclude={'goal','release'})))
@@ -394,7 +406,7 @@ class Audit:
                 quality=row['answer_check'];reply=next(s for s in row['stages'] if s['stage']=='reply')
                 valid=quality and req.goal.verifier!='unconfigured' and quality['check_version']==req.goal.verifier
                 valid=valid and not any(i!='comparison_scope_unavailable' for i in row['issues']) and all(s['state']=='observed' for s in row['stages'] if s['required'] is True)
-                valid=valid and reply['required'] is True and reply['reported_outcome']=='succeeded'
+                valid=valid and reply['required'] is True and reply['reported_outcome']=='succeeded' and quality.get('answer_disposition') in (None,'verified')
                 outcome=quality['reported_outcome'] if valid else 'unknown'
                 checked[outcome if outcome in {'succeeded','failed'} else 'unknown']+=1
             return {'goal':req.goal.model_dump(by_alias=True),'definition_verification':'caller_supplied_data_not_action_authority',
@@ -467,7 +479,7 @@ class Audit:
             if issues:coverage['conflicting_requests']+=1
             reply_rows=[r for r in group if r['facts']['stage']=='reply' and r['facts'].get('attempt_number')==row['latest_attempt_number']]
             delivered=usable and reply['required'] is True and reply['state']=='observed' and reply['reported_outcome']=='succeeded'
-            passed=bool(quality and quality['check_version']==metric['verifier'] and quality['reported_outcome']=='succeeded')
+            passed=bool(quality and quality['check_version']==metric['verifier'] and quality['reported_outcome']=='succeeded' and quality.get('answer_disposition') in (None,'verified'))
             late=bool(delivered and len(reply_rows)==1 and reply_rows[0]['ts']>entered+metric['deadline_seconds'])
             coverage['delivered']+=bool(delivered);coverage['source_passed']+=bool(delivered and passed);coverage['late_replies']+=late
             failed=usable and reply['required'] is True and reply['state']=='observed' and (reply['reported_outcome']=='failed'

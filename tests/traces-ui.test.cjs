@@ -22,3 +22,10 @@ test('refresh keeps investigation filters but drops frozen time and selection',(
  const result=vm.runInContext(`traceQuery={environment:'staging',search:'model',status:'failed',start:'old',end:'old',as_of:'old',offset:20,limit:20};traceReference='selected';resetTraceWindow();JSON.stringify({query:traceQuery,reference:traceReference})`,context);
  assert.deepEqual(JSON.parse(result),{query:{environment:'staging',search:'model',status:'failed',offset:0,limit:20,days:30},reference:''});
 });
+
+test('answer check distinguishes withheld candidate claims from the replacement reply',()=>{
+ const context=vm.createContext({traceStepLabel:{},esc:v=>String(v??''),fmt:v=>String(v)});
+ vm.runInContext(fs.readFileSync('static/traces.js','utf8'),context);
+ const html=vm.runInContext(`traceAnswerCheck({answer_disposition:'withheld',check_phase:'before_reply',reported_outcome:'failed',checked_claims:2,mismatched_claims:1,unknown_claims:0})`,context);
+ assert.match(html,/withheld/);assert.match(html,/before reply/);assert.match(html,/2 candidate claims checked/);assert.match(html,/not any replacement reply/);
+});

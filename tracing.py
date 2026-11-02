@@ -11,6 +11,8 @@ from product_analytics import Window
 
 STEPS=('receive','queue','processing','model','tool','retrieval','storage','http','response','availability','booking','provider_send','provider_delivery')
 Environment=Literal['production','staging','development','test','local']
+def workflow_reference(project,environment,trace_id,key):
+    return 'trace_'+hmac.new(key.encode(),(project+'\0'+environment+'\0'+trace_id).encode(),hashlib.sha256).hexdigest()[:32]
 class CheckResult(BaseModel):
     model_config=ConfigDict(extra='forbid')
     name:str=Field(pattern=r'^[a-z][a-z0-9_.-]{0,63}$')
@@ -220,8 +222,8 @@ class Tracing:
                     'provider_send':'Provider accepted the send; not patient delivery.',
                     'provider_delivery':'Producer observed a delivery receipt; not proof of reading.'},
                     'limits':['Absent spans stay missing. Closed spans without a start stay incomplete evidence.',
-                    'Only opaque UUIDs, enums and timings are accepted. No messages, patient identifiers or raw errors.',
-                    'This is a bounded workflow contract, not an OpenTelemetry ingestion endpoint.']}
+                    'Workflow observations accept bounded identities, categories, timings, checks and model usage. No raw messages, patient identifiers or errors.',
+                    'This catalog describes native workflow observations; OTLP/HTTP uses /v1/traces with a separate metadata allowlist.']}
         @app.post('/api/traces/review',dependencies=[Depends(reader)])
         def review(project:str,req:TraceReview):return self.review(project,req)
         @app.post('/api/traces/detail',dependencies=[Depends(reader)])
@@ -254,7 +256,7 @@ class Tracing:
             for check in f.get('checks') or []:check['_evidence_status']=resolve_evidence(check,f,row['ts'],receipts)
             groups[f['trace_id']].append({'ts':row['ts'],'facts':f})
         def reference_for(tid):
-            return 'trace_'+hmac.new(key.encode(),(project+'\0'+q.environment+'\0'+tid).encode(),hashlib.sha256).hexdigest()[:32]
+            return workflow_reference(project,q.environment,tid,key)
         traces=[]
         for tid,group in groups.items():
             traces.append(project_trace(group,reference_for(tid),reference_for,groups))

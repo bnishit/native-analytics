@@ -97,7 +97,7 @@ class TraceExplorer:
               and (q.min_duration_ms==0 or r['duration_ms'] is not None and r['duration_ms']>=q.min_duration_ms)]
         rows.sort(key=lambda r:(-r['last_seen'],r['reference']))
         result=self.metadata(project,q,'trace-explorer-v1')
-        result['limits'] += ['Only retained, explicitly linked observations in the frozen window are searchable. No message text is stored or searched.',
+        result['limits'] += ['Only retained, explicitly linked observations in the frozen window are searchable. Trace search does not search message text. Optional selected debug content is separate and expiring.',
                             'Duration is the latest observed finish relative to the labelled clock, not a guarantee of complete end-to-end coverage.',
                             'Observed means timing reports exist, not business success. Missing evidence does not prove work was skipped.',
                             'Overlapping spans must not be summed. Provider acceptance does not prove delivery, reading or answer correctness.']

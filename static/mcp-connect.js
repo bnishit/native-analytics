@@ -1,6 +1,6 @@
 'use strict';
 const el=id=>document.getElementById(id);
-const labels={'experiments:write':'Read reviewed test inputs/results and manage regression experiments','goals:write':'Create and version workflow outcome goals','analytics:read':'Read aggregate analytics and saved charts','charts:write':'Create saved charts','audit:read':'Read privacy-safe request traces and checks'};
+const labels={'debug:read':'Read selected redacted debug content (editor access; no capture-policy changes)','experiments:write':'Read reviewed test inputs/results and manage regression experiments','goals:write':'Create and version workflow outcome goals','analytics:read':'Read aggregate analytics and saved charts','charts:write':'Create saved charts','audit:read':'Read privacy-safe request traces and checks'};
 let version=0;
 async function api(path,body,method){
   const r=await fetch(path,{method:method||(body?'POST':'GET'),headers:{'Content-Type':'application/json','X-Native-CSRF':'1'},body:body?JSON.stringify(body):undefined,cache:'no-store'});
@@ -15,7 +15,7 @@ async function load(){
     const rid=new URLSearchParams(location.hash.slice(1)).get('request');if(!rid)return;
     const d=await api('/auth/mcp/request?request_id='+encodeURIComponent(rid));if(current!==version)return;
     el('client').textContent=d.client;el('destination').textContent=d.redirect_uri;el('permissions').textContent=d.scopes.map(s=>labels[s]||s).join(' · ');
-    el('project').replaceChildren();for(const p of d.projects){if(d.scopes.some(s=>['charts:write','goals:write','experiments:write'].includes(s))&&p.role==='reader')continue;const option=document.createElement('option');option.value=p.id;option.textContent=p.name;el('project').append(option);}
+    el('project').replaceChildren();for(const p of d.projects){if(d.minimum_role==='editor'&&p.role==='reader')continue;const option=document.createElement('option');option.value=p.id;option.textContent=p.name;el('project').append(option);}
     el('approve').disabled=!el('project').options.length;el('deny').disabled=false;el('request').hidden=false;
   }catch(e){if(current===version)el('status').textContent=e.message;}
 }

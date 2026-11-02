@@ -2,6 +2,8 @@ import base64
 import hashlib
 import json
 import logging
+import os
+from unittest.mock import patch
 import time
 import unittest
 import uuid
@@ -26,7 +28,7 @@ class RemoteMCPTests(unittest.TestCase):
     join=test_workspaces.WorkspaceTests.join
 
     def register(self):
-        r=self.client.post('/register',json={'client_name':'Fresh test agent','redirect_uris':['http://127.0.0.1:19191/callback'],'grant_types':['authorization_code','refresh_token'],'response_types':['code'],'token_endpoint_auth_method':'none','scope':'analytics:read charts:write audit:read goals:write experiments:write'})
+        r=self.client.post('/register',json={'client_name':'Fresh test agent','redirect_uris':['http://127.0.0.1:19191/callback'],'grant_types':['authorization_code','refresh_token'],'response_types':['code'],'token_endpoint_auth_method':'none','scope':'analytics:read charts:write audit:read goals:write experiments:write debug:read'})
         self.assertEqual(r.status_code,201,r.text);return r.json()['client_id']
 
     def begin(self,cid,scope='analytics:read charts:write',**overrides):
@@ -147,7 +149,7 @@ class RemoteMCPTests(unittest.TestCase):
         self.assertEqual(owner.get('/auth/mcp/connections').json()['connections'],[])
 
     def test_remote_transport_tools_and_idempotent_chart_storage(self):
-        owner,uid,w,p,cid,t,*_=self.grant('analytics:read charts:write audit:read goals:write experiments:write')
+        owner,uid,w,p,cid,t,*_=self.grant('analytics:read charts:write audit:read goals:write experiments:write debug:read')
         with TestClient(app.app,base_url=ORIGIN) as client:
             headers={'Authorization':'Bearer '+t['access_token'],'Accept':'application/json, text/event-stream'}
             def rpc(method,params=None):
@@ -179,6 +181,23 @@ class RemoteMCPTests(unittest.TestCase):
             opened=call('open_trace',{'reference':searched['traces'][0]['reference'],'query':searched['query']})
             self.assertTrue(opened['trace']['has_gaps'])
             self.assertEqual(opened['trace']['business_outcome'],'not_independently_verified')
+            self.assertFalse(call('debug_capture_policy')['active'])
+            with patch.dict(os.environ,{'AFTERSPAN_CONNECTION_KEY':base64.urlsafe_b64encode(b'k'*32).decode()}):
+                policy={'enabled':True,'workflow':'appointment_request','environment':'staging','privacy_reviewed':True}
+                response=owner.put('/api/debug/policy?project='+p+'&revision=0',headers=CSRF,json=policy)
+                self.assertEqual(response.status_code,200,response.text)
+                from debugging import DebugSnapshot
+                facts=trace_event.properties['afterspan_trace'];snapshot_id=str(uuid.uuid4())
+                capture=DebugSnapshot(id=snapshot_id,policy_revision=1,privacy_reviewed=True,kind='context',content={'chosen':'public fixture'},**{k:facts[k] for k in ['trace_id','attempt_id','span_id','workflow','environment']})
+                app.debugging.capture(p,capture)
+                fresh=call('search_traces',{'query':{'environment':'staging'}})
+                debug_query={**fresh['query'],'reference':fresh['traces'][0]['reference']}
+                listed=call('review_debug_snapshots',{'query':debug_query})
+                self.assertEqual(listed['snapshots'][0]['id'],snapshot_id);self.assertNotIn('content',listed['snapshots'][0])
+                debugged=call('review_debug_snapshots',{'query':{**debug_query,'snapshot_id':snapshot_id}})
+                self.assertEqual(debugged['content'],{'chosen':'public fixture'});self.assertNotIn(facts['trace_id'],json.dumps(debugged))
+                self.assertEqual(client.put('/api/debug/policy?project='+p+'&revision=1',headers={'Authorization':'Bearer '+t['access_token']},json=policy).status_code,403)
+
             from outcomes import OutcomeGoal
             goal_id=str(uuid.uuid4())
             goal=OutcomeGoal(title='Checked workflow',workflow='appointment_request',environment='staging',deadline_seconds=30,
@@ -225,6 +244,7 @@ class RemoteMCPTests(unittest.TestCase):
             self.assertTrue(downgraded['isError'])
             downgraded=rpc('tools/call',{'name':'experiment_objects','arguments':{'kind':'cases'}})['result']
             self.assertTrue(downgraded['isError'])
+            self.assertTrue(rpc('tools/call',{'name':'debug_capture_policy','arguments':{}})['result']['isError'])
 
 
 
@@ -235,6 +255,7 @@ class RemoteMCPTests(unittest.TestCase):
         response=self.client.put('/api/outcomes/goals/'+str(uuid.uuid4())+'?project='+p+'&revision=0',headers={'Authorization':'Bearer '+t['access_token']},json=definition)
         self.assertEqual(response.status_code,403)
         self.assertEqual(app.outcomes.list(p)['goals'],[])
+        self.assertEqual(self.client.get('/api/debug/policy?project='+p,headers={'Authorization':'Bearer '+t['access_token']}).status_code,403)
         self.assertEqual(self.client.get('/api/experiments/cases?project='+p,headers={'Authorization':'Bearer '+t['access_token']}).status_code,403)
 
 if __name__=='__main__':unittest.main()

@@ -37,6 +37,8 @@ Open http://127.0.0.1:8769/app. This loopback preview creates private local emai
 
 ### Generic workflow outcomes — unreleased branch work
 
+[Governed debug snapshots](docs/debugging.md) add default-off, owner-scoped capture windows, SDK redaction before upload, encrypted expiring storage and separately consented editor reads. These are selected reviewed snapshots, not automatic prompt capture.
+
 [Regression cases and experiments](docs/experiments.md) now have a local primary screen, versioned datasets, a Python application-side runner and scoped CLI/MCP surfaces. These remain unreleased; fixed JSON checks do not establish production impact.
 
 The same branch adds [Python/Node workflow context helpers](docs/tracing-sdk.md) and [metadata-only OTLP/HTTP ingestion](docs/otlp.md). Local official-exporter and cross-language tests pass; deployment and live provider adoption remain release gates.

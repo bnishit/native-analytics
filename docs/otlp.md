@@ -31,7 +31,7 @@ The allowlist maps `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.usage
 
 Usage source is provider_reported by default for emitted gen_ai counts, or explicitly estimated. It is producer-reported provenance, not a service-side provider fetch. Counts are strict nonnegative bounded integers. Cost is integer millionths of USD and requires a declared provider_reported or price_table source. A price table also requires an immutable version. Missing cost stays unknown, including when token counts exist; Afterspan never invents a price. First-output timing must fit the measured span duration. Template version is a code-owned version, not the prompt. The same validated `model_usage` object can be sent on terminal native model spans.
 
-Span names, arbitrary attributes, raw error/status text, event bodies, links, prompt/output messages, resource hostnames and user identifiers are deliberately omitted. This intake is not a general raw-span archive. There is currently no debug-content opt-in. Do not put credentials or personal data into allowlisted provider/model/version fields. Invalid metadata rejects its span instead of retaining a partial favorable result.
+Span names, arbitrary attributes, raw error/status text, event bodies, links, prompt/output messages, resource hostnames and user identifiers are deliberately omitted. This intake is not a general raw-span archive. Optional reviewed debugging uses a [separate owner-scoped encrypted snapshot flow](debugging.md); this OTLP intake never captures content. Do not put credentials or personal data into allowlisted provider/model/version fields. Invalid metadata rejects its span instead of retaining a partial favorable result.
 
 ## Evidence
 

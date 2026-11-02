@@ -50,6 +50,6 @@ Both helpers use full W3C IDs and one deterministic SHA-256 mapping into the exi
 
 ## Evidence and limits
 
-Local tests ingest the exact Python and Node payloads through the real service, join a Python parent to a Node child, and resolve a check receipt. Concurrent contexts, sampling, retry clocks, duplicate check names, closed spans, invalid IDs and telemetry failures are tested. These are synthetic local runs, not production adoption. No prompt/output capture, provider auto-instrumentation, model usage metadata or OTLP ingestion is included in this unit.
+Local tests ingest the exact Python and Node payloads through the real service, join a Python parent to a Node child, and resolve a check receipt. Concurrent contexts, sampling, retry clocks, duplicate check names, closed spans, invalid IDs and telemetry failures are tested. These are synthetic local runs, not production adoption. There is no automatic prompt/output capture or provider auto-instrumentation. Optional selected content uses the separate [governed debugging flow](debugging.md), never the normal collector. Model usage and OTLP mappings are described in [OTLP intake](otlp.md).
 
 Standards: [W3C Trace Context](https://www.w3.org/TR/trace-context/), [OpenTelemetry trace API](https://opentelemetry.io/docs/specs/otel/trace/api/). The complete release gate remains in [platform acceptance](outcome-platform-release.md).

@@ -94,3 +94,29 @@ export class WorkflowTracer {
  async flush(){await Promise.all([...this.pending]);try{await this.client.flush()}catch{this.emitFailures++}}
  status(){return {emit_failures:this.emitFailures,sampled_out_events:this.sampledOutEvents,...this.client.status()}}
 }
+
+
+export function redactDebugContent(value:unknown):unknown {
+ if(Buffer.byteLength(JSON.stringify(value),'utf8')>16000)throw Error('Debug content exceeds 16 KB');
+ const privateKey=/password|passwd|secret|authorization|cookie|credential|session|otp|api.?key|email|phone|mobile|patient|address|(?:^|_)(?:key|token)(?:$|_)/i;
+ const secret=/\b(?:Bearer\s+\S+|(?:na_write_|na_admin_|as_read_|as_workspace_|as_session_|as_device_|as_login_|as_invite_|ghp_|github_pat_|xoxb-|sk-)[A-Za-z0-9_-]+)/gi;
+ const pii=/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|(?<!\w)\+?\d(?:[\s().-]*\d){9,14}(?!\w)/gi;
+ function clean(item:unknown,depth=0):unknown {
+  if(depth>5)throw Error('Debug content exceeds five levels');
+  if(Array.isArray(item)){if(item.length>100)throw Error('Debug list too long');return item.map(v=>clean(v,depth+1))}
+  if(item&&typeof item==='object'){
+   if(![Object.prototype,null].includes(Object.getPrototypeOf(item)))throw Error('Debug content must be plain JSON');
+   const entries=Object.entries(item);if(entries.length>64)throw Error('Too many debug fields');
+   return Object.fromEntries(entries.flatMap(([key,v])=>{if(!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(key))throw Error('Unsupported debug field');return privateKey.test(key)?[]:[[key,clean(v,depth+1)]]}));
+  }
+  if(typeof item==='string'){if(item.length>4000)throw Error('Debug text too long');return item.replace(secret,'[redacted]').replace(pii,'[redacted]')}
+  if(item===null||typeof item==='boolean'||typeof item==='number'&&Number.isFinite(item))return item;
+  throw Error('Debug content must be finite JSON');
+ }
+ return clean(value);
+}
+export function prepareDebugSnapshot(span:Span,content:Record<string,unknown>,policyRevision:number,options:{kind?:'input'|'output'|'context';privacyReviewed?:boolean}={}){
+ const {kind='context',privacyReviewed=false}=options;
+ if(privacyReviewed!==true||!Number.isInteger(policyRevision)||policyRevision<1||policyRevision>1000||!['input','output','context'].includes(kind)||!content||Array.isArray(content)||typeof content!=='object')throw Error('Review selected content and provide an explicit policy revision');
+ const f=span.facts();return {id:randomUUID(),policy_revision:policyRevision,privacy_reviewed:true,kind,trace_id:f.trace_id,attempt_id:f.attempt_id,span_id:f.span_id,workflow:f.workflow,environment:f.environment,content:redactDebugContent(content)};
+}

@@ -108,3 +108,20 @@ await tracer.flush();process.stdout.write(JSON.stringify(events));
         with self.tracer.task('document_export','test') as span:pass
         with self.assertRaises(ValueError):span.check('source_facts','passed',evidence_digest='a'*64)
         with self.assertRaises(ValueError):mapped_id('0'*32)
+
+    def test_explicit_debug_preparation_redacts_before_upload_without_automatic_collection(self):
+        import base64,os
+        from unittest.mock import patch
+        from afterspan_tracing import prepare_debug_snapshot
+        with self.tracer.task('document_export','test'):
+            with self.tracer.span('model') as span:
+                with self.assertRaises(ValueError):prepare_debug_snapshot(span,{'prompt':'chosen'},1)
+                snapshot=prepare_debug_snapshot(span,{'prompt':'Contact private@example.com or +91 98765 43210. Bearer private-value','password':'private-password','metadata':{'cookie':'private-cookie','status':'public'}},1,privacy_reviewed=True)
+        self.assertEqual(snapshot['content'],{'prompt':'Contact [redacted] or [redacted]. [redacted]','metadata':{'status':'public'}})
+        self.assertNotIn('prompt',json.dumps(self.events()))
+        self.assertEqual(self.fixture.ingest(self.events()).status_code,200)
+        policy={'enabled':True,'workflow':'document_export','environment':'test','privacy_reviewed':True}
+        with patch.dict(os.environ,{'AFTERSPAN_CONNECTION_KEY':base64.urlsafe_b64encode(b'k'*32).decode()}):
+            self.assertEqual(self.fixture.client.put('/api/debug/policy?project=alpha&revision=0',headers=self.fixture.admin,json=policy).status_code,200)
+            response=self.fixture.client.post('/v1/debug',headers=self.fixture.a,json=snapshot)
+            self.assertEqual(response.status_code,200,response.text)

@@ -131,3 +131,12 @@ class WorkflowTracer:
             if span.checks:end['checks']=span.checks
             self.emit('trace.observed',{'afterspan_trace':end});span.closed=True;_current.reset(token)
     def status(self):return {'emit_failures':self.emit_failures,'sampled_out_events':self.sampled_out_events,**self.collector.status()}
+
+
+def prepare_debug_snapshot(span,content,policy_revision,*,kind='context',privacy_reviewed=False):
+    """Prepare selected content only; send explicitly to /v1/debug after metadata flush."""
+    from afterspan_experiments import redact_debug
+    if privacy_reviewed is not True or type(policy_revision) is not int or not 1<=policy_revision<=1000 or kind not in {'input','output','context'} or not isinstance(content,dict):raise ValueError('review selected content and provide an explicit policy revision')
+    facts=span.facts()
+    return {'id':str(uuid.uuid4()),'policy_revision':policy_revision,'privacy_reviewed':True,'kind':kind,
+            **{k:facts[k] for k in ['trace_id','attempt_id','span_id','workflow','environment']},'content':redact_debug(content)}

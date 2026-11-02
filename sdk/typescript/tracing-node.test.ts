@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createAnalytics} from './native-analytics.ts';
-import {WorkflowTracer,mappedId,inject,extract,retryContext} from './tracing-node.ts';
+import {WorkflowTracer,mappedId,inject,extract,retryContext,prepareDebugSnapshot,redactDebugContent} from './tracing-node.ts';
 
 function fixture(){
  const events:any[]=[];
@@ -69,4 +69,22 @@ test('W3C flags use the sampled bit and ignore reserved bits',async()=>{
   assert.equal(extract({...carrier,traceparent:carrier.traceparent.slice(0,-2)+'03'},true)?.sampled,true);
   assert.equal(extract({...carrier,traceparent:carrier.traceparent.slice(0,-2)+'02'},true)?.sampled,false);
  });
+});
+
+
+test('debug snapshots require explicit review, redact before upload, and never enter event collection',async()=>{
+ const f=fixture();let snapshot:any;
+ await f.tracer.task({workflow:'document_export',environment:'test'},async()=>{
+  await f.tracer.span('model',span=>{
+   assert.throws(()=>prepareDebugSnapshot(span,{prompt:'chosen'},1));
+   snapshot=prepareDebugSnapshot(span,{prompt:'Contact private@example.com or +91 98765 43210. Bearer private-value',password:'private-password',metadata:{cookie:'private-cookie',status:'public'}},1,{privacyReviewed:true});
+  });
+ });await f.tracer.flush();
+ assert.deepEqual(snapshot.content,{prompt:'Contact [redacted] or [redacted]. [redacted]',metadata:{status:'public'}});
+ assert.equal(snapshot.policy_revision,1);assert.equal(snapshot.privacy_reviewed,true);
+ assert.equal(JSON.stringify(snapshot).includes('private'),false);
+ assert.equal(f.events.some(e=>e.properties.afterspan_debug!==undefined),false);
+ assert.equal(f.events.some(e=>JSON.stringify(e).includes('prompt')),false);
+ assert.deepEqual(redactDebugContent(snapshot.content),snapshot.content);
+ for(const value of [{x:Infinity},{x:'a'.repeat(4001)},{x:new Date()},{x:undefined}])assert.throws(()=>redactDebugContent(value));
 });

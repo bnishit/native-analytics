@@ -8,8 +8,8 @@ import re
 import time
 
 _SECRET=re.compile(r'\b(?:Bearer\s+\S+|(?:na_write_|na_admin_|as_read_|as_workspace_|as_session_|as_device_|as_login_|as_invite_|ghp_|github_pat_|xoxb-|sk-)[A-Za-z0-9_-]+)',re.I)
-_PII=re.compile(r'[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|(?<!\w)(?:\+?\d[\s().-]*){10,15}(?!\w)',re.I)
-_PRIVATE_KEY=re.compile(r'password|passwd|secret|authorization|cookie|credential|api.?key|email|phone|mobile|patient|address|(?:^|_)(?:key|token)(?:$|_)',re.I)
+_PII=re.compile(r'[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|(?<!\w)\+?\d(?:[\s().-]*\d){9,14}(?!\w)',re.I)
+_PRIVATE_KEY=re.compile(r'password|passwd|secret|authorization|cookie|credential|session|otp|api.?key|email|phone|mobile|patient|address|(?:^|_)(?:key|token)(?:$|_)',re.I)
 
 def reviewed_json(value):
     """Reject obvious secrets/PII rather than comparing two redacted values as equal."""
@@ -33,6 +33,28 @@ def reviewed_json(value):
 
 def canonical(value):return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False)
 def digest(value):return hashlib.sha256(canonical(value).encode()).hexdigest()
+
+def redact_debug(value):
+    """Best-effort common-pattern redaction; explicit review remains required."""
+    def clean(item,depth=0):
+        if depth>5:raise ValueError('debug content exceeds five levels')
+        if isinstance(item,dict):
+            if len(item)>64:raise ValueError('debug content has too many fields')
+            result={}
+            for key,v in item.items():
+                if not isinstance(key,str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}',key):raise ValueError('unsupported debug field')
+                if not _PRIVATE_KEY.search(key):result[key]=clean(v,depth+1)
+            return result
+        if isinstance(item,list):
+            if len(item)>100:raise ValueError('debug list too long')
+            return [clean(v,depth+1) for v in item]
+        if isinstance(item,str):
+            if len(item)>4000:raise ValueError('debug text too long')
+            return _PII.sub('[redacted]',_SECRET.sub('[redacted]',item))
+        if item is None or type(item) in {bool,int} or type(item) is float and math.isfinite(item):return item
+        raise ValueError('debug content must be finite JSON')
+    if len(json.dumps(value,ensure_ascii=False).encode())>16000:raise ValueError('debug content exceeds 16 KB')
+    return clean(value)
 
 
 def prepare_run(dataset,load_case,execute,*,variant,release_sha,configuration=None,privacy_reviewed=False):

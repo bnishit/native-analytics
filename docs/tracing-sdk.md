@@ -2,9 +2,18 @@
 
 A developer wraps a task and its timed steps. Nested calls and concurrent async tasks keep separate context. The helpers emit the existing strict workflow contract, not user content. A completed function is not a correct answer or useful outcome: declare checks and goal milestones separately.
 
-## Install from this checkout
+## Install a pinned SDK
 
 The Python distribution is `afterspan-sdk`; the server-only ESM Node package is `@afterspan/sdk`. Neither name claims publication on PyPI or npm. Python 3.12+ and Node 24+ are supported; CI tests Python 3.12 and Node 24. Both SDKs have zero runtime package dependencies. Python's build uses setuptools/wheel; Node's build uses pinned TypeScript and Node type declarations.
+
+Pinned Git installation is verified at the released commit below in fresh consumers. Node also passed a production `--omit=dev` lockfile install with a fresh cache and SSH disabled. Python preserves the existing flat-module imports. No registry account or publication is needed. npm Git installation runs the reviewed `prepare` build and downloads its pinned build dependencies.
+
+```sh
+python -m pip install 'afterspan-sdk @ git+https://github.com/bnishit/native-analytics.git@ce507e1429bb13d91eb96f7359f8e7a80130bfef#subdirectory=sdk/python'
+npm install 'git+https://github.com/bnishit/native-analytics.git#ce507e1429bb13d91eb96f7359f8e7a80130bfef'
+```
+
+### Build and verify artifacts locally
 
 Build artifacts from a reviewed checkout, then install them in your application:
 
@@ -21,13 +30,6 @@ npm install /private/sdk-build/afterspan-sdk-0.1.0.tgz
 ```
 
 The wheel includes all four Python modules. The tarball includes ordinary JavaScript, declarations, the standalone model observer and its required companions; it does not rely on stripping TypeScript from `node_modules`. Existing source-file imports still work for already vendored integrations. Pin the artifact hash or source revision when updating an application. When migrating an existing vendored integration, check which module is imported: local copies can shadow an installed Python package.
-
-After these manifests are merged, the intended pinned Git install forms are below. They are not yet a verified installation from a published Git revision; local wheel/tarball checks are the current proof. No registry account or publication is needed, but npm Git installation runs the package's reviewed `prepare` build and needs its build dependencies.
-
-```sh
-python -m pip install 'afterspan-sdk @ git+https://github.com/bnishit/native-analytics.git@PACKAGED_COMMIT#subdirectory=sdk/python'
-npm install 'git+https://github.com/bnishit/native-analytics.git#PACKAGED_COMMIT'
-```
 
 Run `python scripts/check_sdk_packages.py` after installing the repository's build and service test dependencies. This mandatory CI check builds and allowlists both archives, installs fresh consumers outside the checkout without `PYTHONPATH`, resolves TypeScript types, and ingests actual emitted payloads through the local service fixture. Missing-companion negative controls must fail imports; reinstalling the intact artifacts must restore the consumers. Python's bundled license must match the repository license byte for byte. The check does not call a provider or deployment.
 

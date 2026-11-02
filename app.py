@@ -1061,7 +1061,9 @@ trace_explorer=TraceExplorer(app,request_audit,workflow_tracing,audit_reader,fre
 regressions=Regressions(app,connect,editor,trace_explorer,RETENTION_DAYS,outcomes)
 debugging=Debugging(app,connect,owner,editor,writer,trace_explorer,audit_project,RETENTION_DAYS)
 product_loop=ProductLoop(app,connect,reader,editor,owner,RETENTION_DAYS,store_events=store_events,audit=request_audit)
-release_outcomes=ReleaseOutcomes(app,connect,editor,outcomes,regressions,product_loop,collection_health)
+from release_evidence import ReleaseEvidence
+release_evidence=ReleaseEvidence(app,product_loop,accounts,editor)
+release_outcomes=ReleaseOutcomes(app,connect,editor,outcomes,regressions,product_loop,collection_health,release_evidence)
 
 
 @app.get('/.well-known/afterspan')
@@ -1070,6 +1072,7 @@ def capabilities():
       'analytics':{'catalog':'/api/catalog','funnels':'/api/funnels/analyze','retention':'/api/retention/analyze','unit':'explicit opaque identity; not automatically a person'},
       'product_loop':{'goals':'/api/loop/goals','contract':'committed goals, scoped tracking PRs, independent answer checks and mature observational outcomes','local_mcp':'agent/loop_server.py','production_release_proof':'separate from PR and merge','repo_onboarding':{'sources':'/api/loop/sources','scans':'/api/loop/scans/{UUID}','jobs':'/api/loop/jobs/{UUID}','contract':'afterspan-repo-goal-v2','unit':'declared logged events or observed read requests, not unique people','measurements':['event-outcome-v1','slack-read-outcome-v1'],'credentials':'owner-only encrypted project connections','release':'/api/loop/actions/{id}/release'}},
       'outcomes':{'goals':'/api/outcomes/goals','evaluate':'/api/outcomes/evaluate','contract':'workflow-outcome-v1','scope':'project audit-purpose read; editor writes goal versions','evidence':'producer-reported criteria, not independent business proof'},
+      'release_evidence':{'prepare':'/api/outcomes/release-proposals/{UUID}','adopt':'/api/outcomes/releases/{UUID}/adopt','scope':'separate releases:write for editor preparation; owner account session adopts','max_pr_files':200,'latest_deployment_only':True,'merge_or_deploy_authority':False},
       'traces':{'search':'/api/traces/search','open':'/api/traces/open','contracts':['slack-request-v1','workflow-trace-v1'],'otlp':{'endpoint':'/v1/traces','transport':'OTLP/HTTP protobuf or JSON','content_capture':False,'max_spans':500,'mapping_version':'afterspan-otel-v1'},'scope':'project audit-purpose read key','raw_data':False},
       'debugging':{'policy':'/api/debug/policy','capture':'/v1/debug','review':'/api/debug/review','default_enabled':False,'scope':'owner capture policy; project editor and separate debug:read for remote content reads','max_capture_window_seconds':86400,'max_retention_seconds':604800,'encrypted':True},
       'experiments':{'cases':'/api/experiments/cases','datasets':'/api/experiments/datasets','runs':'/api/experiments/runs','compare':'/api/experiments/compare','scope':'project editor; separate experiments:write for remote OAuth','raw_trace_content':False,'deployment_authority':False},

@@ -35,7 +35,8 @@ def public_release(action,release):
             **{k:release.get(k) for k in ['provider','commit','base_commit','environment','released_at','deployment_id','timestamp_basis']}}
 
 class ReleaseOutcomes:
-    def __init__(self,app,connect,editor,outcomes,regressions,loop,collection):
+    def __init__(self,app,connect,editor,outcomes,regressions,loop,collection,release_evidence=None):
+        self.release_evidence=release_evidence
         self.connect=connect;self.outcomes=outcomes;self.regressions=regressions;self.loop=loop;self.collection=collection
         @app.get('/api/outcomes/releases',dependencies=[Depends(editor)])
         def releases(project:str,environment:Environment,limit:int=Query(20,ge=1,le=100),offset:int=Query(0,ge=0,le=10000)):
@@ -43,16 +44,34 @@ class ReleaseOutcomes:
         @app.post('/api/outcomes/releases/compare',dependencies=[Depends(editor)])
         def compare(project:str,req:ReleaseComparison):return self.compare(project,req)
 
+    def resolve(self,project,id,environment):
+        with closing(self.connect()) as c:
+            legacy=c.execute('SELECT 1 FROM loop_actions WHERE project=? AND id=?',(project,id)).fetchone()
+            external=c.execute("SELECT kind FROM loop_repo_receipts WHERE project=? AND id=? AND kind IN ('external-release-proposal','external-release-receipt')",(project,id)).fetchone()
+            if legacy and external:raise HTTPException(409,'ambiguous release evidence identity')
+            if legacy:
+                action=self.loop.action(c,project,id);release=released_artifact(action,environment)
+                return public_release(action,release) | {'evidence_kind':'legacy_tracking_artifact','approval_basis':'existing_tracking_policy'} if release else None
+        if external:
+            if external['kind']!='external-release-receipt' or self.release_evidence is None:raise HTTPException(409,'object is not adopted release evidence')
+            release=self.release_evidence.normalized(project,id)
+            return release if release['environment']==environment else None
+        raise HTTPException(404,'release evidence not found')
+
     def list(self,project,environment,limit,offset):
         with closing(self.connect()) as c:
-            rows=c.execute('''SELECT id FROM loop_actions WHERE project=? AND json_extract(receipt,'$.release_status')='released'
-              AND json_extract(receipt,'$.release.environment')=? ORDER BY julianday(json_extract(receipt,'$.release.released_at')) DESC,id LIMIT ? OFFSET ?''',(project,environment,limit+1,offset)).fetchall()
-            items=[]
-            for row in rows[:limit]:
-                action=self.loop.action(c,project,row['id']);release=released_artifact(action,environment)
-                if release:items.append(public_release(action,release))
+            rows=c.execute("""SELECT * FROM (SELECT id, json_extract(receipt,'$.release.released_at') AS released_at FROM loop_actions
+                WHERE project=? AND json_extract(receipt,'$.release_status')='released' AND json_extract(receipt,'$.release.environment')=?
+                UNION ALL SELECT id,json_extract(receipt,'$.evidence.deployment.released_at') AS released_at FROM loop_repo_receipts
+                WHERE project=? AND kind='external-release-receipt' AND json_extract(receipt,'$.evidence.deployment.environment')=?
+                ) ORDER BY julianday(released_at) DESC,id LIMIT ? OFFSET ?""",(project,environment,project,environment,limit+1,offset)).fetchall()
+        items=[]
+        for row in rows[:limit]:
+            release=self.resolve(project,row['id'],environment)
+            if release:items.append(release)
         return {'releases':items,'has_more':len(rows)>limit,'offset':offset,'limit':limit,
-                'limits':['Stored provider-verified release receipts, not a fresh claim about the currently running deployment.','This list grants no provider, merge or deployment authority.']}
+                'limits':['Stored provider release evidence, not a fresh health check or deployment authority.',
+                          'External evidence records owner-adopted provider identity, not independent code review or CI attestation.']}
 
     def compare(self,project,req):
         saved=self.outcomes.get(project,str(req.outcome_goal.id),req.outcome_goal.version)
@@ -62,11 +81,8 @@ class ReleaseOutcomes:
         experiment=compare_runs(baseline,candidate)
         binding=candidate['dataset']['definition'].get('outcome_goal')
         if binding!=req.outcome_goal.model_dump(mode='json'):raise HTTPException(409,'experiment dataset must pin this exact outcome goal version/hash')
-        with closing(self.connect()) as c:
-            action=self.loop.action(c,project,str(req.release_action))
-            baseline_action=self.loop.action(c,project,str(req.baseline_release_action))
-        release=released_artifact(action,goal.environment);reasons=[]
-        baseline_release=released_artifact(baseline_action,goal.environment)
+        release=self.resolve(project,str(req.release_action),goal.environment);reasons=[]
+        baseline_release=self.resolve(project,str(req.baseline_release_action),goal.environment)
         if not release:reasons.append('verified_release_receipt_missing')
         if not baseline_release:reasons.append('baseline_verified_release_receipt_missing')
         if not experiment['eligible_for_review']:reasons.append('experiment_does_not_meet_review_criteria')
@@ -111,15 +127,15 @@ class ReleaseOutcomes:
         reasons=sorted(set(reasons));comparable=not reasons
         result={'status':'comparable' if comparable else 'unknown','reasons':reasons,
             'outcome_goal':req.outcome_goal.model_dump(mode='json'),'query':req.model_dump(mode='json'),
-            'release':public_release(action,release) if release else None,
-            'baseline_release':public_release(baseline_action,baseline_release) if baseline_release else None,
+            'release':release,
+            'baseline_release':baseline_release,
             'experiment':{k:experiment[k] for k in ['baseline','candidate','dataset_sha256','changes','baseline_pass_rate','candidate_pass_rate','eligible_for_review']},
             **reports,'satisfied_fraction_difference':reports['after']['satisfied_fraction']-reports['before']['satisfied_fraction'] if comparable else None,
             'deployment_authorized':False,'observational':True,'collection_completeness':'not_established',
             'limits':['Experiment results check fixed reviewed facts, not all possible answers or independent source state.',
-              'The experiment precedes this provider-reported verified deployment; this does not prove when users first saw the commit.',
+              'Comparability requires experiments before the provider-reported deployment; this does not prove when users first saw the commit.',
               'Only retained producer-labelled user task traces are measured, not all users or all tasks. No sample count grants production readiness.',
               'Before/after is observational and does not establish that the release caused a change.',
-              'This read reuses existing reviewed release evidence and grants no merge or deployment permission.']}
+              'This read grants no merge or deployment permission. External receipts attest provider identity only, not code review or CI.']}
         result['fingerprint']=digest(result)
         return result

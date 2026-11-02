@@ -93,6 +93,28 @@ class ReleaseOutcomeTests(unittest.TestCase):
         self.assertEqual(r['after']['mature_denominator'],1);self.assertEqual(r['after']['coverage']['traffic_excluded'],1)
         self.assertNotIn('results',r['experiment']);self.assertNotIn('content',r['experiment'])
         self.assertEqual(self.compare().json()['fingerprint'],r['fingerprint'])
+    def test_adopted_legacy_proposal_identity_remains_comparable_and_listed(self):
+        with closing(app.connect()) as c,c:
+            for id in (self.baseline_action,self.candidate_action):
+                c.execute('INSERT INTO loop_repo_receipts VALUES(?,?,?,?,?,?)',
+                          ('alpha',id,'proposal','0'*64,json.dumps({'adopted_action_id':id}),self.now-900))
+        response=self.compare();self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['status'],'comparable')
+        response=self.client.get('/api/outcomes/releases?project=alpha&environment=staging',headers=self.auth)
+        self.assertEqual(response.status_code,200,response.text)
+        releases=response.json()['releases']
+        self.assertEqual({r['action'] for r in releases},{self.baseline_action,self.candidate_action})
+        self.assertTrue(all(r['evidence_kind']=='legacy_tracking_artifact' for r in releases))
+
+    def test_external_kind_collision_never_falls_back_to_legacy_release(self):
+        for kind in ('external-release-proposal','external-release-receipt'):
+            with self.subTest(kind=kind):
+                with closing(app.connect()) as c,c:
+                    c.execute('INSERT OR REPLACE INTO loop_repo_receipts VALUES(?,?,?,?,?,?)',
+                              ('alpha',self.candidate_action,kind,'0'*64,'{}',self.now-900))
+                self.assertEqual(self.compare().status_code,409)
+                self.assertEqual(self.client.get('/api/outcomes/releases?project=alpha&environment=staging',headers=self.auth).status_code,409)
+
     def test_both_provider_receipts_are_required_and_artifact_binding_cannot_change(self):
         self.change_receipt(self.baseline_action,lambda r:r.update(release_status='release_pending'))
         r=self.compare().json();self.assertEqual(r['status'],'unknown');self.assertIn('baseline_verified_release_receipt_missing',r['reasons']);self.assertIsNone(r['satisfied_fraction_difference'])

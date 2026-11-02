@@ -1,6 +1,7 @@
 import hashlib
 import time
 import unittest
+from unittest.mock import patch
 
 import app
 import test_analytics
@@ -67,3 +68,12 @@ class AccessTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/projects').status_code,401)
         self.assertEqual(self.client.get('/assets/brand/mark.svg').status_code,200)
         self.assertEqual(self.client.get('/brand').status_code,200)
+
+    def test_backup_status_is_operator_only_and_cannot_export_or_run_a_backup(self):
+        key=self.grant()
+        for headers in [{},self.fixture.a,key]:
+            self.assertEqual(self.client.get('/api/operator/backup',headers=headers).status_code,401)
+        with patch.dict('os.environ',{'AFTERSPAN_BACKUP_ENABLED':''}):
+            self.assertEqual(self.client.get('/api/operator/backup',headers=self.admin).json(),{'enabled':False,'status':'disabled','overdue':False})
+        self.assertEqual(self.client.post('/api/operator/backup',headers=self.admin).status_code,405)
+        self.assertEqual(self.client.get('/healthz').json(),{'ok':True})

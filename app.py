@@ -12,6 +12,7 @@ import sqlite3
 import threading
 import time
 import uuid
+import scheduled_backup
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -152,6 +153,7 @@ def startup():
             raise RuntimeError(key+' must contain at least 24 characters')
     init_db()
     _prune_stop.clear()
+    scheduled_backup.start(DB_PATH,_prune_stop)
     def cleanup():
         while not _prune_stop.wait(3600):
             try:prune()
@@ -1016,6 +1018,12 @@ def maintenance(request:Request):
     if not operator(request):raise HTTPException(403,'operator token required')
     prune()
     return {'ok':True,'retention_days':RETENTION_DAYS}
+
+
+@app.get('/api/operator/backup')
+def backup_status(request:Request):
+    if not operator(request):raise HTTPException(401,'operator token required')
+    return scheduled_backup.status(DB_PATH)
 
 class ExistingOwner(Model):
     account_id:str=Field(pattern=r'^u_[a-f0-9]{32}$')

@@ -6,7 +6,7 @@
 
 Funnels, saved behavior/trait segments, linked journeys, retries, event metrics and scoped agent access are included in the core. Self-hosting needs no Stripe account, subscription or commercial quota. Accounts, teams and roles protect your own instance. Optional hosted billing is a separate opt-in; it never gates a core analytics feature.
 
-#> Outcome-platform branch: reviewed experiments can now pin a goal version and compare two verified releases against mature, explicitly labelled user-task windows. This is local and unreleased; collection health and encrypted restore have local proof; capacity, fault/restart and production adoption remain pending. See [collection health](docs/collection-health.md) and [operations](docs/operations.md). See [release outcomes](docs/release-outcomes.md).
+#> Outcome-platform branch: reviewed experiments can now pin a goal version and compare two verified releases against mature, explicitly labelled user-task windows. This is local and unreleased; collection health and encrypted restore have local proof; a 32,000-observation local capacity run and real process crash/retry tests pass; production adoption and operating verification remain pending. See [capacity and access limits](docs/capacity-and-access.md). See [collection health](docs/collection-health.md) and [operations](docs/operations.md). See [release outcomes](docs/release-outcomes.md).
 
 ## Connect an agent remotely
 

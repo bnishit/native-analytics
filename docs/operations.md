@@ -27,7 +27,7 @@ Six tests cover committed WAL, encryption, isolated destination permissions, ove
 
 ## Collection trust remains separate
 
-The existing Python collector has a durable SQLite outbox and pipeline pulses; the Node collector has a bounded in-memory queue and cannot survive process termination. Queue/disk/network failures and requests blocked before instrumentation can leave gaps. An absent pulse is not zero drops. The branch now has a local typed per-source collection-health screen/API/CLI/MCP; see [collection health](collection-health.md). An isolated real-process test now proves the bounded outage/restart/ambiguous-receipt path below. Measured capacity and production verification are still required. The release comparison therefore reports collection completeness as not established.
+The existing Python collector has a durable SQLite outbox and pipeline pulses; the Node collector has a bounded in-memory queue and cannot survive process termination. Queue/disk/network failures and requests blocked before instrumentation can leave gaps. An absent pulse is not zero drops. The branch now has a local typed per-source collection-health screen/API/CLI/MCP; see [collection health](collection-health.md). An isolated real-process test now proves the bounded outage/restart/ambiguous-receipt path below. The local capacity benchmark and access assessment are recorded in [capacity and access](capacity-and-access.md). Production verification remains required. The release comparison therefore reports collection completeness as not established.
 
 ## Isolated crash and ambiguous-delivery proof
 

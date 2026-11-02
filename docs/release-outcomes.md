@@ -20,6 +20,10 @@ Generic release facts are independent of a goal. The experiment dataset and outc
 
 The baseline window starts after its verified deployment; its entire goal follow-up ends before the candidate deployment. The after window starts at the candidate deployment. Both windows need full follow-up through their frozen receipt cutoffs. The browser preserves exact provider timestamp precision at those boundaries. Provider status time is not proof of when each user first saw a commit.
 
+## Bounded production verification
+
+The deployed adapter prepared and adopted Tracker PR #192 through the real owner UI. Its complete 19-file manifest and exact production commit/deployment matched; account-scoped CLI receipt/catalog reads agreed. The recorded baseline is available for a later candidate comparison. This does not establish improved normal-user outcomes or exercise a new remote OAuth grant; see [release acceptance](outcome-platform-release.md).
+
 ## Population and cost
 
 New goals explicitly choose user, synthetic, internal or all traffic. Old observations default to unknown. Producers classify trusted task entry points and propagate that classification; a label is not independently verified human identity. Only user-task goals qualify for normal-use release comparisons. Known synthetic/internal tasks are excluded, while unknown population labels prevent a clean fraction. Retry attempts retain the original task clock and classification.

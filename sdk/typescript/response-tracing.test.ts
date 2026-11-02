@@ -108,3 +108,11 @@ test('genuine source and cleanup failures retain their failure reason',async()=>
   await tracer.flush();const model=facts(events).find(x=>x.step==='model'&&x.state!=='started');assert.equal(model.state,'failed');assert.equal(model.outcome_code,'internal');
  }
 });
+test('a graceful provider EOF after explicit return is still cancellation',async()=>{
+ const {tracer,events}=fixture();let entered!:()=>void,release!:()=>void;
+ const waiting=new Promise<void>(resolve=>{entered=resolve}),end=new Promise<void>(resolve=>{release=resolve});
+ await tracer.task({workflow:'answer'},async()=>{
+  const iterator=tracer.stream('model',async function*(){yield 'first';entered();await end})[Symbol.asyncIterator]();
+  await iterator.next();const pending=iterator.next();await waiting;const returned=iterator.return!();release();await pending;await returned;
+ });await tracer.flush();const model=facts(events).find(x=>x.step==='model'&&x.state!=='started');assert.equal(model.state,'failed');assert.equal(model.outcome_code,'cancelled');
+});

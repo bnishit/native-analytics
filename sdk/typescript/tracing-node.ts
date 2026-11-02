@@ -137,7 +137,7 @@ export class WorkflowTracer {
     iterator=current.run(span.context,()=>source(span)[Symbol.asyncIterator]());
     while(true){
      const value=await current.run(span.context,()=>iterator!.next());
-     if(value.done){state='succeeded';code='none';return}
+     if(value.done){state=cancelRequested?'cancelled':'succeeded';code=cancelRequested?'cancelled':'none';return}
      yield value.value;
     }
    }catch(error){({state,code}=failure(cancelRequested?new StreamCancelled():error));throw error}finally{

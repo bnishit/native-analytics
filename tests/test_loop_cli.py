@@ -50,6 +50,13 @@ class LoopCheckoutTests(unittest.TestCase):
         for dependency in ['/private','../private']:
             with self.assertRaises(ValueError):repo.init_answer_goal(self.root,'Question','unconfigured','production',[dependency],'GrowthBook','Displayed facts match','Approved read only')
 
+    def test_scope_checker_can_be_declared_without_rewriting_existing_goal_versions(self):
+        created=repo.init_answer_goal(self.root,'Did the scoped list match the request?','growthbook-catalog-v2','production',['examples/loop_pilot.py'],'Catalog','Requested scope and source match','Read-only synthetic test')
+        self.assertEqual(created['definition']['verifier'],'growthbook-catalog-v2')
+        from loop_onboarding import SlackReadOutcome
+        metric=SlackReadOutcome(kind='slack-read-outcome-v1',unit='observed_read_request',event='slack_message_received',command_kind='list_experiments',verifier='growthbook-catalog-v2')
+        self.assertEqual(metric.verifier,'growthbook-catalog-v2')
+
     def test_repository_fsmonitor_cannot_execute_during_inspection(self):
         hook=self.root/'monitor.py';sentinel=self.root/'executed'
         hook.write_text('#!/usr/bin/env python3\nfrom pathlib import Path\nPath('+repr(str(sentinel))+').touch()\n')

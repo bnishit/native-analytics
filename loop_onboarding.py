@@ -106,7 +106,7 @@ class SlackReadOutcome(Model):
     unit: Literal['observed_read_request']
     event: Literal['slack_message_received']
     command_kind: Literal['list_experiments']
-    verifier: Literal['growthbook-catalog-v1']
+    verifier: Literal['growthbook-catalog-v1','growthbook-catalog-v2']
     deadline_seconds: int = Field(default=60, ge=1, le=300, strict=True)
     min_sample_size: int = Field(default=25, ge=1, le=100000, strict=True)
 

@@ -10,7 +10,7 @@ def init_answer_goal(repo,question,verifier,environment,dependencies,source_of_t
     if not root.is_dir():raise ValueError('provide an existing repository directory')
     if not 1<=len(question)<=2000 or not 1<=len(dependencies)<=16:raise ValueError('provide a bounded question and dependencies')
     if not 1<=len(source_of_truth)<=200 or not 1<=len(criteria)<=1000 or not 1<=len(safe_test)<=1000:raise ValueError('declare a bounded source of truth, correctness criteria and safe test')
-    if verifier not in ['growthbook-catalog-v1','unconfigured'] or environment not in ['production','staging']:raise ValueError('unsupported verifier or environment')
+    if verifier not in ['growthbook-catalog-v1','growthbook-catalog-v2','source-facts-v1','unconfigured'] or environment not in ['production','staging']:raise ValueError('unsupported verifier or environment')
     if any(not re.fullmatch(r'[A-Za-z0-9_./-]{1,160}',p) or p.startswith('/') or '..' in Path(p).parts for p in dependencies):raise ValueError('use relative dependency paths')
     goal={'schema':'afterspan-audit-goal-v1','id':'answer-quality','question':question,
         'metric':'answer-quality-v1','environment':environment,'verifier':verifier,'source_of_truth':source_of_truth,'criteria':criteria,'safe_test':safe_test,

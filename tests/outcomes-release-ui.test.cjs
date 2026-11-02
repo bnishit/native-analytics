@@ -13,9 +13,9 @@ test('model cost never turns absent observations or missing amounts into free su
  html=vm.runInContext('outcomeModelCost({model_spans:1,cost_known_spans:1,cost_unknown_spans:0,measured_microusd:0,per_satisfied_task_microusd:0})',c);assert.match(html,/\$0.000000 per satisfied/);
 });
 test('release comparison keeps unknown evidence and observational limits visible',()=>{
- const c=context();const data={status:'unknown',reasons:['after_evidence_incomplete'],experiment:{baseline_pass_rate:.5,candidate_pass_rate:1},satisfied_fraction_difference:null,limits:['Not causal. No deployment authority.']};
+ const c=context();const data={status:'unknown',reasons:['after_evidence_incomplete','partial_answer_not_completed'],experiment:{baseline_pass_rate:.5,candidate_pass_rate:1},satisfied_fraction_difference:null,limits:['Not causal. No deployment authority.']};
  const html=vm.runInContext('outcomeReleaseMarkup('+JSON.stringify(data)+')',c);
- assert.match(html,/Not enough bound evidence/);assert.match(html,/Change unavailable/);assert.match(html,/after evidence incomplete/);assert.match(html,/No deployment authority/);
+ assert.match(html,/Not enough bound evidence/);assert.match(html,/Change unavailable/);assert.match(html,/after evidence incomplete/);assert.match(html,/Only part of the request was answered/);assert.match(html,/No deployment authority/);
  const known=vm.runInContext('outcomeReleaseMarkup('+JSON.stringify({...data,status:'comparable',reasons:[],satisfied_fraction_difference:0})+')',c);
  assert.match(known,/0 percentage-point change/);assert.doesNotMatch(known,/Change unavailable/);
 });

@@ -117,7 +117,7 @@ class WorkflowTracer:
         context=_current.get()
         if context is None:raise ValueError('start or continue a task before a span')
         if step not in _STEPS:raise ValueError('unsupported span step')
-        if milestone not in {None,'completion','delivery','usefulness'} or disposition not in {None,'delivered','withheld','clarification'} or disposition is not None and step!='response':raise ValueError('invalid terminal declaration')
+        if milestone not in {None,'completion','delivery','usefulness'} or disposition not in {None,'delivered','withheld','clarification','partial'} or disposition is not None and step!='response':raise ValueError('invalid terminal declaration')
         parent=mapped_id(context.trace_id,context.span_id) if context.span_id else None
         child=replace(context,span_id=secrets.token_hex(8));span=Span(self,child,parent,step)
         token=_current.set(child);started=time.monotonic();state='succeeded';code='none'

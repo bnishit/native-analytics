@@ -426,7 +426,7 @@ FastAPI, SQLite on one persistent volume, plain HTML/CSS/JS and SVG charts. No h
 3. Set `ANALYTICS_PUBLIC_URL` to the service HTTPS origin, `ANALYTICS_DB=/data/analytics.db`,
    `COOKIE_SECURE=true`, `RETENTION_DAYS=90`, `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS=0`.
 4. Configure email delivery as above. Open `/app`, verify the email sign-in link, create a workspace and project, then verify a real collection receipt.
-5. Configure Railway/off-site backup retention separately. The platform includes an operator-only encrypted consistent SQLite snapshot and isolated restore tool; see [operations](docs/operations.md). Production snapshots have been restored in isolation, including a same-server check that existing provider connections decrypt only with their original private-storage key. That test retained no recovery point; full recovery, external key escrow and backup scheduling remain separate. A persistent volume is not an off-site backup.
+5. Configure Railway/off-site backup retention separately. The platform includes an operator-only encrypted consistent SQLite snapshot and isolated restore tool; see [operations](docs/operations.md). This deployment has one automatically created private off-site copy and an independent isolated restore using both escrowed keys, including provider-connection decryption. Its 24-hour interval and seven-copy retention limit are configured; future daily runs, seven accumulated copies and full application recovery remain unverified. A persistent volume alone is not an off-site backup.
 
 For local development use a writable `ANALYTICS_DB` and `COOKIE_SECURE=false` on localhost only.
 Run `uvicorn app:app --host 127.0.0.1 --port 8080`.
@@ -529,7 +529,7 @@ metadata; network IPs may belong to NAT/proxies. This service makes no bank/cust
 
 Retention limits disk growth over time, but capacity depends on traffic. Railway compute and storage
 still incur normal infrastructure costs. Usage metering, bounded draft plans and a hosted Stripe adapter exist locally; real Stripe sandbox receipts exist, while live payments and a production billing rollout are unverified. SSO, MFA and multi-replica storage remain absent. Paid plans do not change the single-process storage architecture.
-Volume backups must be configured separately. A default-off operator job can send encrypted copies to private S3-compatible storage and authenticate an isolated readback restore before saving success; see [operations](docs/operations.md). Its current tests are local; no production backup schedule is claimed by this deployment.
+Volume backups must be configured separately. A default-off operator job can send encrypted copies to private S3-compatible storage and authenticate an isolated readback restore before saving success; see [operations](docs/operations.md). On 3 November this deployment enabled daily private off-site recovery and verified its first automatic copy plus a separate local restore. An hourly desktop failure monitor is configured; future runs and alert delivery remain untested. Other installations must configure their own destination, keys and monitoring.
 
 ## Optional hosted billing
 

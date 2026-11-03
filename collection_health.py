@@ -23,6 +23,7 @@ class CollectionPulse(Model):
     process_started_at_ms:Count=Field(ge=0,le=4102444800000)
     interval_seconds:Count=Field(ge=10,le=3600)
     delivery_mode:Literal['durable','memory','external']
+    collector_state:Literal['running','stopped']|None=None
     queued:Count=Field(ge=0,le=MAX_COUNT)
     capacity:Count=Field(ge=1,le=MAX_COUNT)
     oldest_queued_at_ms:Count|None=Field(default=None,ge=0,le=4102444800000)
@@ -39,6 +40,7 @@ class CollectionPulse(Model):
         if any(v is not None and v>self.observed_at_ms for v in [self.oldest_queued_at_ms,self.last_delivery_at_ms]):raise ValueError('collector clock exceeds pulse')
         if (self.oldest_queued_at_ms is not None)!=(self.queued>0):raise ValueError('queued events require their oldest timestamp')
         if self.queued>self.capacity:raise ValueError('queue exceeds capacity')
+        if self.collector_state=='stopped' and (self.queued or self.error_code is not None):raise ValueError('stopped collector requires an empty queue and no current error')
         return self
 
 class SourceExpectation(Model):
@@ -140,9 +142,12 @@ class CollectionHealth:
                 latest=values[-1];in_window=[p for p in values if p['observed_at_ms']/1000>=start]
                 baseline=next((p for p in reversed(values) if p['observed_at_ms']/1000<=start),None)
                 scoped=([baseline] if baseline and baseline not in in_window else [])+in_window
-                issues=[]
+                issues=[];stops=[p for p in values if p.get('collector_state')=='stopped']
+                conflict=bool(stops) and (len(stops)>1 or stops[0] is not latest or any(p is not stops[0] and p['sequence']>=stops[0]['sequence'] for p in values))
+                lifecycle='conflicting' if conflict else 'reported_stopped' if stops else 'not_established'
+                if conflict:issues.append('collector_lifecycle_conflict')
                 if any(p['evaluator_failures'] is None for p in scoped):issues.append('evaluator_health_unknown')
-                if latest['observed_at_ms']/1000<end-allowance:issues.append('pulse_stale')
+                if lifecycle!='reported_stopped' and latest['observed_at_ms']/1000<end-allowance:issues.append('pulse_stale')
                 if latest['error_code']:issues.append('collector_reports_error')
                 if latest['evaluator_failures'] is None:issues.append('evaluator_health_unknown')
                 if latest['queued'] and latest['oldest_queued_at_ms']/1000<end-allowance:issues.append('queue_delayed')
@@ -156,7 +161,7 @@ class CollectionHealth:
                 elif any(changes[k] is None and latest[k]>0 for k in ['dropped','rejected']):issues.append('collector_loss_window_unknown')
                 if changes['evaluator_failures'] is not None and changes['evaluator_failures']>0:issues.append('collector_reports_evaluator_failures')
                 elif changes['evaluator_failures'] is None and latest['evaluator_failures']:issues.append('evaluator_failure_window_unknown')
-                observations.append({'instance_id':instance,'latest':latest,'issues':sorted(set(issues)),'window_counter_changes':changes})
+                observations.append({'instance_id':instance,'latest':latest,'lifecycle':lifecycle,'issues':sorted(set(issues)),'window_counter_changes':changes})
                 reasons+=issues
             # Coverage uses every declared source pulse. It does not prove that undeclared workers emitted anything.
             times=sorted({p['observed_at_ms']/1000 for p in pulses})
@@ -176,4 +181,4 @@ class CollectionHealth:
                 'Expectations are current editor configuration, not an immutable historical inventory. Changes after the window start prevent clean coverage.',
                 'Backend counters are project-wide across all environments/workflows; failures cannot be assigned to the selected task population. They cover authenticated requests in closed minute buckets overlapping this window. They count requests and OTLP rejected spans, not missing business tasks. Unattributed authentication/body/size failures and health-write failures may be absent.',
                 'Loss counters are cumulative for the reported collector instance; full-window changes require a baseline at/before entry and a later in-window report. Historic nonzero totals alone do not establish new loss. Process exits can lose unsent memory queues without reporting a final pulse.',
-                'A retired instance can remain stale in this bounded view. This read cannot prove its shutdown was intentional. A current source can have unreported workers.']}
+                'Only an explicit empty-queue stop report ends instance freshness checks. This is producer-reported, not independent proof of process exit. Later activity conflicts with that stop within this bounded evidence. Historical instances without a stop remain unknown; current source coverage and counter checks still apply. A current source can have unreported workers.']}

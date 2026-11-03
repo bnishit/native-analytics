@@ -35,6 +35,13 @@ test('latest evaluator totals do not rewrite an earlier unknown window or imply 
  const html=markup(data);assert.match(html,/No report in the selected window/);assert.match(html,/retirement is not verified/);assert.match(html,/Latest evaluator count is known/);assert.match(html,/full-window change is unknown/);assert.match(html,/Needs attention/);
 });
 
+test('a reported empty stop is distinct from a silent or contradictory worker',()=>{
+ const instance={latest:{delivery_mode:'memory',queued:0,capacity:500,observed_at_ms:0,dropped:0,rejected:0,delivery_failures:0,evaluator_failures:null},issues:[],window_counter_changes:{evaluator_failures:null}};
+ const response=lifecycle=>({...empty,sources:[{source:'worker',status:'attention',reasons:['evaluator_health_unknown'],instances:[{...instance,lifecycle}]}]});
+ const stopped=markup(response('reported_stopped'));assert.match(stopped,/reported an empty queue and stopped/);assert.match(stopped,/Process exit is not independently verified/);assert.match(stopped,/Evaluator execution was not reported/);assert.match(stopped,/not established/);
+ assert.match(markup(response('conflicting')),/reported a stop and later activity/);
+});
+
 test('missing, null, naive or invalid saved boundaries never fall back to a rolling API read',async()=>{
  const valid={environment:'production',start:'2026-11-01T00:00:00.000001Z',end:'2026-11-01T00:05:00.000001Z',as_of:'2026-11-01T00:06:00.000001Z'};
  for(const query of [{environment:'production'},{...valid,start:null},{...valid,end:null},{...valid,as_of:null},{...valid,start:'2026-11-01T00:00:00'},{...valid,start:'invalid'},{...valid,environment:'untrusted'}]){

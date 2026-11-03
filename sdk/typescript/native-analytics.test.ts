@@ -100,6 +100,15 @@ test('typed memory-queue pulse preserves explicit evaluator status and exact clo
  client.recordEvaluation(true);await client.pulse();pulse=events[1].properties.afterspan_health;assert.equal(pulse.evaluator_failures,1);assert.equal(pulse.sequence,2);assert.equal(Date.parse(events[1].timestamp),pulse.observed_at_ms);assert.equal(events[1].properties.source,undefined);
  assert.equal(client.status().queued,0);
 });
+
+test('reported stop requires a drained typed collector and preserves delivery uncertainty',async()=>{
+ const events:Array<any>=[];let accepting=false;
+ const client=createAnalytics({url:'https://analytics.example',writeKey:'synthetic-key',health:{source:'export_worker',environment:'staging'},fetch:async(_,options)=>{if(!accepting)return new Response('',{status:503});const sent=JSON.parse(String(options?.body)).events;events.push(...sent);return new Response(JSON.stringify({accepted:sent.length,duplicates:0}))}});
+ await client.track('export.completed');assert.throws(()=>client.pulse('stopped'),/drain/);
+ accepting=true;await client.flush();await client.pulse('stopped');const pulse=events[1].properties.afterspan_health;
+ assert.equal(pulse.collector_state,'stopped');assert.equal(pulse.queued,0);assert.equal(pulse.evaluator_failures,null);
+ assert.throws(()=>createAnalytics().pulse('stopped'),/typed collector/);
+});
 test('native model count metrics survive but raw inputs and string impostors stay redacted',()=>{
  const result=safeProperties({input_count:2,output_count:3,input:'private prompt',input_count_text:'private value'}) as any;
  assert.equal(result.input_count,2);assert.equal(result.input,'[redacted]');assert.equal(result.input_count_text,'[redacted]');assert.equal(result.output_count,3);const impostor=safeProperties({input_count:'private value',output_count:'private value'}) as any;assert.equal(impostor.input_count,'[redacted]');assert.equal(impostor.output_count,'[redacted]');

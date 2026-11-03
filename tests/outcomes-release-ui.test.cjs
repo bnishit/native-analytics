@@ -4,7 +4,7 @@ const fs=require('node:fs');
 const vm=require('node:vm');
 function context(extra={}){
  const c=vm.createContext({project:'app',location:{hash:''},URLSearchParams,panel:(title,body)=>title+' '+body,esc:v=>String(v??'').replaceAll('<','&lt;'),fmt:String,...extra});
- vm.runInContext(fs.readFileSync('static/outcomes.js','utf8'),c);return c;
+ vm.runInContext(fs.readFileSync('static/collection.js','utf8'),c);vm.runInContext(fs.readFileSync('static/outcomes.js','utf8'),c);return c;
 }
 test('model cost never turns absent observations or missing amounts into free success',()=>{
  const c=context();let html=vm.runInContext('outcomeModelCost({model_spans:0})',c);assert.match(html,/does not establish zero cost/);
@@ -136,4 +136,32 @@ test('release comparison explains the pinned sample shortfall and source warning
  assert.match(html,/Collector report is stale/);assert.match(html,/Evaluator health was not observed/);assert.doesNotMatch(html,/<unsafe>/);assert.match(html,/Change unavailable/);
  const old=vm.runInContext('outcomeReleaseMarkup('+JSON.stringify({...report,goal_definition:undefined})+')',c);
  assert.doesNotMatch(old,/of 25|23 more mature/);assert.match(old,/Pinned comparison criteria were not returned/);
+});
+
+test('release collection drilldown preserves the exact source window and project',()=>{
+ const c=context({workspace:'work',days:7}),query={days:7,start:'2026-11-01T00:00:00Z',end:'2026-11-01T00:05:00Z',as_of:'2026-11-01T00:06:00Z',environment:'staging',workflow:'document_export'};
+ const cohort={counts:{satisfied:0,failed:0,withheld:0,unclassified:0},mature_denominator:0,snapshot:query,tasks:[],collection_health:{status:'attention',reasons:[],sources:[],query}};
+ const data={status:'unknown',reasons:[],experiment:{baseline_pass_rate:1,candidate_pass_rate:1},satisfied_fraction_difference:null,before:cohort,limits:[]};
+ const html=vm.runInContext('outcomeReleaseMarkup('+JSON.stringify(data)+')',c),match=html.match(/href="([^"]+)"[^>]*>Inspect Before collection window/);assert.ok(match);
+ const link=new URL(match[1],'https://example.com'),params=new URLSearchParams(link.hash.slice(1));assert.equal(params.get('project'),'app');assert.equal(params.get('workspace'),'work');assert.equal(params.get('view'),'collection');assert.deepEqual(JSON.parse(params.get('collection_query')),query);
+});
+
+test('the actual initial route rewrite preserves a collection window only for its project',()=>{
+ const query={environment:'production',start:'2026-11-01T00:00:00Z',end:'2026-11-01T00:05:00Z',as_of:'2026-11-01T00:06:00Z'},hash='#'+new URLSearchParams({project:'app',view:'collection',collection_query:JSON.stringify(query)}),{c,location}=routeContext(hash);
+ vm.runInContext('tab="collection";rememberView()',c);assert.deepEqual(JSON.parse(new URLSearchParams(location.hash.slice(1)).get('collection_query')),query);
+ vm.runInContext('project="other";rememberView()',c);assert.equal(new URLSearchParams(location.hash.slice(1)).get('collection_query'),null);
+});
+
+test('actual project changes outside Collection discard its query even after a round trip',()=>{
+ const query={environment:'production',start:'2026-11-01T00:00:00Z',end:'2026-11-01T00:05:00Z',as_of:'2026-11-01T00:06:00Z'},{c}=routeContext('#'+new URLSearchParams({project:'app',collection_query:JSON.stringify(query)})),picker={value:'other'};
+ Object.assign(c,{$:()=>picker,resetJourneys:()=>{},resetAuditWindow:()=>{},resetTraces:()=>{},render:()=>{}});
+ const app=fs.readFileSync('static/app.js','utf8'),body=app.match(/\$\('#project'\)\.onchange=\(\)=>\{([^}]+)\}/)[1];
+ vm.runInContext(body,c);picker.value='app';vm.runInContext(body,c);assert.equal(vm.runInContext('collectionQuery',c),null);
+});
+
+test('workspace project loading preserves the initial exact link but clears a changed project',async()=>{
+ const query={environment:'production',start:'2026-11-01T00:00:00Z',end:'2026-11-01T00:05:00Z',as_of:'2026-11-01T00:06:00Z'},{c}=routeContext('#'+new URLSearchParams({project:'app',collection_query:JSON.stringify(query)})),nodes={};
+ Object.assign(c,{$:s=>nodes[s]||(nodes[s]={}),render:()=>{}});const app=fs.readFileSync('static/app.js','utf8');vm.runInContext(app.slice(app.indexOf('async function loadProjects('),app.indexOf('async function render(')),c);
+ await vm.runInContext('loadProjects(undefined,{projects:[{id:"app",name:"App"}],retention_days:90})',c);assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify(collectionQuery)',c)),query);
+ await vm.runInContext('loadProjects(undefined,{projects:[{id:"other",name:"Other"}],retention_days:90})',c);assert.equal(vm.runInContext('collectionQuery',c),null);
 });

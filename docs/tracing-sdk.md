@@ -9,8 +9,8 @@ The Python distribution is `afterspan-sdk`; the server-only ESM Node package is 
 Pinned Git installation is verified at the released commit below in fresh consumers. Node also passed a production `--omit=dev` lockfile install with a fresh cache and SSH disabled. Python preserves the existing flat-module imports. No registry account or publication is needed. npm Git installation runs the reviewed `prepare` build and downloads its pinned build dependencies. SDK behavior releases must also advance the Node package version, even for pinned Git installs: production bundlers can cache installed modules by package name/version. Version 0.2.0 identifies explicit collector-stop and on-demand health support. Verify the compiled consumer and live wire format after updating; the Git pin and source tests alone do not prove the deployed bundle changed.
 
 ```sh
-python -m pip install 'afterspan-sdk @ git+https://github.com/bnishit/native-analytics.git@2db18488316a0b61f977f14294957ee7fefc1443#subdirectory=sdk/python'
-npm install 'git+https://github.com/bnishit/native-analytics.git#2db18488316a0b61f977f14294957ee7fefc1443'
+python -m pip install 'afterspan-sdk @ git+https://github.com/bnishit/native-analytics.git@74304420cf36eca58c87dc392fe38f6c7204c364#subdirectory=sdk/python'
+npm install 'git+https://github.com/bnishit/native-analytics.git#74304420cf36eca58c87dc392fe38f6c7204c364'
 ```
 
 ### Build and verify artifacts locally

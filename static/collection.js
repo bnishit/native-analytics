@@ -16,7 +16,7 @@ function collectionParams(){return tab==='collection'&&collectionProject===proje
 function collectionLink(query){return '/app#'+new URLSearchParams({workspace,project,view:'collection',days,collection_environment:query.environment,collection_query:JSON.stringify(query)})}
 function collectionInstanceContext(instance,start){
  const boundary=Date.parse(start),latest=instance.latest;
- const timing=Number.isFinite(boundary)?latest.observed_at_ms<boundary?'No report in the selected window. Its shutdown or retirement is not verified.':'Reported in the selected window.':'The report window could not be read.';
+ const timing=instance.lifecycle==='reported_stopped'?'This worker reported an empty queue and stopped. Process exit is not independently verified.':instance.lifecycle==='conflicting'?'Reports conflict: this worker reported a stop and later activity.':Number.isFinite(boundary)?latest.observed_at_ms<boundary?'No report in the selected window. Its shutdown or retirement is not verified.':'Reported in the selected window.':'The report window could not be read.';
  const evaluator=latest.evaluator_failures==null?'Evaluator execution was not reported.':instance.window_counter_changes.evaluator_failures==null?'Latest evaluator count is known; its full-window change is unknown.':'Evaluator counter change is reported for this window.';
  return `<p>${timing} ${evaluator}</p>`;
 }

@@ -98,6 +98,19 @@ class CollectionHealthTests(unittest.TestCase):
         facts=event['properties']['afterspan_health'];self.assertEqual(facts['evaluator_failures'],1);self.assertEqual(facts['delivery_mode'],'durable')
         c2=Collector('http://127.0.0.1:8789','fake-local-key',c.path,source='export_worker',environment='staging',workflow='document_export')
         self.assertEqual(c2.status()['queued'],1);self.assertEqual(c2.status()['evaluator_failures'],1);self.assertNotEqual(c2.instance_id,c.instance_id)
+        with self.assertRaises(ValueError):c2.pulse(state='stopped')
+        # Drain through the actual backend instead of clearing the persisted queue.
+        import io
+        class Transport:
+            def open(inner,request,timeout):
+                response=self.f.ingest(json.loads(request.data)['events']);self.assertEqual(response.status_code,200)
+                body=io.BytesIO(response.content);body.status=200;return body
+        with patch('urllib.request.build_opener',return_value=Transport()):self.assertEqual(c2.flush(),1)
+        c2.close();c2.pulse(state='stopped')
+        with closing(c2.db()) as db:final=json.loads(db.execute('SELECT payload FROM outbox').fetchone()[0])
+        self.assertEqual(final['properties']['afterspan_health']['collector_state'],'stopped')
+        self.assertEqual(final['properties']['afterspan_health']['queued'],0)
+        self.assertEqual(self.f.ingest([final]).status_code,200)
 
     def test_actual_node_pulse_roundtrips_through_shared_backend_contract(self):
         import subprocess
@@ -119,3 +132,54 @@ class CollectionHealthTests(unittest.TestCase):
         r=self.report();self.assertEqual(r['status'],'observed',r)
         state=r['sources'][0]['instances'][0];self.assertEqual(state['latest']['dropped'],3)
         self.assertEqual(state['window_counter_changes']['dropped'],0);self.assertEqual(state['window_counter_changes']['evaluator_failures'],0)
+
+    def test_explicit_empty_stop_survives_a_healthy_worker_handover(self):
+        self.configured()
+        # A new worker covers the whole window while the old worker explicitly ends.
+        replacement=str(uuid.uuid4())
+        self.f.ingest([self.pulse(self.now-v,i,instance_id=replacement) for i,v in enumerate([310,250,190,130,70])]).raise_for_status()
+        stopped=self.pulse(self.now-65,8,collector_state='stopped')
+        response=self.f.ingest([stopped]);self.assertEqual(response.status_code,200,response.text)
+        query={**self.query,'end':stamp(self.now+180),'as_of':stamp(self.now+185)}
+        with patch('time.time',return_value=self.now+184):
+            self.f.ingest([self.pulse(self.now+v,10+i,instance_id=replacement) for i,v in enumerate([0,60,120,180])]).raise_for_status()
+        with patch('time.time',return_value=self.now+185):
+            r=self.report(**query)
+        self.assertEqual(r['status'],'observed',r)
+        old=next(i for i in r['sources'][0]['instances'] if i['instance_id']==self.instance)
+        self.assertEqual(old['lifecycle'],'reported_stopped');self.assertNotIn('pulse_stale',old['issues'])
+        self.assertEqual(r['collection_completeness'],'not_established')
+        # A silent old worker still has no stop evidence and stays stale.
+        stopped['id']=str(uuid.uuid4());stopped['properties']['afterspan_health'].pop('collector_state')
+        self.f.ingest([stopped]).raise_for_status()
+        with patch('time.time',return_value=self.now+185):
+            self.assertIn('pulse_stale',self.report(**query)['sources'][0]['reasons'])
+
+    def test_stop_cannot_hide_pending_work_unknown_checks_or_later_activity(self):
+        self.configured()
+        for changes in [{'queued':1,'oldest_queued_at_ms':int((self.now-100)*1000)},{'error_code':'delivery_failed'}]:
+            self.assertEqual(self.f.ingest([self.pulse(self.now-65,8,collector_state='stopped',**changes)]).status_code,422)
+        self.f.ingest([self.pulse(self.now-65,8,collector_state='stopped',evaluator_failures=None)]).raise_for_status()
+        r=self.report();self.assertIn('evaluator_health_unknown',r['sources'][0]['reasons'])
+        # Replaying the exact terminal is deduplicated; a new report contradicts it.
+        self.f.ingest([self.pulse(self.now-62,9)]).raise_for_status()
+        r=self.report();self.assertIn('collector_lifecycle_conflict',r['sources'][0]['reasons'])
+        self.assertEqual(r['sources'][0]['instances'][0]['lifecycle'],'conflicting')
+
+    def test_retiring_the_only_worker_does_not_clear_source_coverage(self):
+        self.configured();self.f.ingest([self.pulse(self.now-65,8,collector_state='stopped')]).raise_for_status()
+        with patch('time.time',return_value=self.now+185):
+            r=self.report(end=stamp(self.now+180),as_of=stamp(self.now+180))
+        self.assertIn('pulse_coverage_gap',r['sources'][0]['reasons'])
+
+    def test_stop_conflicts_with_higher_sequence_even_before_the_window_baseline(self):
+        with patch('time.time',return_value=self.now-1000):self.save().raise_for_status()
+        replacement=str(uuid.uuid4())
+        events=[self.pulse(self.now-v,i,instance_id=replacement) for i,v in enumerate([310,250,190,130,70])]
+        events+=[self.pulse(self.now-500,1),self.pulse(self.now-310,8,collector_state='stopped')]
+        self.f.ingest(events).raise_for_status();self.assertEqual(self.report()['status'],'observed')
+        # Sequence says this activity followed the stop, even though its clock regressed.
+        self.f.ingest([self.pulse(self.now-320,9)]).raise_for_status()
+        r=self.report();self.assertIn('collector_lifecycle_conflict',r['sources'][0]['reasons'])
+        old=next(i for i in r['sources'][0]['instances'] if i['instance_id']==self.instance)
+        self.assertEqual(old['lifecycle'],'conflicting');self.assertIn('pulse_stale',old['issues'])

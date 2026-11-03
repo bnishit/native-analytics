@@ -107,11 +107,13 @@ export function createAnalytics(config: AnalyticsConfig = {}) {
     if (receipt.ok !== true || receipt.stale_identity_blocked !== true) throw new Error('analytics_erasure_unconfirmed');
   }
   function recordEvaluation(failed=false):void{if(typeof failed!=='boolean')throw new Error('evaluation failure must be a boolean');evaluatorFailures=(evaluatorFailures??0)+(failed?1:0)}
-  function pulse():Promise<void>{
+  function pulse(state:'running'|'stopped'='running'):Promise<void>{
+    if(!['running','stopped'].includes(state))throw new Error('invalid collector state');
+    if(state==='stopped'&&(!config.health||queue.length||lastError))throw new Error('drain the typed collector before reporting stopped');
     if(!config.health)return Promise.resolve();
     return track('analytics.pipeline',null,{afterspan_health:{schema_version:'collection-health-v1',source:config.health.source,environment:config.health.environment,workflow:config.health.workflow??null,
       instance_id:instanceId,sequence:++pulseSequence,observed_at_ms:Date.now(),process_started_at_ms:processStarted,interval_seconds:config.health.intervalSeconds??60,
-      delivery_mode:'memory',queued:queue.length,capacity:500,oldest_queued_at_ms:queue.length?Date.parse(queue[0].timestamp):null,last_delivery_at_ms:lastDelivery==null?null:Math.floor(lastDelivery*1000),
+      delivery_mode:'memory',collector_state:state,queued:queue.length,capacity:500,oldest_queued_at_ms:queue.length?Date.parse(queue[0].timestamp):null,last_delivery_at_ms:lastDelivery==null?null:Math.floor(lastDelivery*1000),
       dropped,rejected,delivery_failures:deliveryFailures,evaluator_failures:evaluatorFailures,error_code:lastError==='delivery_failed'?'delivery_failed':lastError==='queue_full'?'queue_full':lastError?'invalid_event':null}});
   }
   return { track, pulse, recordEvaluation, trackJourney: (name: string, journey: JourneyContext, id?: string | null, properties: Properties = {}, attributes: Properties = {}) => track(name, id, properties, attributes, journey), flush, erase, identify: (id: string, attributes: Properties) => track('user.identified', id, {}, attributes),

@@ -121,13 +121,16 @@ class Collector:
             with closing(self.db()) as c,c:c.execute('UPDATE delivery SET evaluator_failures=coalesce(evaluator_failures,0)+? WHERE id=1',(int(failed),))
         except sqlite3.Error:pass
 
-    def pulse(self):
+    def pulse(self,*,state='running'):
+        if state not in {'running','stopped'}:raise ValueError('invalid collector state')
         status=self.status()
+        if state=='stopped' and (self.health_source is None or status['queued'] or status['last_error'] or self.thread and self.thread.is_alive()):
+            raise ValueError('stop the worker and drain the typed collector before reporting stopped')
         if self.health_source is None:return self.track('analytics.pipeline',properties=status)
         now=int(time.time()*1000);self.pulse_sequence+=1
         pulse={'schema_version':'collection-health-v1','source':self.health_source,'environment':self.health_environment,'workflow':self.health_workflow,
             'instance_id':self.instance_id,'sequence':self.pulse_sequence,'observed_at_ms':now,'process_started_at_ms':self.process_started_at_ms,
-            'interval_seconds':self.pulse_interval,'delivery_mode':'durable','queued':status['queued'],'capacity':self.max_queue,
+            'interval_seconds':self.pulse_interval,'delivery_mode':'durable','collector_state':state,'queued':status['queued'],'capacity':self.max_queue,
             **{k:status[k] for k in ['dropped','rejected','delivery_failures','evaluator_failures']},
             'oldest_queued_at_ms':int(status['oldest_queued_at']*1000) if status['oldest_queued_at'] is not None else None,
             'last_delivery_at_ms':int(status['last_delivery']*1000) if status['last_delivery'] is not None else None,

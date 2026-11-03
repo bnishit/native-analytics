@@ -93,6 +93,15 @@ class ReleaseOutcomeTests(unittest.TestCase):
         self.assertEqual(r['after']['mature_denominator'],1);self.assertEqual(r['after']['coverage']['traffic_excluded'],1)
         self.assertNotIn('results',r['experiment']);self.assertNotIn('content',r['experiment'])
         self.assertEqual(self.compare().json()['fingerprint'],r['fingerprint'])
+    def test_returned_comparison_criteria_are_the_pinned_goal_not_its_latest_revision(self):
+        self.f.save(2,{**self.goal,'min_sample_size':99}).raise_for_status()
+        report=self.compare().json()
+        self.assertEqual(report['goal_definition'],self.goal)
+        self.assertEqual(report['goal_definition']['min_sample_size'],1)
+        self.assertEqual(report['outcome_goal'],self.binding)
+        self.assertEqual(report['status'],'comparable')
+        self.assertFalse(report['deployment_authorized'])
+
     def test_adopted_legacy_proposal_identity_remains_comparable_and_listed(self):
         with closing(app.connect()) as c,c:
             for id in (self.baseline_action,self.candidate_action):

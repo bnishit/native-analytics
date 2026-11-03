@@ -151,3 +151,10 @@ test('the actual initial route rewrite preserves a collection window only for it
  vm.runInContext('tab="collection";rememberView()',c);assert.deepEqual(JSON.parse(new URLSearchParams(location.hash.slice(1)).get('collection_query')),query);
  vm.runInContext('project="other";rememberView()',c);assert.equal(new URLSearchParams(location.hash.slice(1)).get('collection_query'),null);
 });
+
+test('actual project changes outside Collection discard its query even after a round trip',()=>{
+ const query={environment:'production',start:'2026-11-01T00:00:00Z',end:'2026-11-01T00:05:00Z',as_of:'2026-11-01T00:06:00Z'},{c}=routeContext('#'+new URLSearchParams({project:'app',collection_query:JSON.stringify(query)})),picker={value:'other'};
+ Object.assign(c,{$:()=>picker,resetJourneys:()=>{},resetAuditWindow:()=>{},resetTraces:()=>{},render:()=>{}});
+ const app=fs.readFileSync('static/app.js','utf8'),body=app.match(/\$\('#project'\)\.onchange=\(\)=>\{([^}]+)\}/)[1];
+ vm.runInContext(body,c);picker.value='app';vm.runInContext(body,c);assert.equal(vm.runInContext('collectionQuery',c),null);
+});

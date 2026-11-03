@@ -4,7 +4,11 @@ try{
  const params=new URLSearchParams(location.hash.slice(1));collectionProject=params.get('project')||'';
  if(params.has('collection_query')){
   collectionQuery=JSON.parse(params.get('collection_query'));
-  if(!collectionQuery||Array.isArray(collectionQuery)||typeof collectionQuery!=='object')throw Error();
+  if(!collectionQuery||Array.isArray(collectionQuery)||typeof collectionQuery!=='object'||!Object.hasOwn(environmentNames,collectionQuery.environment))throw Error();
+  for(const name of ['start','end','as_of']){
+   const value=collectionQuery[name];
+   if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)||!Number.isFinite(Date.parse(value)))throw Error();
+  }
  }
 }catch{collectionQueryInvalid=true}
 function resetCollectionWindow(){collectionQuery=null;collectionQueryInvalid=false}

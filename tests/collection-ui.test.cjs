@@ -34,3 +34,11 @@ test('latest evaluator totals do not rewrite an earlier unknown window or imply 
  const data={...empty,snapshot:{start:'2026-11-03T06:00:00Z',end:'2026-11-03T06:10:00Z',as_of:'2026-11-03T06:10:00Z'},sources:[{source:'worker',status:'attention',reasons:['evaluator_health_unknown'],expectation:null,instances:[{latest:{delivery_mode:'memory',queued:0,capacity:500,observed_at_ms:Date.parse('2026-11-03T05:00:00Z'),dropped:0,rejected:0,delivery_failures:0,evaluator_failures:0},issues:['pulse_stale'],window_counter_changes:{evaluator_failures:null}}]}]};
  const html=markup(data);assert.match(html,/No report in the selected window/);assert.match(html,/retirement is not verified/);assert.match(html,/Latest evaluator count is known/);assert.match(html,/full-window change is unknown/);assert.match(html,/Needs attention/);
 });
+
+test('missing, null, naive or invalid saved boundaries never fall back to a rolling API read',async()=>{
+ const valid={environment:'production',start:'2026-11-01T00:00:00.000001Z',end:'2026-11-01T00:05:00.000001Z',as_of:'2026-11-01T00:06:00.000001Z'};
+ for(const query of [{environment:'production'},{...valid,start:null},{...valid,end:null},{...valid,as_of:null},{...valid,start:'2026-11-01T00:00:00'},{...valid,start:'invalid'},{...valid,environment:'untrusted'}]){
+  let calls=0;const {c}=routeContext(query,{api:()=>{calls++;throw Error('must not query')}});
+  await assert.rejects(vm.runInContext('collectionView(1)',c),/saved collection window is invalid/);assert.equal(calls,0);
+ }
+});

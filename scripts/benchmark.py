@@ -40,6 +40,10 @@ class ProgressJournal:
             if self.stopped.is_set():raise RuntimeError('benchmark stopped; reconcile existing receipts')
             self.sequence+=1;sequence=self.sequence;phase=self.phase
         self.record(event='request_started',sequence=sequence,phase=phase,operation=operation)
+        with self.lock:admitted=not self.stopped.is_set()
+        if not admitted:
+            self.record(event='request_not_dispatched',sequence=sequence)
+            raise RuntimeError('benchmark stopped; reconcile existing receipts')
         at=time.perf_counter()
         try:result=callback()
         except BaseException:

@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -88,3 +89,33 @@ class BenchmarkTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):journal.call('ingestion',lambda:called.append('replayed'))
                 self.assertEqual(called,['accepted'])
             finally:journal.close()
+
+    def test_waiting_start_is_not_dispatched_after_another_call_or_disk_failure(self):
+        for disk_failure in [False,True]:
+            with self.subTest(disk_failure=disk_failure),tempfile.TemporaryDirectory() as directory:
+                journal=benchmark.ProgressJournal(Path(directory)/'progress.jsonl')
+                first_started=threading.Event();second_waiting=threading.Event();release=threading.Event();sent=[];first_id=[]
+                record=journal.record;sync=os.fsync
+                def held_record(**fields):
+                    if fields.get('sequence')==2 and fields['event']=='request_started':
+                        second_waiting.set()
+                        if not release.wait(5):raise TimeoutError('test barrier')
+                    record(**fields)
+                def fail_sync(fd):
+                    if disk_failure and first_id==[threading.get_ident()] and second_waiting.is_set():raise OSError('receipt failed')
+                    return sync(fd)
+                def first():
+                    first_id.append(threading.get_ident());first_started.set()
+                    if not second_waiting.wait(5):raise TimeoutError('test barrier')
+                    if not disk_failure:raise TimeoutError('request failed')
+                try:
+                    with patch.object(journal,'record',side_effect=held_record),patch.object(benchmark.os,'fsync',side_effect=fail_sync),ThreadPoolExecutor(max_workers=2) as pool:
+                        a=pool.submit(journal.call,'ingestion',first)
+                        self.assertTrue(first_started.wait(5))
+                        b=pool.submit(journal.call,'ingestion',lambda:sent.append('sent_after_stop'))
+                        try:
+                            with self.assertRaises(OSError if disk_failure else TimeoutError):a.result(timeout=5)
+                        finally:release.set()
+                        with self.assertRaises(RuntimeError):b.result(timeout=5)
+                    self.assertEqual(sent,[])
+                finally:release.set();journal.close()

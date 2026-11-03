@@ -127,3 +127,13 @@ test('saved goal screen shows check timing and receipt requirements, not only na
  await vm.runInContext('outcomesView(1)',c);
  assert.match(content.innerHTML,/citation_scope v1 \(code, after delivery, receipt required\)/);assert.match(content.innerHTML,/source_facts v2 \(source, before delivery, receipt not required\)/);assert.match(content.innerHTML,/Required milestones: completion\./);assert.match(content.innerHTML,/25 mature tasks/);
 });
+
+test('release comparison explains the pinned sample shortfall and source warning without promising a verdict',()=>{
+ const c=context(),cohort={counts:{satisfied:0,failed:0,withheld:2,unclassified:0},mature_denominator:2,snapshot:{start:'start',end:'end',as_of:'cutoff'},tasks:[],collection_health:{status:'attention',reasons:['source_evidence_incomplete'],sources:[{source:'worker_<unsafe>',status:'attention',reasons:['pulse_stale','evaluator_health_unknown']}]}};
+ const report={status:'unknown',reasons:['before_sample_below_goal_minimum'],goal_definition:{min_sample_size:25,deadline_seconds:30,traffic_kind:'user'},before:cohort,experiment:{baseline_pass_rate:1,candidate_pass_rate:1},satisfied_fraction_difference:null,limits:[]};
+ const html=vm.runInContext('outcomeReleaseMarkup('+JSON.stringify(report)+')',c);
+ assert.match(html,/25 mature tasks per window/);assert.match(html,/30 second/);assert.match(html,/2 of 25/);assert.match(html,/23 more mature tasks/);assert.match(html,/More tasks alone do not resolve missing evidence/);
+ assert.match(html,/Collector report is stale/);assert.match(html,/Evaluator health was not observed/);assert.doesNotMatch(html,/<unsafe>/);assert.match(html,/Change unavailable/);
+ const old=vm.runInContext('outcomeReleaseMarkup('+JSON.stringify({...report,goal_definition:undefined})+')',c);
+ assert.doesNotMatch(old,/of 25|23 more mature/);assert.match(old,/Pinned comparison criteria were not returned/);
+});

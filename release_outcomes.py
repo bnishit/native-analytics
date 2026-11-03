@@ -126,7 +126,7 @@ class ReleaseOutcomes:
                 if health['status']!='observed':reasons.append(label+'_collection_evidence_incomplete')
         reasons=sorted(set(reasons));comparable=not reasons
         result={'status':'comparable' if comparable else 'unknown','reasons':reasons,
-            'outcome_goal':req.outcome_goal.model_dump(mode='json'),'query':req.model_dump(mode='json'),
+            'outcome_goal':req.outcome_goal.model_dump(mode='json'),'goal_definition':saved['definition'],'query':req.model_dump(mode='json'),
             'release':release,
             'baseline_release':baseline_release,
             'experiment':{k:experiment[k] for k in ['baseline','candidate','dataset_sha256','changes','baseline_pass_rate','candidate_pass_rate','eligible_for_review']},

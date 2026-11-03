@@ -110,6 +110,12 @@ HTTP UNSET stays unknown: both list rows say gaps, while all timing bars close. 
 
 Two earlier production attempts remain incomplete evidence: per-span export timed out with four plus three stored spans and a missing parent; the next batched attempt timed out with zero stored traces in its frozen window. The successful fresh source adds disabled loopback connection reuse and static lifecycle diagnostics. It does not prove a single root cause for the prior timeouts, replay their requests or repair their partial records. CI now installs the official Node consumer in an isolated directory and runs the exact recipe through the real local service, including private-field omission, unknown statuses, wrong-key denial and safe malformed-config errors. The full platform acceptance remains open.
 
+## Release comparison criteria and collection warnings
+
+A comparison returns the exact pinned goal definition with its immutable binding, so API/CLI/MCP clients can inspect the sample minimum, deadline and criteria without guessing or substituting the latest revision. The workspace shows each available window's mature count against that minimum, remaining mature tasks and source-specific collection warnings. More samples alone cannot resolve unknown checks, population or collection gaps. Older responses without criteria display that absence rather than assuming 25. The comparison engine, outcome classifications and deployment-authority boundary are unchanged.
+
+Regression tests fail on the previous report: one saves a newer goal with a different minimum and verifies the older comparison still returns its pinned definition; another checks visible sample shortfall, source warnings, escaping, unknown verdict and absent-criteria behavior. Production rollout and exact live verification remain separate from these local checks.
+
 ## Competitive assessment (2026-11-02)
 
 The differentiation to prove is **which user task achieved its declared result, which evidence was missing, and whether a reviewed release improved later observed outcomes**. Trace timelines are a supporting tool, not the entire promise. Avoid positioning a local implementation as a production alternative.

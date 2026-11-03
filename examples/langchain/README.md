@@ -2,7 +2,13 @@
 
 The optional Python callback adapter records chain, model, tool and retrieval steps using LangChain's run/parent IDs. Use one handler per request, inside an existing Afterspan task. It reuses the collector and native trace contract. Inputs, outputs, run names, metadata dictionaries, documents and error text are never copied. No provider call or task-success milestone is created by the adapter.
 
-Install the SDK wheel with its `langchain` extra, or install the wheel normally alongside `langchain-core==1.7.4`. The base SDK remains dependency-free. Version 1.7.4 is tested; the extra allows compatible 1.x releases, which still need application validation.
+Install the reviewed pinned source with the optional extra:
+
+```sh
+python -m pip install 'afterspan-sdk[langchain] @ git+https://github.com/bnishit/native-analytics.git@457f00b0da00df36c7a7c57cdb3749e75ed552d8#subdirectory=sdk/python' langchain-core==1.7.4
+```
+
+Alternatively, install the SDK wheel with its `langchain` extra, or install the wheel normally alongside `langchain-core==1.7.4`. The base SDK remains dependency-free. The pinned Git install with this extra also passed in a new private environment without checkout imports; its three local synthetic pipelines queued 30 observations without flushing. Version 1.7.4 is tested; the extra allows compatible 1.x releases, which still need application validation.
 
 ```python
 from afterspan_langchain import AfterspanCallbackHandler

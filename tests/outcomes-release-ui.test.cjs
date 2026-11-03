@@ -145,3 +145,9 @@ test('release collection drilldown preserves the exact source window and project
  const html=vm.runInContext('outcomeReleaseMarkup('+JSON.stringify(data)+')',c),match=html.match(/href="([^"]+)"[^>]*>Inspect Before collection window/);assert.ok(match);
  const link=new URL(match[1],'https://example.com'),params=new URLSearchParams(link.hash.slice(1));assert.equal(params.get('project'),'app');assert.equal(params.get('workspace'),'work');assert.equal(params.get('view'),'collection');assert.deepEqual(JSON.parse(params.get('collection_query')),query);
 });
+
+test('the actual initial route rewrite preserves a collection window only for its project',()=>{
+ const query={environment:'production',start:'2026-11-01T00:00:00Z',end:'2026-11-01T00:05:00Z',as_of:'2026-11-01T00:06:00Z'},hash='#'+new URLSearchParams({project:'app',view:'collection',collection_query:JSON.stringify(query)}),{c,location}=routeContext(hash);
+ vm.runInContext('tab="collection";rememberView()',c);assert.deepEqual(JSON.parse(new URLSearchParams(location.hash.slice(1)).get('collection_query')),query);
+ vm.runInContext('project="other";rememberView()',c);assert.equal(new URLSearchParams(location.hash.slice(1)).get('collection_query'),null);
+});

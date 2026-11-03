@@ -158,3 +158,10 @@ test('actual project changes outside Collection discard its query even after a r
  const app=fs.readFileSync('static/app.js','utf8'),body=app.match(/\$\('#project'\)\.onchange=\(\)=>\{([^}]+)\}/)[1];
  vm.runInContext(body,c);picker.value='app';vm.runInContext(body,c);assert.equal(vm.runInContext('collectionQuery',c),null);
 });
+
+test('workspace project loading preserves the initial exact link but clears a changed project',async()=>{
+ const query={environment:'production',start:'2026-11-01T00:00:00Z',end:'2026-11-01T00:05:00Z',as_of:'2026-11-01T00:06:00Z'},{c}=routeContext('#'+new URLSearchParams({project:'app',collection_query:JSON.stringify(query)})),nodes={};
+ Object.assign(c,{$:s=>nodes[s]||(nodes[s]={}),render:()=>{}});const app=fs.readFileSync('static/app.js','utf8');vm.runInContext(app.slice(app.indexOf('async function loadProjects('),app.indexOf('async function render(')),c);
+ await vm.runInContext('loadProjects(undefined,{projects:[{id:"app",name:"App"}],retention_days:90})',c);assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify(collectionQuery)',c)),query);
+ await vm.runInContext('loadProjects(undefined,{projects:[{id:"other",name:"Other"}],retention_days:90})',c);assert.equal(vm.runInContext('collectionQuery',c),null);
+});

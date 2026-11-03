@@ -4,7 +4,7 @@ A developer wraps a task and its timed steps. Nested calls and concurrent async 
 
 ## Install a pinned SDK
 
-The Python distribution is `afterspan-sdk`; the server-only ESM Node package is `@afterspan/sdk`. Neither name claims publication on PyPI or npm. Python 3.12+ and Node 24+ are supported; CI tests Python 3.12 and Node 24. Both SDKs have zero runtime package dependencies. Python's build uses setuptools/wheel; Node's build uses pinned TypeScript and Node type declarations.
+The Python distribution is `afterspan-sdk`; the server-only ESM Node package is `@afterspan/sdk`. Neither name claims publication on PyPI or npm. Python 3.12+ and Node 24+ are supported; CI tests Python 3.12 and Node 24. The base SDKs have zero runtime package dependencies; Python’s optional LangChain extra adds LangChain Core. Python's build uses setuptools/wheel; Node's build uses pinned TypeScript and Node type declarations.
 
 Pinned Git installation is verified at the released commit below in fresh consumers. Node also passed a production `--omit=dev` lockfile install with a fresh cache and SSH disabled. Python preserves the existing flat-module imports. No registry account or publication is needed. npm Git installation runs the reviewed `prepare` build and downloads its pinned build dependencies.
 
@@ -29,7 +29,7 @@ npm pack --pack-destination /private/sdk-build
 npm install /private/sdk-build/afterspan-sdk-0.1.0.tgz
 ```
 
-The wheel includes all four Python modules. The tarball includes ordinary JavaScript, declarations, the standalone model observer and its required companions; it does not rely on stripping TypeScript from `node_modules`. Existing source-file imports still work for already vendored integrations. Pin the artifact hash or source revision when updating an application. When migrating an existing vendored integration, check which module is imported: local copies can shadow an installed Python package.
+The wheel includes four core Python modules and the optional LangChain adapter. The tarball includes ordinary JavaScript, declarations, the standalone model observer and its required companions; it does not rely on stripping TypeScript from `node_modules`. Existing source-file imports still work for already vendored integrations. Pin the artifact hash or source revision when updating an application. When migrating an existing vendored integration, check which module is imported: local copies can shadow an installed Python package.
 
 Run `python scripts/check_sdk_packages.py` after installing the repository's build and service test dependencies. This mandatory CI check builds and allowlists both archives, installs fresh consumers outside the checkout without `PYTHONPATH`, resolves TypeScript types, and ingests actual emitted payloads through the local service fixture. Missing-companion negative controls must fail imports; reinstalling the intact artifacts must restore the consumers. Python's bundled license must match the repository license byte for byte. The check does not call a provider or deployment.
 
@@ -140,6 +140,12 @@ The observer can only preserve what the normalized object still distinguishes. S
 Bounded live adoption: Shelf's authenticated, synthetic-labelled Standard Q&A uses one existing model call, consumes the full stream to reject explicit errors, aborts and known length truncation, and reads preserved provider usage once per step. The production test reports 13,797 input / 192 output tokens on one model span, with exact cost unknown. Ten nested spans, stored-answer completion and resolved citation membership were read back. These facts do not establish semantic correctness, reading or normal-user benefit; see [release evidence](outcome-platform-release.md#model-stream-and-second-product-evidence-2026-11-03).
 
 The mapping follows the installed AI SDK 6 normalized usage contract (including its detail fields and deprecated aliases). Local integration evidence and deployment are separate; neither a synthetic framework stream nor a unit test proves a real customer flow. References: [AI SDK streaming usage and callbacks](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text), and the installed framework's `LanguageModelUsage` declarations and normalization. The current online documentation describes version 7; verify a runtime upgrade independently.
+
+## Optional LangChain callbacks (Python)
+
+The optional `afterspan_langchain.AfterspanCallbackHandler` maps real LangChain callbacks to the existing native chain/model/tool/retrieval steps. Use one handler per task and close it before its parent span exits. Separate callback contexts preserve nesting across threads and overlapping requests. Content, run names and error text are omitted; unfinished callbacks become unknown. The handler has a 1,024-run bound and explicit diagnostics. It never creates quality checks, completion, delivery or usefulness milestones.
+
+Exact model identities require an allowlist. Normalized final token usage additionally requires an explicit opt-in after checking that the installed provider adapter preserves missing versus reported values. Reasoning-only callbacks do not start first-output timing. Missing counts and exact cost stay unknown. See the [complete recipe, install and limits](../examples/langchain/README.md). LangChain Core 1.7.4 has local real-framework callback and fresh-wheel/service-ingestion checks, plus one bounded production-service readback of two successful synthetic pipelines and one deliberate failure. This used fake models and a local tool, not a model provider. Broader versions, native provider execution and product adoption are separate evidence.
 
 ## Responses and Messages observation
 

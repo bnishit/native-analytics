@@ -9,14 +9,19 @@ from test_analytics import AnalyticsTests
 fixture = AnalyticsTests()
 fixture.setUp()
 try:
-    for name in ['python-events.json', 'node-events.json']:
+    for name in ['python-events.json', 'node-events.json', 'langchain-events.json']:
         events = json.loads((artifacts / name).read_text())
         assert all(event['distinct_id']=='account_'+'a'*64 and not event.get('attributes') for event in events)
         response = fixture.ingest(events)
         assert response.status_code == 200, response.text
         assert response.json()['accepted'] == len(events), response.text
     traces = fixture.client.post('/api/traces/review?project=alpha', headers=fixture.admin, json={'environment': 'test'}).json()['traces']
-    assert len(traces) == 4, traces
+    assert len(traces) == 7, traces
+    framework=[t for t in traces if t['workflow']=='langchain_interop']
+    assert len(framework)==3
+    assert sorted(len(t['spans']) for t in framework)==[3,6,6]
+    assert sum(any(s['state']=='failed' for s in t['spans']) for t in framework)==1
+    assert all(t['business_outcome']=='not_established' and not t['checks'] for t in framework)
     streamed={trace['workflow']:trace for trace in traces if trace['workflow'].startswith('package_stream_')}
     assert set(streamed)=={'package_stream_complete','package_stream_cancel'}
     for name,trace in streamed.items():
@@ -46,6 +51,6 @@ try:
     erased=fixture.client.post('/v1/erase',headers=fixture.a,json={'distinct_id':'account_'+'a'*64})
     assert erased.status_code==200 and erased.json()['erased_events']>0
     assert fixture.client.post('/api/traces/review?project=alpha',headers=fixture.admin,json={'environment':'test'}).json()['traces']==[]
-    print(json.dumps({'ingested_languages': 2, 'traces': len(traces)+len(streamed), 'stream_lifecycles': len(streamed), 'subject_erasure': 'passed', 'normalized_ai_sdk_usage': 'passed'}))
+    print(json.dumps({'ingested_languages': 2, 'traces': len(traces)+len(streamed)+len(framework), 'framework_traces':len(framework), 'stream_lifecycles': len(streamed), 'subject_erasure': 'passed', 'normalized_ai_sdk_usage': 'passed'}))
 finally:
     fixture.tearDown()

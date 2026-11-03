@@ -39,10 +39,13 @@ try:
         assert usage['fixture/messages']['input_count']==20 and usage['fixture/messages']['output_count']==5, usage
         assert usage['fixture/messages']['cache_read_count']==10, usage
         assert all(usage[key]['first_output_ms'] is not None and usage[key]['cost_usd_decimal'] is None for key in ['fixture/responses','fixture/messages']), usage
+    normalized=[span['model_usage'] for trace in traces for span in trace['spans'] if (span.get('model_usage') or {}).get('model')=='fixture/ai-sdk']
+    assert len(normalized)==1
+    assert all(normalized[0][key]==value for key,value in {'input_count':20,'output_count':7,'cache_read_count':10,'reasoning_count':2,'usage_source':'provider_reported','cost_usd_decimal':None,'first_output_ms':None}.items())
     assert all('account_' not in json.dumps(trace) for trace in traces+list(streamed.values()))
     erased=fixture.client.post('/v1/erase',headers=fixture.a,json={'distinct_id':'account_'+'a'*64})
     assert erased.status_code==200 and erased.json()['erased_events']>0
     assert fixture.client.post('/api/traces/review?project=alpha',headers=fixture.admin,json={'environment':'test'}).json()['traces']==[]
-    print(json.dumps({'ingested_languages': 2, 'traces': len(traces)+len(streamed), 'stream_lifecycles': len(streamed), 'subject_erasure': 'passed'}))
+    print(json.dumps({'ingested_languages': 2, 'traces': len(traces)+len(streamed), 'stream_lifecycles': len(streamed), 'subject_erasure': 'passed', 'normalized_ai_sdk_usage': 'passed'}))
 finally:
     fixture.tearDown()

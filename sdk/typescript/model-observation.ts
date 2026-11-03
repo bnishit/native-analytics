@@ -79,6 +79,21 @@ export class ModelObservation {
   }
   this.record(update);return true;
  }
+ observeAISDKUsage(usage:unknown):boolean {
+  if(this.closed)throw Error('Model observation is closed');
+  try {
+   if(usage!==undefined&&usage!==null)usageObject(usage);
+   for(const key of ['inputTokenDetails','outputTokenDetails']){const details=field(usage,key);if(details!==undefined&&details!==null)usageObject(details)}
+   const detail=(container:string,key:string,alias:string)=>{
+    const nested=field(field(usage,container),key),legacy=field(usage,alias);
+    if(nested!=null&&legacy!=null&&nested!==legacy)throw Error('Conflicting normalized usage aliases');
+    return nested??legacy??undefined;
+   };
+   const update={input_count:field(usage,'inputTokens')??undefined,output_count:field(usage,'outputTokens')??undefined,
+    cache_read_count:detail('inputTokenDetails','cacheReadTokens','cachedInputTokens'),reasoning_count:detail('outputTokenDetails','reasoningTokens','reasoningTokens')};
+   this.record({...update,usage_source:Object.values(update).some(v=>v!==undefined)?'provider_reported':undefined} as Partial<Metadata>);return true;
+  }catch{return this.reject()}
+ }
  observeResponses(event:unknown):boolean {
   if(this.closed)throw Error('Model observation is closed');
   try {

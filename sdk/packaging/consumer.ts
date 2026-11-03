@@ -10,7 +10,8 @@ void tracer.task({ workflow: 'typed_probe', environment: 'test', context }, () =
 
 observation.observeResponses({type:'response.created'});
 observation.observeAnthropic({type:'ping'});
-void tracer.span('model',span=>{span.modelUsage({provider:'example',model:'fixture/model'});span.observeResponses({});span.observeAnthropic({});});
+observation.observeAISDKUsage({inputTokens:0});
+void tracer.span('model',span=>{span.modelUsage({provider:'example',model:'fixture/model'});span.observeResponses({});span.observeAnthropic({});span.observeAISDKUsage({inputTokens:0,outputTokens:0});});
 
 const streaming=tracer.response({workflow:'typed_stream',environment:'test'},()=>{
   const events=tracer.stream('model',async function*(span){span.modelUsage({provider:'example',model:'fixture/model'});yield 'synthetic'});

@@ -167,3 +167,19 @@ test('opaque subject binds native steps and evidence without entering propagatio
  });await tracer.flush();assert.equal(events.length,5);assert.ok(events.every(e=>e.distinct_id===subject&&Object.keys(e.attributes||{}).length===0&&Object.keys(e.properties).length===1));assert.ok(events.some(e=>e.name==='evidence.observed'));
  for(const value of ['person@example.com','1234567890',subject+'\n','account_'+'a'.repeat(63),'A_'+'a'.repeat(64)])assert.throws(()=>new WorkflowTracer(client,{subjectId:value}));
 });
+test('normalized AI SDK step usage stays on an open model span with visible rejection diagnostics',async()=>{
+ const {tracer,events}=fixture();let saved:any;
+ await tracer.task({workflow:'ai_sdk_probe',environment:'test',trafficKind:'synthetic'},async root=>{
+  assert.throws(()=>root.observeAISDKUsage({inputTokens:1}));
+  await tracer.span('model',span=>{
+   saved=span;assert.throws(()=>span.observeAISDKUsage({inputTokens:1}));
+   span.modelUsage({provider:'example',model:'fixture/model'});
+   assert.equal(span.observeAISDKUsage({inputTokens:true}),false);
+   assert.equal(span.observeAISDKUsage({inputTokens:20,outputTokens:7,inputTokenDetails:{cacheReadTokens:10},outputTokenDetails:{reasoningTokens:2}}),true);
+  });
+ });await tracer.flush();
+ const model=events.find(e=>e.properties.afterspan_trace?.model_usage).properties.afterspan_trace;
+ assert.equal(model.model_usage.input_count,20);assert.equal(model.model_usage.output_count,7);assert.equal(model.model_usage.cache_read_count,10);assert.equal(model.model_usage.reasoning_count,2);
+ assert.equal(model.model_usage.cost_usd_decimal,undefined);assert.equal(model.model_usage.first_output_ms,undefined);assert.equal(model.milestone,undefined);assert.equal(tracer.modelMetadataErrors,1);
+ assert.throws(()=>saved.observeAISDKUsage({inputTokens:1}));
+});

@@ -48,7 +48,7 @@ const server=http.createServer((req,res)=>{
 });
 function get(port) {
  return new Promise((resolve,reject)=>{
-  const req=http.get({hostname:'127.0.0.1',port,path:'/synthetic-private-path?canary=omit-me'},res=>{
+  const req=http.get({hostname:'127.0.0.1',port,agent:false,path:'/synthetic-private-path?canary=omit-me'},res=>{
    let bytes=0;res.on('data',chunk=>{bytes+=chunk.length});res.on('end',()=>res.statusCode===200&&bytes===2?resolve():reject(Error('unexpected response')));
   });req.setTimeout(5000,()=>req.destroy(Error('timeout')));req.on('error',reject);
  });
@@ -60,8 +60,11 @@ function get(port) {
    try {const id=span.spanContext().traceId;await get(server.address().port);span.setStatus({code:SpanStatusCode.OK});return id;}
    finally {span.end()}
   })));
+  console.error('http_requests_complete');
   await new Promise(resolve=>server.close(resolve));
+  console.error('local_server_closed');
   await processor.forceFlush();
+  console.error('telemetry_flushed');
   assert.equal(roots.length,2);assert.notEqual(roots[0],roots[1]);assert.equal(captured.length,8);assert.equal(results.length,1);assert(results.every(code=>code===0));
   for(const id of roots){const group=captured.filter(s=>s.trace===id);assert.equal(group.length,4);assert.equal(group.filter(s=>!s.parent).length,1);assert.equal(group.filter(s=>s.kind===1).length,1);assert.equal(group.filter(s=>s.kind===2).length,1);assert(headersSeen.some(h=>h?.split('-')[1]===id));}
   console.log(JSON.stringify({node:process.version,workflow:'node_http_interop',traces:roots.map(id=>({otel_trace_id:id,namespace_digest:createHash('sha256').update('afterspan-otel-v1\0'+id).digest('hex')})),spans:captured,export_results:results,propagated_requests:headersSeen.length,storage_verified:false}));

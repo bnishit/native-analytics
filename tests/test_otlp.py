@@ -167,7 +167,7 @@ class OTLPTests(unittest.TestCase):
             for canary in ['synthetic-private-path','omit-me','synthetic inner work','synthetic concurrent request','127.0.0.1','traceparent']:
                 self.assertNotIn(canary,stored)
             denied=subprocess.run(['node',str(script)],input=json.dumps({**config,'key':'invalid-producer-key'}),text=True,capture_output=True,env=env,timeout=40)
-            self.assertNotEqual(denied.returncode,0);self.assertEqual(denied.stderr.strip(),'node_otlp_validation_failed')
+            self.assertNotEqual(denied.returncode,0);self.assertTrue(denied.stderr.strip().endswith('node_otlp_validation_failed'));self.assertNotIn('invalid-producer-key',denied.stderr)
             malformed=subprocess.run(['node',str(script)],input='{"key":"private-canary",bad',text=True,capture_output=True,env=env,timeout=5)
             self.assertNotEqual(malformed.returncode,0);self.assertEqual(malformed.stderr.strip(),'invalid_configuration')
 

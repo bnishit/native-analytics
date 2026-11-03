@@ -84,6 +84,8 @@ validated events through your own restricted telemetry relay instead.
 
 ## Event design
 
+Native traces and evidence accept only their contract property and an optional opaque account subject, never extra attributes. Bind account-linked traces through the SDK constructor, consistently across all services in a trace. Use the same project-scoped identity for account erasure; never strip identity to bypass a rejection. See docs/tracing-sdk.md for HMAC derivation, immutable binding, replay suppression and backup limits.
+
 Track intent, completion, failure, latency and cost/usage counts—not prompts, messages,
 customer numbers, process names, file paths, articles or response bodies. Use opaque or
 one-way scoped user IDs. Use consistent event versions, environment, source and outcome.

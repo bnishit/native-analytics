@@ -10,6 +10,44 @@ from fastapi import Depends,HTTPException
 from pydantic import BaseModel,ConfigDict,Field,UUID4,StrictBool,model_validator,field_validator,model_serializer
 from product_analytics import Window
 
+TRACE_SUBJECT_PATTERN=r'[a-z][a-z0-9_]{0,31}_[a-f0-9]{64}'
+
+def init_trace_subjects(c):
+    c.execute('SAVEPOINT workflow_subject_migration')
+    try:
+        missing=c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_trace_subjects'").fetchone() is None
+        c.execute("""CREATE TABLE IF NOT EXISTS workflow_trace_subjects(
+          project TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,trace_id TEXT NOT NULL,
+          subject_id TEXT,last_seen REAL NOT NULL,erased REAL,PRIMARY KEY(project,trace_id))""")
+        c.execute('CREATE INDEX IF NOT EXISTS workflow_subject_lookup ON workflow_trace_subjects(project,subject_id) WHERE subject_id IS NOT NULL')
+        if missing:
+            for key in ['afterspan_trace','afterspan_evidence']:
+                c.execute(f"""INSERT INTO workflow_trace_subjects(project,trace_id,subject_id,last_seen)
+                  SELECT project,json_extract(properties,'$.{key}.trace_id'),distinct_id,MAX(received)
+                  FROM events WHERE json_type(properties,'$.{key}.trace_id')='text'
+                  GROUP BY project,json_extract(properties,'$.{key}.trace_id')
+                  ON CONFLICT(project,trace_id) DO UPDATE SET last_seen=MAX(last_seen,excluded.last_seen)""")
+    except BaseException:
+        c.execute('ROLLBACK TO workflow_subject_migration');c.execute('RELEASE workflow_subject_migration')
+        raise
+    c.execute('RELEASE workflow_subject_migration')
+
+def bind_trace_subject(c,project,facts,subject_id,identity_erased,now):
+    trace_id=facts['trace_id']
+    row=c.execute('SELECT subject_id,erased FROM workflow_trace_subjects WHERE project=? AND trace_id=?',(project,trace_id)).fetchone()
+    if row and row['erased'] is not None:return False
+    if row and row['subject_id']!=subject_id:raise HTTPException(409,'trace subject cannot change; start a new trace')
+    if identity_erased:
+        c.execute("""INSERT INTO workflow_trace_subjects VALUES(?,?,NULL,?,?)
+          ON CONFLICT(project,trace_id) DO UPDATE SET subject_id=NULL,erased=excluded.erased""",(project,trace_id,now,now))
+        return False
+    c.execute("""INSERT INTO workflow_trace_subjects VALUES(?,?,?,?,NULL)
+      ON CONFLICT(project,trace_id) DO UPDATE SET last_seen=MAX(last_seen,excluded.last_seen)""",(project,trace_id,subject_id,now))
+    return True
+
+def erase_trace_subject(c,project,subject_id,now):
+    c.execute('UPDATE workflow_trace_subjects SET subject_id=NULL,erased=? WHERE project=? AND subject_id=?',(now,project,subject_id))
+
 STEPS=('receive','queue','processing','model','tool','retrieval','storage','http','response','availability','booking','provider_send','provider_delivery')
 Environment=Literal['production','staging','development','test','local']
 TrafficKind=Literal['user','synthetic','internal','unknown']

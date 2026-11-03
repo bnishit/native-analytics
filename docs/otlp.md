@@ -20,8 +20,9 @@ Set these attributes on the resource or span; a span value takes precedence:
 | `afterspan.attempt_id` / `afterspan.attempt_number` | Explicit business attempt UUIDv4 and number; otherwise one initial attempt, deterministically bound to the trace |
 | `afterspan.request_started_at_ms` | Optional original task clock; absent stays unknown for outcome population accounting |
 | `afterspan.release_sha` | Optional full lowercase Git commit |
+| `afterspan.subject_id` | Optional opaque project-scoped account digest; see [account binding and erasure](tracing-sdk.md#account-linked-traces-and-erasure). Raw IDs are rejected, not silently made anonymous. |
 
-W3C full trace and span IDs map through the exact `afterspan-otel-v1` SHA-256 namespace described in [the SDK guide](tracing-sdk.md). Explicit parent IDs preserve nested cross-service relationships. For native-SDK/OTLP joins, attach the same attempt ID, number, workflow, environment, release and original clock. An HTTP baggage carrier does not automatically become OTLP attributes; the application must bind that context. Missing parents stay visible.
+W3C full trace and span IDs map through the exact `afterspan-otel-v1` SHA-256 namespace described in [the SDK guide](tracing-sdk.md). Explicit parent IDs preserve nested cross-service relationships. For native-SDK/OTLP joins, attach the same attempt ID, number, workflow, environment, release, original clock and optional subject. An HTTP baggage carrier does not automatically become OTLP attributes; the application must bind that context. Missing parents stay visible. Subject conflicts return 409 for the entire export; identical anonymous export IDs remain compatible with earlier releases.
 
 OTLP complete spans produce start/end observations at their declared clocks, received now. OK maps to reported step success, ERROR to reported failure, and UNSET to unknown status. Neither OK nor a closed timing bar proves an answer correct. Out-of-retention, future, reversed or longer-than-24-hour spans are rejected. No original task clock or release is inferred from a service name or span start.
 

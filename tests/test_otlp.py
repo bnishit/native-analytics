@@ -129,3 +129,27 @@ class OTLPTests(unittest.TestCase):
         finally:
             if provider:provider.shutdown()
             server.should_exit=True;thread.join(5);sock.close()
+    def test_opaque_subject_is_retained_for_erasure_and_erased_trace_cannot_return_anonymously(self):
+        subject='account_'+'a'*64;message,span=self.payload()
+        attr=message.resource_spans[0].resource.attributes.add();attr.key='afterspan.subject_id';attr.value.string_value=subject
+        response=self.send(message);self.assertEqual(response.status_code,200,response.text)
+        with test_analytics.analytics.connect() as c:self.assertEqual({r[0] for r in c.execute('SELECT distinct_id FROM events')},{subject})
+        self.assertNotIn(subject,json.dumps(self.detail()))
+        self.assertEqual(self.send(message).status_code,200)
+        erased=self.client.post('/v1/erase',headers=self.fixture.a,json={'distinct_id':subject});self.assertEqual(erased.json()['erased_events'],2)
+        del message.resource_spans[0].resource.attributes[-1]
+        self.assertEqual(self.send(message).status_code,200);self.assertEqual(self.traces(),[])
+    def test_invalid_explicit_subject_is_rejected_instead_of_falling_back_to_anonymous(self):
+        for kind,value in [('string_value','person@example.com'),('bool_value',True),('array_value',None)]:
+            message,span=self.payload();attr=span.attributes.add();attr.key='afterspan.subject_id'
+            if value is not None:setattr(attr.value,kind,value)
+            else:attr.value.array_value.values.add().string_value='invalid'
+            response=self.send(message);self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(ExportTraceServiceResponse.FromString(response.content).partial_success.rejected_spans,1)
+        self.assertEqual(self.traces(),[])
+    def test_exported_subject_change_cannot_hide_behind_duplicate_event_ids(self):
+        message,span=self.payload();attr=span.attributes.add();attr.key='afterspan.subject_id';attr.value.string_value='account_'+'a'*64
+        self.assertEqual(self.send(message).status_code,200)
+        attr.value.string_value='account_'+'b'*64
+        response=self.send(message);self.assertEqual(response.status_code,409,response.text)
+        with test_analytics.analytics.connect() as c:self.assertEqual(c.execute('SELECT COUNT(*) FROM events').fetchone()[0],2)

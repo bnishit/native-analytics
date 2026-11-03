@@ -125,12 +125,14 @@ class Span:
         return result
 
 class WorkflowTracer:
-    def __init__(self,collector):self.collector=collector;self.emit_failures=0;self.sampled_out_events=0;self.model_metadata_errors=0
+    def __init__(self,collector,*,subject_id=None):
+        if subject_id is not None and (not isinstance(subject_id,str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,31}_[a-f0-9]{64}',subject_id)):raise ValueError('subject must be an opaque project-scoped digest')
+        self.collector=collector;self._subject_id=subject_id;self.emit_failures=0;self.sampled_out_events=0;self.model_metadata_errors=0
     def emit(self,name,properties):
         context=_current.get()
         if context is not None and not context.sampled:self.sampled_out_events+=1;return
         try:
-            if self.collector.track(name,properties=properties) is None:self.emit_failures+=1
+            if self.collector.track(name,distinct_id=self._subject_id,properties=properties) is None:self.emit_failures+=1
         except Exception:self.emit_failures+=1
     @contextmanager
     def task(self,workflow=None,environment='production',release_sha=None,*,context=None,traffic_kind='unknown'):

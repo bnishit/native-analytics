@@ -6,7 +6,7 @@ A developer wraps a task and its timed steps. Nested calls and concurrent async 
 
 The Python distribution is `afterspan-sdk`; the server-only ESM Node package is `@afterspan/sdk`. Neither name claims publication on PyPI or npm. Python 3.12+ and Node 24+ are supported; CI tests Python 3.12 and Node 24. The base SDKs have zero runtime package dependencies; Python’s optional LangChain extra adds LangChain Core. Python's build uses setuptools/wheel; Node's build uses pinned TypeScript and Node type declarations.
 
-Pinned Git installation is verified at the released commit below in fresh consumers. Node also passed a production `--omit=dev` lockfile install with a fresh cache and SSH disabled. Python preserves the existing flat-module imports. No registry account or publication is needed. npm Git installation runs the reviewed `prepare` build and downloads its pinned build dependencies.
+Pinned Git installation is verified at the released commit below in fresh consumers. Node also passed a production `--omit=dev` lockfile install with a fresh cache and SSH disabled. Python preserves the existing flat-module imports. No registry account or publication is needed. npm Git installation runs the reviewed `prepare` build and downloads its pinned build dependencies. SDK behavior releases must also advance the Node package version, even for pinned Git installs: production bundlers can cache installed modules by package name/version. Version 0.2.0 identifies explicit collector-stop and on-demand health support. Verify the compiled consumer and live wire format after updating; the Git pin and source tests alone do not prove the deployed bundle changed.
 
 ```sh
 python -m pip install 'afterspan-sdk @ git+https://github.com/bnishit/native-analytics.git@2db18488316a0b61f977f14294957ee7fefc1443#subdirectory=sdk/python'
@@ -26,7 +26,7 @@ python -m pip install /private/sdk-build/afterspan_sdk-0.1.0-py3-none-any.whl
 npm ci
 npm pack --pack-destination /private/sdk-build
 # In your Node application:
-npm install /private/sdk-build/afterspan-sdk-0.1.0.tgz
+npm install /private/sdk-build/afterspan-sdk-0.2.0.tgz
 ```
 
 The wheel includes four core Python modules and the optional LangChain adapter. The tarball includes ordinary JavaScript, declarations, the standalone model observer and its required companions; it does not rely on stripping TypeScript from `node_modules`. Existing source-file imports still work for already vendored integrations. Pin the artifact hash or source revision when updating an application. When migrating an existing vendored integration, check which module is imported: local copies can shadow an installed Python package.

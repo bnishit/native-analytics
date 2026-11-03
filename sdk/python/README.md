@@ -1,6 +1,6 @@
 # Afterspan Python SDK
 
-Metadata-only tracing, model observations and a durable SQLite collector. Python 3.12+; no runtime dependencies. This distribution includes all four companion modules.
+Metadata-only tracing, model observations and a durable SQLite collector. Python 3.12+; the base install has no runtime dependencies. Four core companion modules and one optional LangChain adapter are included. Install the `langchain` extra to use the adapter; importing the core never loads LangChain.
 
 ```python
 from native_analytics import Collector
@@ -17,3 +17,5 @@ collector.flush()
 ```
 
 Use your own authorized origin and project write key. The SQLite outbox needs a private writable volume. A local persistence failure remains a collection gap; a returned function is not proof of answer correctness or user value. No provider connection or content capture is automatic. See the repository's `docs/tracing-sdk.md` for checks, propagation, delivery limits and installation evidence.
+
+The optional `afterspan_langchain.AfterspanCallbackHandler` records nested framework execution without copying content. Model identity is allowlisted; reported usage needs a separate explicit opt-in. See `examples/langchain/README.md` for the per-request context manager, bounded diagnostics and synthetic recipe.

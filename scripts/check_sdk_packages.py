@@ -1,5 +1,6 @@
 """Build artifacts, install outside the checkout, and ingest their real payloads locally."""
 import argparse
+from email.parser import BytesParser
 import hashlib
 import json
 import os
@@ -13,7 +14,7 @@ import venv
 import zipfile
 
 REPO = Path(__file__).resolve().parents[1]
-MODULES = ['native_analytics', 'afterspan_tracing', 'afterspan_model', 'afterspan_experiments']
+MODULES = ['native_analytics', 'afterspan_tracing', 'afterspan_model', 'afterspan_experiments', 'afterspan_langchain']
 NODE_MODULES = ['index', 'native-analytics', 'tracing-node', 'model-observation']
 
 
@@ -51,7 +52,8 @@ def main():
             for name in MODULES:
                 assert archive.read(name + '.py') == (REPO / f'sdk/python/{name}.py').read_bytes()
             assert archive.read('afterspan_sdk-0.1.0.dist-info/licenses/LICENSE') == (REPO / 'LICENSE').read_bytes()
-            assert b'Requires-Dist:' not in archive.read('afterspan_sdk-0.1.0.dist-info/METADATA')
+            package_metadata=BytesParser().parsebytes(archive.read('afterspan_sdk-0.1.0.dist-info/METADATA'))
+            assert package_metadata.get_all('Requires-Dist')==['langchain-core<2,>=1.7.4; extra == "langchain"']
         packed = run([node, npm, 'pack', '--json', '--pack-destination', root], REPO, env=clean)
         tarball = root / json.loads(packed.stdout)[0]['filename']
         with tarfile.open(tarball) as archive:
@@ -70,6 +72,17 @@ def main():
         python = python_home / 'bin/python'
         run([python, '-m', 'pip', 'install', '--no-index', '--no-deps', wheel], root, env=clean)
         run([python, REPO / 'sdk/packaging/consumer.py', root], root, env=clean)
+        absent=run([python,'-c','import afterspan_langchain'],root,env=clean,succeeds=False)
+        assert 'langchain_core' in absent.stderr
+        run([python,'-m','pip','install','langchain-core==1.7.4'],root,env=clean)
+        run([python,'-c',
+            'import asyncio,json,runpy;from native_analytics import Collector;from afterspan_tracing import WorkflowTracer;'
+            'c=Collector("https://analytics.invalid","synthetic",'+repr(str(root/'langchain.db'))+');'
+            'result=asyncio.run(runpy.run_path('+repr(str(REPO/'examples/langchain/emit.py'))+')["exercise"](WorkflowTracer(c,subject_id="account_"+"a"*64)));'
+            'assert len(result)==3 and sum(x["framework_failed"] for x in result)==1;'
+            'events=[json.loads(r[0]) for r in c.db().execute("SELECT payload FROM outbox ORDER BY created")];'
+            'assert "private" not in json.dumps(events);'
+            'open('+repr(str(root/'langchain-events.json'))+',"w").write(json.dumps(events))'],root,env=clean)
         # Imports must work without the checkout on sys.path or PYTHONPATH.
         assert 'PYTHONPATH' not in clean
         node_home = root / 'node-consumer'

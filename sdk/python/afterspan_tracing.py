@@ -75,7 +75,7 @@ def extract(headers,*,trusted=False):
 
 class Span:
     def __init__(self,tracer,context,parent,step):
-        self.tracer=tracer;self.context=context;self.parent=parent;self.step=step;self.checks=[];self.closed=False
+        self.tracer=tracer;self.context=context;self.parent=parent;self.step=step;self.checks=[];self.closed=False;self.uncertain=False
         self.started=time.monotonic()*1000;self._model=None
     def model_usage(self,**fields):
         if self.closed or self.step!='model':raise ValueError('model metadata requires an open model span')
@@ -98,6 +98,9 @@ class Span:
         result=self._model.close();self.tracer.model_metadata_errors+=self._model.rejected_updates
         if duration>86400000:result.pop('first_output_ms',None)
         return result
+    def mark_unknown(self):
+        if self.closed:raise ValueError('span already closed')
+        self.uncertain=True
     def facts(self):
         c=self.context
         return {'schema_version':'workflow-trace-v1','trace_id':mapped_id(c.trace_id),'attempt_id':c.attempt_id,
@@ -142,9 +145,10 @@ class WorkflowTracer:
             with self.span('processing') as span:yield span
         finally:_current.reset(token)
     @contextmanager
-    def span(self,step,*,milestone=None,disposition=None):
-        context=_current.get()
+    def span(self,step,*,milestone=None,disposition=None,context=None):
+        context=context or _current.get()
         if context is None:raise ValueError('start or continue a task before a span')
+        context.validate()
         if step not in _STEPS:raise ValueError('unsupported span step')
         if milestone not in {None,'completion','delivery','usefulness'} or disposition not in {None,'delivered','withheld','clarification','partial'} or disposition is not None and step!='response':raise ValueError('invalid terminal declaration')
         parent=mapped_id(context.trace_id,context.span_id) if context.span_id else None
@@ -156,7 +160,8 @@ class WorkflowTracer:
             state='failed';code='internal';raise
         finally:
             duration=time.monotonic()*1000-span.started
-            end={**span.facts(),'state':state if duration<=86400000 else 'unknown','outcome_code':code if duration<=86400000 else 'uncertain','duration_ms':duration if duration<=86400000 else None}
+            known=duration<=86400000 and not span.uncertain
+            end={**span.facts(),'state':state if known else 'unknown','outcome_code':code if known else 'uncertain','duration_ms':duration if duration<=86400000 else None}
             if milestone:end['milestone']=milestone
             if disposition:end['disposition']=disposition
             if span.checks:end['checks']=span.checks

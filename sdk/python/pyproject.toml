@@ -12,8 +12,11 @@ license = "MIT"
 license-files = ["LICENSE"]
 dependencies = []
 
+[project.optional-dependencies]
+langchain = ["langchain-core>=1.7.4,<2"]
+
 [project.urls]
 Repository = "https://github.com/bnishit/native-analytics"
 
 [tool.setuptools]
-py-modules = ["native_analytics", "afterspan_tracing", "afterspan_model", "afterspan_experiments"]
+py-modules = ["native_analytics", "afterspan_tracing", "afterspan_model", "afterspan_experiments", "afterspan_langchain"]

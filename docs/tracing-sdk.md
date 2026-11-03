@@ -141,6 +141,12 @@ Bounded live adoption: Shelf's authenticated, synthetic-labelled Standard Q&A us
 
 The mapping follows the installed AI SDK 6 normalized usage contract (including its detail fields and deprecated aliases). Local integration evidence and deployment are separate; neither a synthetic framework stream nor a unit test proves a real customer flow. References: [AI SDK streaming usage and callbacks](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text), and the installed framework's `LanguageModelUsage` declarations and normalization. The current online documentation describes version 7; verify a runtime upgrade independently.
 
+## Optional LangChain callbacks (Python)
+
+The optional `afterspan_langchain.AfterspanCallbackHandler` maps real LangChain callbacks to the existing native chain/model/tool/retrieval steps. Use one handler per task and close it before its parent span exits. Separate callback contexts preserve nesting across threads and overlapping requests. Content, run names and error text are omitted; unfinished callbacks become unknown. The handler has a 1,024-run bound and explicit diagnostics. It never creates quality checks, completion, delivery or usefulness milestones.
+
+Exact model identities require an allowlist. Normalized final token usage additionally requires an explicit opt-in after checking that the installed provider adapter preserves missing versus reported values. Reasoning-only callbacks do not start first-output timing. Missing counts and exact cost stay unknown. See the [complete recipe, install and limits](../examples/langchain/README.md). LangChain Core 1.7.4 has local real-framework callback and fresh-wheel/service-ingestion checks; broader versions, native provider execution and product adoption are separate evidence.
+
 ## Responses and Messages observation
 
 The pinned SDK also exposes `observe_responses` / `observeResponses` for parsed OpenAI Responses objects and events, and `observe_anthropic` / `observeAnthropic` for parsed Anthropic Messages objects and events. These methods are available on an open model span and the standalone observer. The Git installation above includes both methods; earlier SDK revisions require an update. These are explicit observers, not automatic provider/framework wrappers. They add no provider dependency or transport.

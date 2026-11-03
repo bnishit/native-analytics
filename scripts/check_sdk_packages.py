@@ -74,15 +74,8 @@ def main():
         run([python, REPO / 'sdk/packaging/consumer.py', root], root, env=clean)
         absent=run([python,'-c','import afterspan_langchain'],root,env=clean,succeeds=False)
         assert 'langchain_core' in absent.stderr
-        run([python,'-m','pip','install','langchain-core==1.7.4'],root,env=clean)
-        run([python,'-c',
-            'import asyncio,json,runpy;from native_analytics import Collector;from afterspan_tracing import WorkflowTracer;'
-            'c=Collector("https://analytics.invalid","synthetic",'+repr(str(root/'langchain.db'))+');'
-            'result=asyncio.run(runpy.run_path('+repr(str(REPO/'examples/langchain/emit.py'))+')["exercise"](WorkflowTracer(c,subject_id="account_"+"a"*64)));'
-            'assert len(result)==3 and sum(x["framework_failed"] for x in result)==1;'
-            'events=[json.loads(r[0]) for r in c.db().execute("SELECT payload FROM outbox ORDER BY created")];'
-            'assert "private" not in json.dumps(events);'
-            'open('+repr(str(root/'langchain-events.json'))+',"w").write(json.dumps(events))'],root,env=clean)
+        run([python,'-m','pip','install','langchain-core==1.7.4','anthropic==2.4.0'],root,env=clean)
+        run([python,REPO/'sdk/packaging/framework_consumer.py',REPO,root],root,env=clean)
         # Imports must work without the checkout on sys.path or PYTHONPATH.
         assert 'PYTHONPATH' not in clean
         node_home = root / 'node-consumer'

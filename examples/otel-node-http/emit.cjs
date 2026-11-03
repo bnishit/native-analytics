@@ -5,7 +5,7 @@ const { createHash } = require('node:crypto');
 const { NodeSDK } = require('@opentelemetry/sdk-node');
 const { OTLPTraceExporter } = require('@opentelemetry/exporter-trace-otlp-proto');
 const { HttpInstrumentation } = require('@opentelemetry/instrumentation-http');
-const { SimpleSpanProcessor } = require('@opentelemetry/sdk-trace');
+const { BatchSpanProcessor } = require('@opentelemetry/sdk-trace');
 const { resourceFromAttributes } = require('@opentelemetry/resources');
 const { trace, SpanStatusCode } = require('@opentelemetry/api');
 let config, origin;
@@ -28,7 +28,7 @@ const guardedExporter = {
  },
  shutdown:()=>exporter.shutdown()
 };
-const processor = new SimpleSpanProcessor({exporter:guardedExporter});
+const processor = new BatchSpanProcessor({exporter:guardedExporter,maxQueueSize:32,maxExportBatchSize:32,scheduledDelayMillis:60000,exportTimeoutMillis:15000});
 const sdk = new NodeSDK({
  autoDetectResources:false, metricReaders:[], logRecordProcessors:[],
  resource:resourceFromAttributes({'service.name':'synthetic-node-http','afterspan.workflow':'node_http_interop','afterspan.environment':'test','afterspan.traffic_kind':'synthetic'}),
@@ -62,7 +62,7 @@ function get(port) {
   })));
   await new Promise(resolve=>server.close(resolve));
   await processor.forceFlush();
-  assert.equal(roots.length,2);assert.notEqual(roots[0],roots[1]);assert.equal(captured.length,8);assert.equal(results.length,8);assert(results.every(code=>code===0));
+  assert.equal(roots.length,2);assert.notEqual(roots[0],roots[1]);assert.equal(captured.length,8);assert.equal(results.length,1);assert(results.every(code=>code===0));
   for(const id of roots){const group=captured.filter(s=>s.trace===id);assert.equal(group.length,4);assert.equal(group.filter(s=>!s.parent).length,1);assert.equal(group.filter(s=>s.kind===1).length,1);assert.equal(group.filter(s=>s.kind===2).length,1);assert(headersSeen.some(h=>h?.split('-')[1]===id));}
   console.log(JSON.stringify({node:process.version,workflow:'node_http_interop',traces:roots.map(id=>({otel_trace_id:id,namespace_digest:createHash('sha256').update('afterspan-otel-v1\0'+id).digest('hex')})),spans:captured,export_results:results,propagated_requests:headersSeen.length,storage_verified:false}));
  } finally {server.close();await sdk.shutdown()}

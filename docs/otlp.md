@@ -38,7 +38,7 @@ Span names, arbitrary attributes, raw error/status text, event bodies, links, pr
 
 The [runnable Node HTTP recipe](../examples/otel-node-http/README.md) uses the official Node SDK, protobuf exporter and automatic HTTP instrumentation. It sends two concurrent loopback requests with separate W3C trace contexts. Fixed hooks distinguish incoming `receive` from outgoing `http` steps; raw names and URLs remain omitted by intake. The optional real-service test exercises the exact recipe, verifies two four-span traces and content omission, preserves UNSET as unknown, and checks invalid-producer and malformed-configuration failures. CI installs the pinned official consumer separately from the Afterspan SDK dependencies.
 
-An exporter callback is not a stored trace. The recipe explicitly returns `storage_verified:false`; use a separate authorized reader and the frozen send window for delivery proof. This is synthetic interoperability testing, not another deployed product or a useful user task. Production apps should use bounded batching and their own lifecycle policy rather than the example's per-span processor.
+An exporter callback is not a stored trace. The recipe explicitly returns `storage_verified:false`; use a separate authorized reader and the frozen send window for delivery proof. This is synthetic interoperability testing, not another deployed product or a useful user task. Production apps should use bounded batching and their own lifecycle policy with an explicit queue bound and export deadline.
 
 ## Evidence
 

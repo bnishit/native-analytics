@@ -149,7 +149,7 @@ class OTLPTests(unittest.TestCase):
             self.assertEqual(result.returncode,0,result.stderr)
             emitted=json.loads(result.stdout)
             self.assertFalse(emitted['storage_verified'])
-            self.assertEqual(emitted['export_results'],[0]*8)
+            self.assertEqual(emitted['export_results'],[0])
             self.assertEqual(emitted['propagated_requests'],2)
             rows=self.client.post('/api/traces/review?project=alpha',headers=self.fixture.admin,json={'environment':'test'}).json()['traces']
             self.assertEqual(len(rows),2)

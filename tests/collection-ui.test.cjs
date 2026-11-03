@@ -42,6 +42,20 @@ test('a reported empty stop is distinct from a silent or contradictory worker',(
  assert.match(markup(response('conflicting')),/reported a stop and later activity/);
 });
 
+test('an undeclared invocation does not invent a continuous declaration',()=>{
+ const instance={latest:{reporting_mode:'on_demand',delivery_mode:'memory',queued:0,capacity:500,observed_at_ms:0,dropped:0,rejected:0,delivery_failures:0,evaluator_failures:0},lifecycle:'reported_stopped',issues:[],window_counter_changes:{evaluator_failures:0}};
+ const source={source:'serverless',status:'attention',reasons:['source_not_declared'],expectation:null,instances:[instance]};
+ const html=markup({...empty,sources:[source]});assert.match(html,/Reporting mode not declared/);assert.doesNotMatch(html,/Continuous worker/);assert.match(html,/This invocation/);
+ assert.match(markup({...empty,sources:[{...source,expectation:{definition:{}}}]}),/Continuous worker/);
+});
+
+test('on-demand idle evidence is unavailable and an invocation stop is not host exit',()=>{
+ const source={source:'serverless',status:'attention',reasons:['no_invocations_observed'],expectation:{definition:{reporting_mode:'on_demand'}},instances:[]};
+ const idle=markup({...empty,sources:[source]});assert.match(idle,/On-demand invocations/);assert.match(idle,/No invocation observed in this window/);assert.match(idle,/Needs attention/);assert.match(idle,/not established/);
+ const instance={latest:{reporting_mode:'on_demand',delivery_mode:'memory',queued:0,capacity:500,observed_at_ms:0,dropped:0,rejected:0,delivery_failures:0,evaluator_failures:0},lifecycle:'reported_stopped',issues:[],window_counter_changes:{evaluator_failures:0}};
+ const stopped=markup({...empty,sources:[{...source,instances:[instance]}]});assert.match(stopped,/This invocation reported an empty queue and stopped/);assert.match(stopped,/Process exit is not independently verified/);
+});
+
 test('missing, null, naive or invalid saved boundaries never fall back to a rolling API read',async()=>{
  const valid={environment:'production',start:'2026-11-01T00:00:00.000001Z',end:'2026-11-01T00:05:00.000001Z',as_of:'2026-11-01T00:06:00.000001Z'};
  for(const query of [{environment:'production'},{...valid,start:null},{...valid,end:null},{...valid,as_of:null},{...valid,start:'2026-11-01T00:00:00'},{...valid,start:'invalid'},{...valid,environment:'untrusted'}]){

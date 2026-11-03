@@ -28,6 +28,13 @@ class CollectionHealthTests(unittest.TestCase):
     def report(self,**changes):
         response=self.client.post('/api/collection/health?project=alpha',headers=self.admin,json={**self.query,'as_of':stamp(time.time()),**changes})
         self.assertEqual(response.status_code,200,response.text);return response.json()
+    def drain(self,collector):
+        import io
+        class Transport:
+            def open(inner,request,timeout):
+                response=self.f.ingest(json.loads(request.data)['events']);self.assertEqual(response.status_code,200,response.text)
+                body=io.BytesIO(response.content);body.status=200;return body
+        with patch('urllib.request.build_opener',return_value=Transport()):return collector.flush()
     def configured(self,**changes):
         with patch('time.time',return_value=self.now-1000):self.save().raise_for_status()
         events=[self.pulse(self.now-v,i,**changes) for i,v in enumerate([310,250,190,130,70])]
@@ -100,12 +107,7 @@ class CollectionHealthTests(unittest.TestCase):
         self.assertEqual(c2.status()['queued'],1);self.assertEqual(c2.status()['evaluator_failures'],1);self.assertNotEqual(c2.instance_id,c.instance_id)
         with self.assertRaises(ValueError):c2.pulse(state='stopped')
         # Drain through the actual backend instead of clearing the persisted queue.
-        import io
-        class Transport:
-            def open(inner,request,timeout):
-                response=self.f.ingest(json.loads(request.data)['events']);self.assertEqual(response.status_code,200)
-                body=io.BytesIO(response.content);body.status=200;return body
-        with patch('urllib.request.build_opener',return_value=Transport()):self.assertEqual(c2.flush(),1)
+        self.assertEqual(self.drain(c2),1)
         c2.close();c2.pulse(state='stopped')
         with closing(c2.db()) as db:final=json.loads(db.execute('SELECT payload FROM outbox').fetchone()[0])
         self.assertEqual(final['properties']['afterspan_health']['collector_state'],'stopped')
@@ -183,3 +185,125 @@ class CollectionHealthTests(unittest.TestCase):
         r=self.report();self.assertIn('collector_lifecycle_conflict',r['sources'][0]['reasons'])
         old=next(i for i in r['sources'][0]['instances'] if i['instance_id']==self.instance)
         self.assertEqual(old['lifecycle'],'conflicting');self.assertIn('pulse_stale',old['issues'])
+
+    def demand_source(self):
+        self.source['reporting_mode']='on_demand'
+        self.query.update(start=stamp(self.now-1800),end=stamp(self.now-60))
+        with patch('time.time',return_value=self.now-3000):
+            response=self.save();self.assertEqual(response.status_code,200,response.text)
+
+    def demand_run(self,age,*,instance=None,**end_changes):
+        instance=instance or str(uuid.uuid4());started=int((self.now-age-1)*1000)
+        return [self.pulse(self.now-age,1,instance_id=instance,process_started_at_ms=started,collector_state='running'),
+                self.pulse(self.now-age+10,2,instance_id=instance,process_started_at_ms=started,collector_state='stopped',**end_changes)]
+
+    def test_on_demand_closed_invocations_do_not_promise_idle_heartbeats(self):
+        self.demand_source()
+        self.assertIn('no_invocations_observed',self.report()['sources'][0]['reasons'])
+        self.f.ingest(self.demand_run(1500)+self.demand_run(200)).raise_for_status()
+        r=self.report();self.assertEqual(r['status'],'observed',r)
+        self.assertEqual(len(r['sources'][0]['instances']),2)
+        self.assertTrue(all(i['window_counter_changes']['dropped']==0 for i in r['sources'][0]['instances']))
+        self.assertEqual(r['collection_completeness'],'not_established')
+        control={**self.source,'source':'continuous_control','workflow':'continuous_export','reporting_mode':'continuous'}
+        with patch('time.time',return_value=self.now-3000):self.save(control).raise_for_status()
+        events=self.demand_run(1500)+self.demand_run(200)
+        for event in events:event['properties']['afterspan_health'].update(source=control['source'],workflow=control['workflow'],reporting_mode='continuous')
+        self.f.ingest(events).raise_for_status()
+        self.assertIn('pulse_coverage_gap',self.report(workflow=control['workflow'])['sources'][0]['reasons'])
+
+    def test_on_demand_unfinished_missing_start_and_active_gaps_stay_visible(self):
+        self.demand_source();events=self.demand_run(1500)
+        self.f.ingest([events[0]]).raise_for_status()
+        self.assertIn('invocation_stop_missing',self.report()['sources'][0]['reasons'])
+        events[1]['properties']['afterspan_health']['sequence']=3
+        self.f.ingest([events[1]]).raise_for_status()
+        self.assertIn('invocation_sequence_gap',self.report()['sources'][0]['reasons'])
+        missing=self.demand_run(200)[1];self.f.ingest([missing]).raise_for_status()
+        self.assertIn('invocation_start_missing',self.report()['sources'][0]['reasons'])
+        long=self.demand_run(900);long[1]=self.pulse(self.now-200,2,instance_id=long[0]['properties']['afterspan_health']['instance_id'],process_started_at_ms=long[0]['properties']['afterspan_health']['process_started_at_ms'],collector_state='stopped')
+        self.f.ingest(long).raise_for_status()
+        self.assertIn('invocation_pulse_gap',self.report()['sources'][0]['reasons'])
+
+    def test_on_demand_mode_start_clocks_loss_and_unknown_checks_are_not_inferred(self):
+        self.demand_source();events=self.demand_run(1500)
+        events[0]['properties']['afterspan_health']['evaluator_failures']=None
+        events[1]['properties']['afterspan_health']['dropped']=2
+        self.f.ingest(events).raise_for_status();r=self.report()
+        self.assertIn('evaluator_health_unknown',r['sources'][0]['reasons'])
+        self.assertIn('collector_reports_window_loss',r['sources'][0]['reasons'])
+        changed=self.demand_run(200);changed[1]['properties']['afterspan_health']['process_started_at_ms']-=1000
+        self.f.ingest(changed).raise_for_status()
+        self.assertIn('collector_process_clock_conflict',self.report()['sources'][0]['reasons'])
+        legacy=self.demand_run(300)
+        for event in legacy:event['properties']['afterspan_health'].pop('reporting_mode')
+        self.f.ingest(legacy).raise_for_status()
+        self.assertIn('source_mode_mismatch',self.report()['sources'][0]['reasons'])
+
+    def test_on_demand_pre_window_completed_invocations_are_not_current_activity(self):
+        self.demand_source();old=self.demand_run(2000)
+        self.f.ingest(old).raise_for_status();r=self.report()
+        self.assertEqual(r['sources'][0]['instances'],[])
+        self.assertIn('no_invocations_observed',r['sources'][0]['reasons'])
+        # A later sequence with a regressed clock cannot hide in an excluded episode.
+        facts=old[0]['properties']['afterspan_health']
+        self.f.ingest([self.pulse(self.now-2010,3,instance_id=facts['instance_id'],process_started_at_ms=int((self.now-2020)*1000),collector_state='running')]).raise_for_status()
+        r=self.report();self.assertIn('collector_lifecycle_conflict',r['sources'][0]['reasons'])
+        self.assertEqual(len(r['sources'][0]['instances']),1)
+
+    def test_legacy_source_idempotent_retry_preserves_stored_definition_bytes(self):
+        self.save().raise_for_status()
+        raw=json.dumps({**self.source,'enabled':True},sort_keys=True,separators=(',',':'))
+        with closing(app.connect()) as c,c:c.execute('UPDATE collection_sources SET definition=?',(raw,))
+        response=self.save();self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['revision'],1)
+        with closing(app.connect()) as c:self.assertEqual(c.execute('SELECT definition FROM collection_sources').fetchone()[0],raw)
+
+    def test_on_demand_does_not_invent_an_in_window_baseline_from_a_late_first_pulse(self):
+        self.demand_source();self.query['start']=stamp(self.now-300)
+        events=self.demand_run(200)
+        for event in events:
+            event['properties']['afterspan_health'].update(process_started_at_ms=int((self.now-350)*1000),dropped=3)
+        self.f.ingest(events).raise_for_status();r=self.report()
+        self.assertIsNone(r['sources'][0]['instances'][0]['window_counter_changes']['dropped'])
+        self.assertIn('collector_loss_window_unknown',r['sources'][0]['reasons'])
+
+    def test_on_demand_initial_failures_cannot_be_subtracted_into_clean_health(self):
+        self.demand_source();events=self.demand_run(200)
+        for event in events:event['properties']['afterspan_health'].update(dropped=3,rejected=2,delivery_failures=1,evaluator_failures=1)
+        self.f.ingest(events).raise_for_status();r=self.report()
+        self.assertEqual(r['status'],'attention')
+        self.assertIn('collector_loss_window_unknown',r['sources'][0]['reasons'])
+        self.assertIn('evaluator_failure_window_unknown',r['sources'][0]['reasons'])
+        self.assertTrue(all(value is None for value in r['sources'][0]['instances'][0]['window_counter_changes'].values()))
+
+    def test_on_demand_counter_contradictions_cannot_hide_in_completed_pre_window_work(self):
+        self.demand_source();events=self.demand_run(2000)
+        events[0]['properties']['afterspan_health']['dropped']=3
+        self.f.ingest(events).raise_for_status();r=self.report()
+        self.assertIn('counter_regressed',r['sources'][0]['reasons'])
+        self.assertEqual(len(r['sources'][0]['instances']),1)
+
+    def test_on_demand_end_and_receipt_cutoffs_do_not_pull_in_a_later_stop(self):
+        self.demand_source();events=self.demand_run(200)
+        with patch('time.time',return_value=self.now-199):self.f.ingest([events[0]]).raise_for_status()
+        with patch('time.time',return_value=self.now-20):self.f.ingest([events[1]]).raise_for_status()
+        self.assertIn('invocation_stop_missing',self.report(as_of=stamp(self.now-30))['sources'][0]['reasons'])
+        self.assertIn('invocation_stop_missing',self.report(end=stamp(self.now-195))['sources'][0]['reasons'])
+        self.assertEqual(self.report()['status'],'observed')
+
+    def test_python_on_demand_tracking_is_explicit_and_never_rewrites_existing_unknowns(self):
+        from sdk.python.native_analytics import Collector
+        options={'source':'export_worker','environment':'staging','workflow':'document_export','reporting_mode':'on_demand'}
+        c=Collector('http://127.0.0.1:8789','fake-local-key',self.f.temp.name+'/invocation.db',track_evaluations=True,**options)
+        c.pulse()
+        with closing(c.db()) as db:entry=json.loads(db.execute('SELECT payload FROM outbox').fetchone()[0])
+        facts=entry['properties']['afterspan_health'];self.assertEqual(facts['reporting_mode'],'on_demand');self.assertEqual(facts['evaluator_failures'],0)
+        self.assertEqual(self.drain(c),1);c.close();c.pulse(state='stopped');self.assertEqual(self.drain(c),1)
+        legacy=Collector('http://127.0.0.1:8789','fake-local-key',self.f.temp.name+'/untracked.db',**options)
+        self.assertIsNone(legacy.status()['evaluator_failures'])
+        resumed=Collector('http://127.0.0.1:8789','fake-local-key',legacy.path,track_evaluations=True,**options)
+        self.assertIsNone(resumed.status()['evaluator_failures'])
+        resumed.record_evaluation(True)
+        again=Collector('http://127.0.0.1:8789','fake-local-key',legacy.path,track_evaluations=True,**options)
+        self.assertEqual(again.status()['evaluator_failures'],1)

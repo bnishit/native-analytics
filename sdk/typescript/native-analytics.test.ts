@@ -109,6 +109,19 @@ test('reported stop requires a drained typed collector and preserves delivery un
  assert.equal(pulse.collector_state,'stopped');assert.equal(pulse.queued,0);assert.equal(pulse.evaluator_failures,null);
  assert.throws(()=>createAnalytics().pulse('stopped'),/typed collector/);
 });
+
+test('on-demand reporting initializes only explicitly tracked evaluation failure counters',async()=>{
+ const events:Array<any>=[];
+ const health:NonNullable<Parameters<typeof createAnalytics>[0]>['health']={source:'export_worker',environment:'staging',reportingMode:'on_demand',evaluatorTracking:true};
+ const client=createAnalytics({url:'https://analytics.example',writeKey:'synthetic-key',health,fetch:async(_,options)=>{const sent=JSON.parse(String(options?.body)).events;events.push(...sent);return new Response(JSON.stringify({accepted:sent.length,duplicates:0}))}});
+ await client.pulse();health.reportingMode='continuous';health.source='different';client.recordEvaluation(true);await client.pulse('stopped');
+ const [start,end]=events.map(e=>e.properties.afterspan_health);
+ assert.equal(start.reporting_mode,'on_demand');assert.equal(start.evaluator_failures,0);assert.equal(end.evaluator_failures,1);
+ assert.equal(end.reporting_mode,'on_demand');assert.equal(end.source,'export_worker');
+ assert.equal(start.sequence,1);assert.equal(end.sequence,2);assert.equal(start.instance_id,end.instance_id);assert.equal(end.collector_state,'stopped');
+ assert.equal(createAnalytics({health:{source:'export_worker',environment:'staging'}}).status().evaluator_failures,null);
+ for(const health of [{reportingMode:'inferred'},{evaluatorTracking:null}])assert.throws(()=>createAnalytics({health:{source:'export_worker',environment:'staging',...health} as any}),/configuration/);
+});
 test('native model count metrics survive but raw inputs and string impostors stay redacted',()=>{
  const result=safeProperties({input_count:2,output_count:3,input:'private prompt',input_count_text:'private value'}) as any;
  assert.equal(result.input_count,2);assert.equal(result.input,'[redacted]');assert.equal(result.input_count_text,'[redacted]');assert.equal(result.output_count,3);const impostor=safeProperties({input_count:'private value',output_count:'private value'}) as any;assert.equal(impostor.input_count,'[redacted]');assert.equal(impostor.output_count,'[redacted]');

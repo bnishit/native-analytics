@@ -1,6 +1,6 @@
 # Capacity and access readiness
 
-The completed operating-envelope measurements below are local. A later paced production-service probe is incomplete and recorded separately. None is a hosted SLA, a sustained production-capacity result or an enterprise-security certification.
+The measurements below cover local execution and one completed, paced production run using warmed connections. The earlier interrupted run is retained separately. None is a hosted SLA, sustained or cold-connection production-capacity result, or enterprise-security certification.
 
 ## Measured local envelope — 2026-11-02
 
@@ -44,7 +44,29 @@ Each control used three workers, new connections and no retries. The local failu
 
 The production runtime before and after the probe was Linux x86_64, Python 3.12.16 and SQLite 3.46.1 at the same release. Cgroup ceilings were eight CPU-seconds per second and 8,000,000,000 bytes of memory; these are ceilings, not reserved throughput. The shared database grew from 142,372,864 to 149,602,304 bytes between metadata reads; unrelated activity was not controlled, so the difference is not attributed wholly to this probe. No resource, access, rate-limit, deployment or backup setting changed during measurement. Five offline controls and both source reviews matched probe SHA256 `c10dedac19ea2d56a1da49aa15471aec8b9a6989980051faafe33dca4208b13d` before its one execution.
 
-Full production capacity remains unverified. The local benchmark now supplies durable per-request progress; a future production measurement must adopt equivalent receipts, declare cold/persistent-connection conditions and establish a healthy client path. Do not restart the interrupted attempt or describe its intended workload as executed. These observations do not replace the local benchmark, confirm an application defect, or establish useful user outcomes.
+This interrupted attempt remains incomplete; it was not restarted. The separate completed measurement below uses new identities and durable receipts. Neither confirms an application defect or establishes useful user outcomes.
+
+## Completed paced production measurement — 2026-11-03
+
+A new, once-run client targeted only the isolated verification project on production release `3bad5daa073407acf113ffc7dec3f54222f5c67c`. Both independent source reviews and six offline safety controls matched program SHA256 `fe39d6ab10fb1f8ddf1a17b906458e6d5566083e227d9f9c8a66ce284c5f4d0c` before execution. The earlier attempt and its observations were not replayed. The test made no model, Slack or business call and changed no resource, access grant, rate limit or deployment.
+
+The planned **10,200 observations completed**: 8,000 seed product events, 100 real-time empty synthetic tasks with two observations each, then 2,000 mixed-phase product events. There were 100 opaque synthetic product identities. All 102 batches acknowledged exactly 100 new observations, with 10,200 unique acknowledged IDs and no unresolved write intent. Native JSON, the normal rate guards and the 25-task synthetic goal minimum were retained. Separate account-scoped readback matched both product counts and all 100 observed traces without reported gaps; one opened sample had its expected single successful span. All 100 mature synthetic tasks remained unclassified, with zero satisfied, because quality and completion evidence were absent. Normal-user goals were untouched. Repeated frozen search agreed.
+
+One writer paused one second after every batch. Each of three read shapes ran ten times after seeding, then ten times concurrently with the mixed writer, pausing one second after each read. Seed ingestion took 148.464 seconds including pauses; batch p95 was 1,573.02 ms and maximum 1,849.85 ms. Mixed ingestion took 35.349 seconds including pauses; batch p95 was 1,155.91 ms and maximum 2,520.21 ms. These finite paced rates are not saturation or sustained throughput.
+
+| Read | Seed-only p95 | Mixed-phase p95 |
+|---|---:|---:|
+| Aggregate p95 + breakdown | 1,660.64 ms | 2,173.00 ms |
+| Trace search | 769.74 ms | 587.15 ms |
+| Outcome evaluation | 489.50 ms | 698.51 ms |
+
+These are workstation-observed summary timings, including network, private receipt fsync and result validation. With only ten repetitions, nearest-rank p95 equals the largest sample; it does not estimate a population tail. All three mixed read windows overlapped the writer, but ended before it. The request journal retained 169 paired start/result records plus 169 content-free connection observations. Completion required a passed report and a final validated-complete journal marker. Stable exclusive batch intents and separate ACK files remained available for reconciliation; no uncertain write was retried.
+
+Client: Darwin arm64, Python 3.14.3, HTTPX 0.28.1. HTTP/1.1 used separate reader/writer pools, each capped at four connections, with client-side keepalive expiry disabled. The server could still close idle connections. Eight credential-free public health reads warmed the pools before phases; none needed its permitted connect-timeout retry. **All 169 application calls reused warmed connections**, with zero measured transport retries. A separate fresh-client public health control afterward timed out before TCP completion at 5.035 seconds; its trace hook recorded a new connection start without TCP/TLS completion. This confirms the warm-connection measurement, not reliable cold connections or general availability. Do not pool these separately timed controls into a customer failure rate or infer a server/network root cause. Impact on other users is unknown.
+
+Server metadata before and after matched the same release: Linux x86_64, Python 3.12.16 and SQLite 3.46.1. Cgroup ceilings were eight CPU-seconds per second and 8,000,000,000 bytes of memory, not reserved throughput. The shared database grew from 150,704,128 to 159,346,688 bytes; unrelated traffic was uncontrolled, so the entire change is not attributed to this test. Free volume space was above 4.6 GB at both metadata reads. Readback health returned HTTP 200.
+
+This establishes one finite, paced, warmed-connection native-JSON measurement on a shared production service. Sustained loads, cold-connection reliability, OTLP/debug throughput, broader datasets, peak resource use, failover and horizontal scaling remain unverified. It does not establish customer latency, useful outcomes, an SLA or full operating readiness.
 
 ## Declared operating limits
 

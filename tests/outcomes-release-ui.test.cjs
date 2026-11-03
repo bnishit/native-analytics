@@ -118,3 +118,12 @@ test('goal criteria preserve independent checks and reject empty or duplicate cr
  data.delete('milestones');assert.throws(()=>vm.runInContext('outcomeGoalDefinition(data)',c),/at least one/);data.append('milestones','completion');data.set('check_name','source_facts');data.append('check_name','source_facts');assert.throws(()=>vm.runInContext('outcomeGoalDefinition(data)',c),/different name/);
  data.delete('check_name');assert.throws(()=>vm.runInContext('outcomeGoalDefinition(data)',c),/1 and 20/);for(let n=0;n<21;n++)data.append('check_name','check_'+n);assert.throws(()=>vm.runInContext('outcomeGoalDefinition(data)',c),/1 and 20/);
 });
+
+test('saved goal screen shows check timing and receipt requirements, not only names',async()=>{
+ const content={innerHTML:'',querySelectorAll:()=>[]},select={};
+ const goal={id:'goal',version:1,definition:{title:'Stored cited answer',workflow:'library_qa',environment:'test',deadline_seconds:60,traffic_kind:'synthetic',min_sample_size:25,checks:[{name:'citation_scope',version:1,method:'code',phase:'after_delivery',evidence_required:true},{name:'source_facts',version:2,method:'source',phase:'before_delivery',evidence_required:false}],milestones:['completion']}};
+ const report={counts:{satisfied:0},mature_denominator:0,satisfied_fraction:null,coverage:{},tasks:[],snapshot:{start:'2026-11-03T00:00:00Z',end:'2026-11-03T01:00:00Z',as_of:'2026-11-03T01:01:00Z'},limits:[]};
+ const c=context({renderVersion:1,days:1,canEdit:()=>false,url:path=>path,$:selector=>selector==='#content'?content:selector==='#outcome-goal'?select:null,api:async path=>path==='/api/outcomes/goals'?{goals:[goal]}:report});
+ await vm.runInContext('outcomesView(1)',c);
+ assert.match(content.innerHTML,/citation_scope v1 \(code, after delivery, receipt required\)/);assert.match(content.innerHTML,/source_facts v2 \(source, before delivery, receipt not required\)/);assert.match(content.innerHTML,/Required milestones: completion\./);assert.match(content.innerHTML,/25 mature tasks/);
+});

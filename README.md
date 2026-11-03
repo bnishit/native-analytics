@@ -6,7 +6,7 @@
 
 Funnels, saved behavior/trait segments, linked journeys, retries, event metrics and scoped agent access are included in the core. Self-hosting needs no Stripe account, subscription or commercial quota. Accounts, teams and roles protect your own instance. Optional hosted billing is a separate opt-in; it never gates a core analytics feature.
 
-> Early outcome-platform release: versioned goals, checked traces, reviewed experiments, collection health and encrypted restore are included. Backend and Tracker are deployed; bounded read-only Tracker source checks, real streamed model timing and an isolated official-exporter check pass. The complete four-area acceptance is still open: second-product adoption, broader provider/framework coverage, normal-use release evidence and the remaining operating checks are pending. See [release evidence and open gates](docs/outcome-platform-release.md), [capacity and access limits](docs/capacity-and-access.md), and [operations](docs/operations.md).
+> Early outcome-platform release: versioned goals, checked traces, reviewed experiments, collection health and encrypted restore are included. Backend and Tracker are deployed; bounded read-only Tracker source checks, real streamed model timing and an isolated official-exporter check pass. The complete four-area acceptance is still open: broader product/provider/framework coverage, normal-use release evidence and the remaining operating checks are pending. See [release evidence and open gates](docs/outcome-platform-release.md), [capacity and access limits](docs/capacity-and-access.md), and [operations](docs/operations.md).
 
 ## Connect an agent remotely
 
@@ -39,7 +39,9 @@ Open http://127.0.0.1:8769/app. This loopback preview creates private local emai
 
 ### Generic workflow outcomes
 
-[Governed debug snapshots](docs/debugging.md) add default-off, owner-scoped capture windows, SDK redaction before upload, encrypted expiring storage and separately consented editor reads. These are selected reviewed snapshots, not automatic prompt capture. An isolated production-service test verified selected redacted reads, bounded retries, read denials and revoke/purge; remote debug consent and broader adoption remain separate gates.
+[Governed debug snapshots](docs/debugging.md) add default-off, owner-scoped capture windows, SDK redaction before upload, encrypted expiring storage and separately consented editor reads. These are selected reviewed snapshots, not automatic prompt capture. An isolated production-service test verified selected redacted reads, bounded retries, read denials and revoke/purge. A browser-approved production remote MCP client also verified metadata-first selected redacted reads, scoped fixture/goal access, refresh rotation and revocation. This used synthetic data in one test project; broader adoption remains unproved.
+
+The Outcomes form lets editors choose up to twenty versioned checks, each check’s timing and receipt requirement, and completion, delivery or producer-reported usefulness milestones. Defaults retain required evidence, completion/delivery and the 25-task release minimum. Existing goals are unchanged.
 
 [Regression cases and experiments](docs/experiments.md) have a primary screen, versioned datasets, a Python application-side runner and scoped CLI/MCP surfaces. Fixed JSON checks do not establish production impact. In Outcomes, an editor can prepare exact GitHub/Railway deployment evidence and an owner can adopt its immutable proof. The production owner UI and account CLI have verified this path on Tracker’s current deployment. It keeps source identity separate from review, CI, release permission and user improvement; see [release evidence and outcome windows](docs/release-outcomes.md).
 

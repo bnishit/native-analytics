@@ -44,7 +44,7 @@ Receipts use existing immutable, idempotent event storage and retention. Require
 
 ## Define a goal in the workspace
 
-Editors can use Outcomes → Save a goal to choose one to twenty named, versioned checks. For each check, choose its method, before/after-delivery timing and whether a scoped evidence receipt is required. Choose at least one completion, delivery or usefulness milestone. All selected criteria must qualify; unselected milestones are not silently required. For example, a library answer can require a code citation check after delivery and completion only, while a source-backed Slack reply can require a check before delivery plus completion and delivery.
+Editors can use Outcomes → Save a goal to choose one to twenty named, versioned checks. For each check, choose its method, before/after-delivery timing and whether a scoped evidence receipt is required. Choose at least one completion, delivery or usefulness milestone. All selected criteria must qualify; unselected milestones are not silently required. The saved goal summary shows each check’s method, timing and receipt requirement. For example, a library answer can require a code citation check after delivery and completion only, while a source-backed Slack reply can require a check before delivery plus completion and delivery.
 
 The defaults retain the stricter existing reply goal: evidence required, check before delivery, completion and delivery, user traffic and 25 mature tasks for a release comparison. New criteria do not change saved goals or instrument the producer. A producer-reported usefulness milestone is not independently measured usefulness. The API retains immutable versioning; this form creates new goals.
 

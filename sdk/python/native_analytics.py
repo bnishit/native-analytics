@@ -51,13 +51,16 @@ def safe_journey(value):
 
 
 class Collector:
-    def __init__(self,url,key,path,max_queue=100000,*,source=None,environment=None,workflow=None,interval_seconds=60):
+    def __init__(self,url,key,path,max_queue=100000,*,source=None,environment=None,workflow=None,interval_seconds=60,reporting_mode='continuous',track_evaluations=False):
         if not url.startswith('https://') and not url.startswith('http://127.0.0.1:'):
             raise ValueError('analytics ingestion requires HTTPS')
         self.url=url.rstrip('/')+'/v1/events';self.key=key;self.path=Path(path);self.max_queue=max_queue
+        fresh=not self.path.exists()
         self.stop=threading.Event();self.thread=None;self.last_pulse=0
         if source is not None and (not re.fullmatch(r'[a-z][a-z0-9_.-]{0,63}',source) or environment not in {'production','staging','development','test','local'} or type(interval_seconds) is not int or not 10<=interval_seconds<=3600 or workflow is not None and not re.fullmatch(r'[a-z][a-z0-9_.-]{0,63}',workflow)):raise ValueError('invalid collection health configuration')
         self.health_source=source;self.health_environment=environment;self.health_workflow=workflow;self.pulse_interval=interval_seconds
+        if reporting_mode not in {'continuous','on_demand'} or reporting_mode=='on_demand' and source is None or type(track_evaluations) is not bool:raise ValueError('invalid collection reporting configuration')
+        self.reporting_mode=reporting_mode
         self.instance_id=str(uuid.uuid4());self.process_started_at_ms=int(time.time()*1000);self.pulse_sequence=0
 
         self.path.parent.mkdir(parents=True,exist_ok=True)
@@ -69,6 +72,7 @@ class Collector:
             fields={r[1] for r in c.execute('PRAGMA table_info(delivery)')}
             for name,definition in [('rejected','INTEGER NOT NULL DEFAULT 0'),('delivery_failures','INTEGER NOT NULL DEFAULT 0'),('evaluator_failures','INTEGER')]:
                 if name not in fields:c.execute('ALTER TABLE delivery ADD COLUMN '+name+' '+definition)
+            if fresh and track_evaluations:c.execute('UPDATE delivery SET evaluator_failures=0 WHERE id=1 AND evaluator_failures IS NULL')
 
 
     def db(self):
@@ -130,7 +134,7 @@ class Collector:
         now=int(time.time()*1000);self.pulse_sequence+=1
         pulse={'schema_version':'collection-health-v1','source':self.health_source,'environment':self.health_environment,'workflow':self.health_workflow,
             'instance_id':self.instance_id,'sequence':self.pulse_sequence,'observed_at_ms':now,'process_started_at_ms':self.process_started_at_ms,
-            'interval_seconds':self.pulse_interval,'delivery_mode':'durable','collector_state':state,'queued':status['queued'],'capacity':self.max_queue,
+            'interval_seconds':self.pulse_interval,'delivery_mode':'durable','collector_state':state,**({'reporting_mode':'on_demand'} if self.reporting_mode=='on_demand' else {}),'queued':status['queued'],'capacity':self.max_queue,
             **{k:status[k] for k in ['dropped','rejected','delivery_failures','evaluator_failures']},
             'oldest_queued_at_ms':int(status['oldest_queued_at']*1000) if status['oldest_queued_at'] is not None else None,
             'last_delivery_at_ms':int(status['last_delivery']*1000) if status['last_delivery'] is not None else None,

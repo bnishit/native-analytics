@@ -27,7 +27,7 @@ export interface AnalyticsConfig {
   writeKey?: string;
   source?: string;
   fetch?: typeof fetch;
-  health?: { source: string; environment: 'production'|'staging'|'development'|'test'|'local'; workflow?: string; intervalSeconds?: number };
+  health?: { source: string; environment: 'production'|'staging'|'development'|'test'|'local'; workflow?: string; intervalSeconds?: number; reportingMode?: 'continuous'|'on_demand'; evaluatorTracking?: boolean };
   onError?: (error: { code: string; queued: number }) => void;
 }
 const forbidden = /password|passwd|secret|authorization|cookie|otp|api.?key|(?:^|_)(?:token|prompt|messages?|input|output|content|body|email|phone|mobile|text)(?:$|_)|Preview$|request.?url|phone|mobile|email|message|prompt|content|(?:reason|error)$/i;
@@ -45,11 +45,11 @@ export function safeProperties(value: unknown, depth = 0): unknown {
   return typeof value === 'number' && !Number.isFinite(value) ? null : value;
 }
 export function createAnalytics(config: AnalyticsConfig = {}) {
-  config = { ...config, url: config.url?.trim(), writeKey: config.writeKey?.trim(), source: config.source?.trim() };
+  config = { ...config, health: config.health?{...config.health}:undefined, url: config.url?.trim(), writeKey: config.writeKey?.trim(), source: config.source?.trim() };
   const queue: Array<{id:string;timestamp:string;[key:string]:unknown}> = [];
-  let dropped=0,rejected=0,deliveryFailures=0,evaluatorFailures:number|null=null,lastDelivery:number|null=null,lastError:string|null=null;
+  let dropped=0,rejected=0,deliveryFailures=0,evaluatorFailures:number|null=config.health?.evaluatorTracking===true?0:null,lastDelivery:number|null=null,lastError:string|null=null;
   const instanceId=crypto.randomUUID(),processStarted=Date.now();let pulseSequence=0;
-  if(config.health&&(!/^[a-z][a-z0-9_.-]{0,63}$/.test(config.health.source)||!['production','staging','development','test','local'].includes(config.health.environment)||config.health.workflow!=null&&!/^[a-z][a-z0-9_.-]{0,63}$/.test(config.health.workflow)||!Number.isInteger(config.health.intervalSeconds??60)||(config.health.intervalSeconds??60)<10||(config.health.intervalSeconds??60)>3600))throw new Error('invalid collection health configuration');
+  if(config.health&&(!/^[a-z][a-z0-9_.-]{0,63}$/.test(config.health.source)||!['production','staging','development','test','local'].includes(config.health.environment)||config.health.workflow!=null&&!/^[a-z][a-z0-9_.-]{0,63}$/.test(config.health.workflow)||!Number.isInteger(config.health.intervalSeconds??60)||(config.health.intervalSeconds??60)<10||(config.health.intervalSeconds??60)>3600||config.health.reportingMode!==undefined&&!['continuous','on_demand'].includes(config.health.reportingMode)||config.health.evaluatorTracking!==undefined&&typeof config.health.evaluatorTracking!=='boolean'))throw new Error('invalid collection health configuration');
   function report(code:string){
     lastError=code;if(code==='delivery_failed')deliveryFailures++;if(code==='queue_full')dropped++;if(code.startsWith('invalid_'))rejected++;
     try{config.onError?.({code,queued:queue.length})}catch{}
@@ -113,7 +113,7 @@ export function createAnalytics(config: AnalyticsConfig = {}) {
     if(!config.health)return Promise.resolve();
     return track('analytics.pipeline',null,{afterspan_health:{schema_version:'collection-health-v1',source:config.health.source,environment:config.health.environment,workflow:config.health.workflow??null,
       instance_id:instanceId,sequence:++pulseSequence,observed_at_ms:Date.now(),process_started_at_ms:processStarted,interval_seconds:config.health.intervalSeconds??60,
-      delivery_mode:'memory',collector_state:state,queued:queue.length,capacity:500,oldest_queued_at_ms:queue.length?Date.parse(queue[0].timestamp):null,last_delivery_at_ms:lastDelivery==null?null:Math.floor(lastDelivery*1000),
+      delivery_mode:'memory',collector_state:state,...(config.health.reportingMode==='on_demand'?{reporting_mode:'on_demand'}:{}),queued:queue.length,capacity:500,oldest_queued_at_ms:queue.length?Date.parse(queue[0].timestamp):null,last_delivery_at_ms:lastDelivery==null?null:Math.floor(lastDelivery*1000),
       dropped,rejected,delivery_failures:deliveryFailures,evaluator_failures:evaluatorFailures,error_code:lastError==='delivery_failed'?'delivery_failed':lastError==='queue_full'?'queue_full':lastError?'invalid_event':null}});
   }
   return { track, pulse, recordEvaluation, trackJourney: (name: string, journey: JourneyContext, id?: string | null, properties: Properties = {}, attributes: Properties = {}) => track(name, id, properties, attributes, journey), flush, erase, identify: (id: string, attributes: Properties) => track('user.identified', id, {}, attributes),

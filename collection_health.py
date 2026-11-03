@@ -12,6 +12,8 @@ from tracing import Environment
 
 Count=StrictInt
 MAX_COUNT=9007199254740991
+COUNTERS=('dropped','rejected','delivery_failures','evaluator_failures')
+ReportingMode=Literal['continuous','on_demand']
 class CollectionPulse(Model):
     schema_version:Literal['collection-health-v1']
     source:str=Field(pattern=r'^[a-z][a-z0-9_.-]{0,63}$')
@@ -23,6 +25,7 @@ class CollectionPulse(Model):
     process_started_at_ms:Count=Field(ge=0,le=4102444800000)
     interval_seconds:Count=Field(ge=10,le=3600)
     delivery_mode:Literal['durable','memory','external']
+    reporting_mode:ReportingMode='continuous'
     collector_state:Literal['running','stopped']|None=None
     queued:Count=Field(ge=0,le=MAX_COUNT)
     capacity:Count=Field(ge=1,le=MAX_COUNT)
@@ -48,6 +51,7 @@ class SourceExpectation(Model):
     environment:Environment
     workflow:str|None=Field(default=None,pattern=r'^[a-z][a-z0-9_.-]{0,63}$')
     interval_seconds:Count=Field(ge=10,le=3600)
+    reporting_mode:ReportingMode='continuous'
     enabled:StrictBool=True
 
 class HealthQuery(Window):
@@ -102,7 +106,8 @@ class CollectionHealth:
         with closing(self.connect()) as c,c:
             c.execute('BEGIN IMMEDIATE')
             old=c.execute('SELECT * FROM collection_sources WHERE project=? AND source=? AND environment=?',(project,req.source,req.environment)).fetchone()
-            if old and old['revision']==revision+1 and old['definition']==definition:return {'revision':old['revision'],'definition':req.model_dump(mode='json')}
+            old_definition=json.dumps({'reporting_mode':'continuous',**json.loads(old['definition'])},sort_keys=True,separators=(',',':')) if old else None
+            if old and old['revision']==revision+1 and old_definition==definition:return {'revision':old['revision'],'definition':req.model_dump(mode='json')}
             if (old['revision'] if old else 0)!=revision:raise HTTPException(409,'source expectations changed; read current revision')
             if not old and c.execute('SELECT count(*) FROM collection_sources WHERE project=?',(project,)).fetchone()[0]>=100:raise HTTPException(422,'at most 100 expected sources per project')
             c.execute('INSERT OR REPLACE INTO collection_sources VALUES(?,?,?,?,?,?)',(project,req.source,req.environment,revision+1,definition,time.time()))
@@ -135,6 +140,8 @@ class CollectionHealth:
             if not pulses:reasons.append('pulse_missing')
             interval=exp['definition']['interval_seconds'] if exp else pulses[-1]['interval_seconds']
             allowance=interval*3
+            mode=exp['definition'].get('reporting_mode','continuous') if exp else pulses[-1].get('reporting_mode','continuous')
+            if any(p.get('reporting_mode','continuous')!=mode for p in pulses):reasons.append('source_mode_mismatch')
             instances={}
             for p in pulses:instances.setdefault(p['instance_id'],[]).append(p)
             observations=[]
@@ -146,6 +153,20 @@ class CollectionHealth:
                 conflict=bool(stops) and (len(stops)>1 or stops[0] is not latest or any(p is not stops[0] and p['sequence']>=stops[0]['sequence'] for p in values))
                 lifecycle='conflicting' if conflict else 'reported_stopped' if stops else 'not_established'
                 if conflict:issues.append('collector_lifecycle_conflict')
+                for field in COUNTERS:
+                    numbers=[p[field] for p in (values if mode=='on_demand' else scoped) if p[field] is not None]
+                    if any(a>b for a,b in zip(numbers,numbers[1:])):issues.append('counter_regressed')
+                if mode=='on_demand':
+                    first=values[0]
+                    if any(p.get('reporting_mode','continuous')!='on_demand' for p in values):issues.append('collector_mode_conflict')
+                    if any(p['process_started_at_ms']!=first['process_started_at_ms'] for p in values):issues.append('collector_process_clock_conflict')
+                    if any(b['sequence']!=a['sequence']+1 for a,b in zip(values,values[1:])):issues.append('invocation_sequence_gap')
+                    valid_start=first['sequence']==1 and first.get('collector_state')=='running' and first['queued']==0 and first.get('reporting_mode','continuous')=='on_demand'
+                    if not valid_start:issues.append('invocation_start_missing')
+                    if first['observed_at_ms']-first['process_started_at_ms']>allowance*1000 or any(b['observed_at_ms']-a['observed_at_ms']>allowance*1000 for a,b in zip(values,values[1:])):issues.append('invocation_pulse_gap')
+                    if lifecycle!='reported_stopped':issues.append('invocation_stop_missing')
+                    if lifecycle=='reported_stopped' and latest['observed_at_ms']/1000<start and not issues:continue
+                    if baseline is None and valid_start and first['process_started_at_ms']/1000>=start and all(first[k] in (0,None) for k in COUNTERS):baseline=first
                 if any(p['evaluator_failures'] is None for p in scoped):issues.append('evaluator_health_unknown')
                 if lifecycle!='reported_stopped' and latest['observed_at_ms']/1000<end-allowance:issues.append('pulse_stale')
                 if latest['error_code']:issues.append('collector_reports_error')
@@ -153,10 +174,7 @@ class CollectionHealth:
                 if latest['queued'] and latest['oldest_queued_at_ms']/1000<end-allowance:issues.append('queue_delayed')
                 if latest['queued']>=latest['capacity']:issues.append('queue_full')
                 if any(a['sequence']>=b['sequence'] for a,b in zip(scoped,scoped[1:])):issues.append('pulse_sequence_conflict')
-                for field in ['dropped','rejected','delivery_failures','evaluator_failures']:
-                    numbers=[p[field] for p in scoped if p[field] is not None]
-                    if any(a>b for a,b in zip(numbers,numbers[1:])):issues.append('counter_regressed')
-                changes={k:latest[k]-baseline[k] if baseline is not None and in_window and all(p[k] is not None for p in scoped) and 'counter_regressed' not in issues else None for k in ['dropped','rejected','delivery_failures','evaluator_failures']}
+                changes={k:latest[k]-baseline[k] if baseline is not None and in_window and all(p[k] is not None for p in scoped) and 'counter_regressed' not in issues else None for k in COUNTERS}
                 if any(changes[k] is not None and changes[k]>0 for k in ['dropped','rejected']):issues.append('collector_reports_window_loss')
                 elif any(changes[k] is None and latest[k]>0 for k in ['dropped','rejected']):issues.append('collector_loss_window_unknown')
                 if changes['evaluator_failures'] is not None and changes['evaluator_failures']>0:issues.append('collector_reports_evaluator_failures')
@@ -164,11 +182,12 @@ class CollectionHealth:
                 observations.append({'instance_id':instance,'latest':latest,'lifecycle':lifecycle,'issues':sorted(set(issues)),'window_counter_changes':changes})
                 reasons+=issues
             # Coverage uses every declared source pulse. It does not prove that undeclared workers emitted anything.
-            times=sorted({p['observed_at_ms']/1000 for p in pulses})
-            before=[t for t in times if t<=start];during=[t for t in times if start<t<=end]
-            coverage=[max(before)] if before else []
-            coverage+=during
-            if not coverage or coverage[0]>start or start-coverage[0]>allowance or end-coverage[-1]>allowance or any(b-a>allowance for a,b in zip(coverage,coverage[1:])):reasons.append('pulse_coverage_gap')
+            if mode=='continuous':
+                times=sorted({p['observed_at_ms']/1000 for p in pulses})
+                before=[t for t in times if t<=start];during=[t for t in times if start<t<=end]
+                coverage=([max(before)] if before else [])+during
+                if not coverage or coverage[0]>start or start-coverage[0]>allowance or end-coverage[-1]>allowance or any(b-a>allowance for a,b in zip(coverage,coverage[1:])):reasons.append('pulse_coverage_gap')
+            elif not any(p['observed_at_ms']/1000>=start for p in pulses):reasons.append('no_invocations_observed')
             if exp and exp['updated']>start:reasons.append('expectation_changed_after_window_start')
             reasons=sorted(set(reasons));items.append({'source':name,'expectation':exp,'status':'attention' if reasons else 'observed','reasons':reasons,'instances':observations})
         if any(r['rejected_requests'] or r['rejected_spans'] for r in counters):overall.append('project_backend_reported_rejections')
@@ -181,4 +200,5 @@ class CollectionHealth:
                 'Expectations are current editor configuration, not an immutable historical inventory. Changes after the window start prevent clean coverage.',
                 'Backend counters are project-wide across all environments/workflows; failures cannot be assigned to the selected task population. They cover authenticated requests in closed minute buckets overlapping this window. They count requests and OTLP rejected spans, not missing business tasks. Unattributed authentication/body/size failures and health-write failures may be absent.',
                 'Loss counters are cumulative for the reported collector instance; full-window changes require a baseline at/before entry and a later in-window report. Historic nonzero totals alone do not establish new loss. Process exits can lose unsent memory queues without reporting a final pulse.',
-                'Only an explicit empty-queue stop report ends instance freshness checks. This is producer-reported, not independent proof of process exit. Later activity conflicts with that stop within this bounded evidence. Historical instances without a stop remain unknown; current source coverage and counter checks still apply. A current source can have unreported workers.']}
+                'Only an explicit empty-queue stop report ends instance freshness checks. This is producer-reported, not independent proof of process exit. Later activity conflicts with that stop within this bounded evidence. Historical instances without a stop remain unknown; current source coverage and counter checks still apply. A current source can have unreported workers.',
+                'On-demand mode checks each observed invocation from explicit sequence-one start through drained stop; idle gaps between invocations are not continuous coverage. No observed invocation remains unavailable, not healthy idle. A lost start and entirely unreported invocation can be absent. Known evaluator failure counters do not prove any check ran or passed.']}

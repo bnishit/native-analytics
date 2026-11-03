@@ -57,3 +57,23 @@ test('a valid saved window survives collection loading before the shared environ
  const declaration=fs.readFileSync('static/journeys.js','utf8').match(/^const environmentNames=.*;$/m)[0];vm.runInContext(declaration,c);
  await vm.runInContext('collectionView(1)',c);assert.deepEqual(JSON.parse(JSON.stringify(calls[0].body)),query);
 });
+
+test('same-tab saved links read the new exact window instead of keeping the former report',async()=>{
+ const app=fs.readFileSync('static/app.js','utf8'),prefix=app.slice(0,app.indexOf('\nconst fmt='));
+ const initial={environment:'production',start:'2026-11-01T00:00:00Z',end:'2026-11-01T00:05:00Z',as_of:'2026-11-01T00:06:00Z',workflow:'first'},next={...initial,workflow:'second'};
+ const hash=q=>'#'+new URLSearchParams({workspace:'work',project:'app',view:'collection',collection_query:JSON.stringify(q)});
+ const location={hash:hash(initial),reload:()=>{reloads++;current=boot()}},requests=[];let reloads=0,current;
+ function boot(){
+  const handlers={},nodes={};
+  const c=vm.createContext({location,URLSearchParams,window:{addEventListener:(name,fn)=>{handlers[name]=fn}},document:{querySelector:s=>nodes[s]||(nodes[s]={}),querySelectorAll:()=>[{dataset:{tab:'collection'}}]},workspace:'work',environmentNames:{production:'Production'},canEdit:()=>false,panel:(t,b)=>t+b,esc:String,fmt:String,date:String,traceParams:()=>({}),releaseEvidenceParams:()=>({}),pendingPlan:null,journeyEnvironment:'',history:{replaceState:(_,__,value)=>{location.hash=value}},api:async(path,body)=>{if(path.startsWith('/api/collection/sources'))return {sources:[]};requests.push(body);return {...empty,query:body,snapshot:body}}});
+  vm.runInContext(fs.readFileSync('static/collection.js','utf8'),c);vm.runInContext(prefix,c);
+  vm.runInContext(app.slice(app.indexOf('function url('),app.indexOf('\nfunction graph(')),c);
+  return {c,handlers};
+ }
+ current=boot();await vm.runInContext('collectionView(0)',current.c);
+ vm.runInContext('rememberView()',current.c);assert.equal(reloads,0);
+ location.hash=hash(next);current.handlers.hashchange?.();await vm.runInContext('collectionView(0)',current.c);
+ assert.deepEqual(JSON.parse(JSON.stringify(requests.at(-1))),next);assert.equal(reloads,1);
+ const before=requests.length;location.hash=hash({...next,start:null});current.handlers.hashchange?.();
+ await assert.rejects(vm.runInContext('collectionView(0)',current.c),/saved collection window is invalid/);assert.equal(requests.length,before);
+});

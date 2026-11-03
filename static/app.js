@@ -1,6 +1,7 @@
 'use strict';
 const $=s=>document.querySelector(s), esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let project='',tab='outcomes',days=7,eventNames=[],person=null,peopleOffset=0,eventCursor=null,renderVersion=0;
+window.addEventListener('hashchange',()=>location.reload());
 const viewParams=new URLSearchParams(location.hash.slice(1));
 project=viewParams.get('project')||'';
 if([...document.querySelectorAll('nav button')].some(b=>b.dataset.tab===viewParams.get('view')))tab=viewParams.get('view');

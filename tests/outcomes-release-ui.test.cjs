@@ -98,3 +98,23 @@ test('project switching clears old evidence before rememberView rewrites the rou
  assert.equal(new URLSearchParams(location.hash.slice(1)).get('release_proposal'),null);
  assert.equal(vm.runInContext('releaseProposalSelection',c),'');
 });
+
+test('goal form can describe a stored library answer without silently requiring delivery',()=>{
+ const c=context({canEdit:()=>true,environmentOptions:()=>'<option>production</option>'});
+ const data=new URLSearchParams({title:'Stored cited answer',contract:'workflow-trace-v1',workflow:'shelf-library-qa',environment:'production',traffic_kind:'synthetic',min_sample_size:'25',deadline_seconds:'60',check_name:'citation_scope',check_version:'1',method:'code',phase:'after_delivery',evidence_required:'true'});data.append('milestones','completion');c.data=data;
+ const goal=JSON.parse(vm.runInContext('JSON.stringify(outcomeGoalDefinition(data))',c));
+ assert.deepEqual(goal.checks,[{name:'citation_scope',version:1,method:'code',phase:'after_delivery',evidence_required:true}]);assert.deepEqual(goal.milestones,['completion']);assert.equal(goal.min_sample_size,25);
+ const html=vm.runInContext('outcomeGoalForm()',c);assert.match(html,/value="before_delivery"/);assert.match(html,/value="after_delivery"/);assert.match(html,/name="milestones" value="delivery" checked/);assert.match(html,/not independent proof/);
+ c.canEdit=()=>false;assert.equal(vm.runInContext('outcomeGoalForm()',c),'');
+});
+test('goal criteria preserve independent checks and reject empty or duplicate criteria',()=>{
+ const c=context(),data=new URLSearchParams({title:'Checked useful task',contract:'workflow-trace-v1',workflow:'document_export',environment:'production',traffic_kind:'user',min_sample_size:'25',deadline_seconds:'60'});
+ for(const [name,version,method,phase,evidence] of [['source_facts','2','source','before_delivery','true'],['human_review','1','human','after_delivery','false']]){
+  for(const [field,value] of Object.entries({check_name:name,check_version:version,method,phase,evidence_required:evidence}))data.append(field,value);
+ }
+ data.append('milestones','completion');data.append('milestones','usefulness');c.data=data;
+ const goal=JSON.parse(vm.runInContext('JSON.stringify(outcomeGoalDefinition(data))',c));
+ assert.equal(goal.checks[0].version,2);assert.equal(goal.checks[1].method,'human');assert.equal(goal.checks[1].phase,'after_delivery');assert.equal(goal.checks[1].evidence_required,false);assert.deepEqual(goal.milestones,['completion','usefulness']);
+ data.delete('milestones');assert.throws(()=>vm.runInContext('outcomeGoalDefinition(data)',c),/at least one/);data.append('milestones','completion');data.set('check_name','source_facts');data.append('check_name','source_facts');assert.throws(()=>vm.runInContext('outcomeGoalDefinition(data)',c),/different name/);
+ data.delete('check_name');assert.throws(()=>vm.runInContext('outcomeGoalDefinition(data)',c),/1 and 20/);for(let n=0;n<21;n++)data.append('check_name','check_'+n);assert.throws(()=>vm.runInContext('outcomeGoalDefinition(data)',c),/1 and 20/);
+});

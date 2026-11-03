@@ -69,16 +69,31 @@ class BackupTests(unittest.TestCase):
     def test_actual_app_outcomes_datasets_receipts_and_new_ingestion_after_restore(self):
         import app
         import test_release_outcomes
+        import uuid
+        from fastapi import HTTPException
+        from pydantic import SecretStr
+        from loop_sources import Connections
         fixture=test_release_outcomes.ReleaseOutcomeTests();fixture.setUp()
         try:
-            before=fixture.compare();self.assertEqual(before.status_code,200)
-            backup.backup(app.DB_PATH,self.archive);backup.restore(self.archive,self.restored)
-            with patch.object(app,'DB_PATH',self.restored):
-                after=fixture.compare();self.assertEqual(after.status_code,200,after.text)
-                self.assertEqual(after.json()['fingerprint'],before.json()['fingerprint'])
-                response=fixture.f.fixture.ingest({'id':'after-restore','name':'restore.checked','properties':{'synthetic':True}})
-                self.assertEqual(response.status_code,200,response.text);self.assertEqual(response.json()['accepted'],1)
-                self.assertEqual(fixture.client.get('/api/projects').status_code,401)
+            with patch.dict(os.environ,{'AFTERSPAN_CONNECTION_KEY':base64.b64encode(b'k'*32).decode()}):
+                connections=Connections(app.connect);active=str(uuid.uuid4());revoked=str(uuid.uuid4())
+                for id in [active,revoked]:connections.put('alpha',id,0,'github',{'repository':'owner/application'},SecretStr('synthetic-provider-canary'))
+                connections.revoke('alpha',revoked,1)
+                before=fixture.compare();self.assertEqual(before.status_code,200)
+                backup.backup(app.DB_PATH,self.archive);backup.restore(self.archive,self.restored)
+                with patch.object(app,'DB_PATH',self.restored):
+                    after=fixture.compare();self.assertEqual(after.status_code,200,after.text)
+                    self.assertEqual(after.json()['fingerprint'],before.json()['fingerprint'])
+                    self.assertEqual(connections.resolve('alpha',active)['secret'].get_secret_value(),'synthetic-provider-canary')
+                    for key in ['',base64.b64encode(b'x'*32).decode()]:
+                        with patch.dict(os.environ,{'AFTERSPAN_CONNECTION_KEY':key}):
+                            with self.assertRaises(HTTPException) as error:connections.resolve('alpha',active)
+                            self.assertEqual(error.exception.status_code,503)
+                    with self.assertRaises(HTTPException) as error:connections.resolve('alpha',revoked)
+                    self.assertEqual(error.exception.status_code,409)
+                    response=fixture.f.fixture.ingest({'id':'after-restore','name':'restore.checked','properties':{'synthetic':True}})
+                    self.assertEqual(response.status_code,200,response.text);self.assertEqual(response.json()['accepted'],1)
+                    self.assertEqual(fixture.client.get('/api/projects').status_code,401)
         finally:fixture.tearDown()
 
     def test_actual_cli_backup_and_restore_run_in_separate_processes(self):

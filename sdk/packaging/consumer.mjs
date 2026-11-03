@@ -27,6 +27,10 @@ await tracer.task({workflow:'package_probe',environment:'test',trafficKind:'synt
     span.observeAnthropic({type:'content_block_delta',delta:{type:'text_delta',text:'private-content-sentinel'}});
     for(const count of [2,5,5])span.observeAnthropic({type:'message_delta',usage:{output_tokens:count}});
   });
+  await tracer.span('model',span=>{
+    span.modelUsage({provider:'example',model:'fixture/ai-sdk'});
+    assert.ok(span.observeAISDKUsage({inputTokens:20,outputTokens:7,inputTokenDetails:{cacheReadTokens:10},outputTokenDetails:{reasoningTokens:2},raw:{text:'private-content-sentinel'}}));
+  });
   await tracer.span('processing',span=>{assert.equal(2+2,4);span.check('arithmetic','passed',{method:'code',evidenceDigest:createHash('sha256').update('4').digest('hex'),execution:'completed'});span.check('source_facts','unknown',{execution:'not_run',reasonCode:'evidence_absent'});},{milestone:'completion'});
   await tracer.span('response',()=>{},{milestone:'delivery',disposition:'delivered'});
 });

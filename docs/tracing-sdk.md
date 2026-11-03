@@ -9,8 +9,8 @@ The Python distribution is `afterspan-sdk`; the server-only ESM Node package is 
 Pinned Git installation is verified at the released commit below in fresh consumers. Node also passed a production `--omit=dev` lockfile install with a fresh cache and SSH disabled. Python preserves the existing flat-module imports. No registry account or publication is needed. npm Git installation runs the reviewed `prepare` build and downloads its pinned build dependencies.
 
 ```sh
-python -m pip install 'afterspan-sdk @ git+https://github.com/bnishit/native-analytics.git@bb6e2ff353f3d664f11d04288e17ab44293758ff#subdirectory=sdk/python'
-npm install 'git+https://github.com/bnishit/native-analytics.git#bb6e2ff353f3d664f11d04288e17ab44293758ff'
+python -m pip install 'afterspan-sdk @ git+https://github.com/bnishit/native-analytics.git@2db18488316a0b61f977f14294957ee7fefc1443#subdirectory=sdk/python'
+npm install 'git+https://github.com/bnishit/native-analytics.git#2db18488316a0b61f977f14294957ee7fefc1443'
 ```
 
 ### Build and verify artifacts locally
@@ -127,6 +127,16 @@ The metadata setter accepts the existing wire fields: input/output/cache/reasoni
 
 No prompt, output, refusal text, tool arguments or raw provider error is retained by these observers. Selected debugging remains a separate opt-in path. The server still enforces model-step, terminal-observation, usage-provenance and first-output-within-duration rules. The SDK's two languages and actual cross-language ingestion are tested locally; current production adoption is tracked separately in [release acceptance](outcome-platform-release.md).
 
+## Normalized AI SDK usage (Node)
+
+`span.observeAISDKUsage(usage)` and standalone `ModelObservation.observeAISDKUsage(usage)` read one normalized AI SDK step's usage without importing the framework. Declare the model identity on an open model span first. Read `inputTokens` and `outputTokens` as inclusive totals; cache-read and reasoning counts are subsets, not extra tokens. Detail objects and the legacy `cachedInputTokens` / `reasoningTokens` aliases are supported; contradictory aliases reject the snapshot. Do not pass raw provider usage objects or aggregate multiple models under one model identity.
+
+Use the already consumed step's `onStepFinish({usage})` callback while that model span is open. Consume the text stream normally. Do not await `result.usage` or `result.totalUsage` solely for telemetry: these accessors can consume the stream and change cancellation or latency. With multi-step or model-switching agents, instrument each actual model call separately rather than attaching summed task usage to one model. The observer never starts a provider call, awaits metadata or retries business work.
+
+Each invocation replaces count fields, including unknowns; repeated snapshots are not summed and old estimates are not relabelled as reported totals. Only explicit zero is zero. Missing counts stay unknown. Malformed count/detail shapes clear uncertain accounting and increment the existing metadata-error counter. Raw usage, text, model identity, total-token shortcuts and numeric cost fields are not copied. This method does not start the first-output clock, set exact cost, declare a passed check or mark task completion. Keep exact cost separately sourced through the existing metadata setter; a provider's floating-point cost is not an exact decimal receipt.
+
+The mapping follows the installed AI SDK 6 normalized usage contract (including its detail fields and deprecated aliases). Local integration evidence and deployment are separate; neither a synthetic framework stream nor a unit test proves a real customer flow. References: [AI SDK streaming usage and callbacks](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text), and the installed framework's `LanguageModelUsage` declarations and normalization. The current online documentation describes version 7; verify a runtime upgrade independently.
+
 ## Responses and Messages observation
 
 The pinned SDK also exposes `observe_responses` / `observeResponses` for parsed OpenAI Responses objects and events, and `observe_anthropic` / `observeAnthropic` for parsed Anthropic Messages objects and events. These methods are available on an open model span and the standalone observer. The Git installation above includes both methods; earlier SDK revisions require an update. These are explicit observers, not automatic provider/framework wrappers. They add no provider dependency or transport.
@@ -201,7 +211,7 @@ return response;
 
 These are local observation boundaries, not proof of remote HTTP receipt or human reading. Neither helper automatically declares a completion/delivery/usefulness milestone, a passed check or a satisfied goal. Active trace emission is nonblocking through the existing bounded collector; final background flush is best effort. Collector failure never reruns the handler, stream factory or business operation. Node's queue is still in memory. Account-bound workflows must use the optional subject binding below; do not decorate native events with raw user identifiers or extra attributes.
 
-The SDK passes 54 Node checks, including 15 response/stream boundary cases. Fresh installed-package consumers emit completed and cancelled stream lifecycles accepted by the local service. Fresh Node Git installation at the pin above executes a consumed response successfully. These are synthetic local checks, not a deployed customer-product adoption or proof of native provider calls.
+The SDK passes 60 Node checks, including 15 response/stream boundary cases. Fresh installed-package consumers emit completed and cancelled stream lifecycles accepted by the local service. Fresh Node Git installation at the pin above executes a consumed response successfully. These are synthetic local checks, not a deployed customer-product adoption or proof of native provider calls.
 
 ## Account-linked traces and erasure
 

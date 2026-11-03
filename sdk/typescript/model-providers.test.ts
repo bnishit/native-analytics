@@ -72,3 +72,34 @@ test('Malformed usage/detail containers clear accounting and increment diagnosti
   assert.equal(o[method](event),false);assert.equal(o.rejectedUpdates,1);assert.equal(o.snapshot().input_count,undefined);assert.equal(o.snapshot().cost_usd_decimal,undefined);
  }
 });
+test('AI SDK normalized usage keeps totals inclusive and ignores private/raw fields',()=>{
+ const {o,at}=observation();at(120);o.firstOutput();
+ const usage={inputTokens:20,outputTokens:7,inputTokenDetails:{cacheReadTokens:10,cacheWriteTokens:4,noCacheTokens:6},outputTokenDetails:{reasoningTokens:2,textTokens:5},cachedInputTokens:10,reasoningTokens:2,get raw(){throw Error('must not inspect raw metadata')},text:'private-answer',totalTokens:999};
+ assert.equal(o.observeAISDKUsage(usage),true);
+ assert.deepEqual(o.snapshot(),{provider:'example',model:'fixture/model',unit:'token',input_count:20,output_count:7,cache_read_count:10,reasoning_count:2,usage_source:'provider_reported',first_output_ms:20});
+ assert.ok(!JSON.stringify(o.snapshot()).includes('private-'));
+});
+test('AI SDK legacy normalized aliases and real zero counts remain valid',()=>{
+ const {o}=observation();assert.ok(o.observeAISDKUsage({inputTokens:0,outputTokens:0,cachedInputTokens:0,reasoningTokens:0}));
+ assert.equal(o.snapshot().input_count,0);assert.equal(o.snapshot().output_count,0);assert.equal(o.snapshot().cache_read_count,0);assert.equal(o.snapshot().reasoning_count,0);
+ assert.equal(o.snapshot().first_output_ms,undefined);assert.equal(o.snapshot().cost_usd_decimal,undefined);
+});
+test('AI SDK normalized snapshots replace counts rather than sum or relabel estimates',()=>{
+ const {o}=observation();o.record({input_count:99,output_count:80,cache_read_count:50,reasoning_count:40,usage_source:'estimated'});
+ for(let i=0;i<2;i++)assert.ok(o.observeAISDKUsage({inputTokens:3}));
+ assert.equal(o.snapshot().input_count,3);assert.equal(o.snapshot().output_count,undefined);assert.equal(o.snapshot().cache_read_count,undefined);assert.equal(o.snapshot().usage_source,'provider_reported');
+ for(const usage of [{},undefined,null,{inputTokens:undefined,outputTokens:null}]){
+  assert.ok(o.observeAISDKUsage(usage));assert.equal(o.snapshot().input_count,undefined);assert.equal(o.snapshot().usage_source,undefined);
+ }
+});
+test('AI SDK malformed counts, detail containers and conflicting aliases invalidate accounting',()=>{
+ for(const usage of [[],true,4,'bad',{inputTokens:true},{inputTokens:{total:3}},{outputTokens:-1},{inputTokens:1e9+1},{inputTokens:Infinity},{inputTokens:3.5},{inputTokenDetails:[]},{outputTokenDetails:true},{inputTokens:3,cachedInputTokens:2,inputTokenDetails:{cacheReadTokens:1}},{outputTokens:3,reasoningTokens:2,outputTokenDetails:{reasoningTokens:1}},{inputTokens:1,inputTokenDetails:{cacheReadTokens:2}},{outputTokens:1,outputTokenDetails:{reasoningTokens:2}}]){
+  const {o}=observation();o.record({input_count:3,usage_source:'provider_reported',cost_usd_decimal:'0.001',cost_source:'provider_reported'});
+  assert.equal(o.observeAISDKUsage(usage),false);assert.equal(o.rejectedUpdates,1);assert.equal(o.snapshot().input_count,undefined);assert.equal(o.snapshot().cost_usd_decimal,undefined);
+ }
+});
+test('AI SDK usage cannot supply cost, model identity, timing or a closed update',()=>{
+ const {o}=observation();assert.ok(o.observeAISDKUsage({inputTokens:3,model:'private-model',cost:0,cost_usd_decimal:'0.01',usage_source:'estimated',first_output_ms:0}));
+ assert.equal(o.snapshot().model,'fixture/model');assert.equal(o.snapshot().usage_source,'provider_reported');assert.equal(o.snapshot().cost_usd_decimal,undefined);assert.equal(o.snapshot().first_output_ms,undefined);
+ o.close();assert.throws(()=>o.observeAISDKUsage({inputTokens:4}));
+});

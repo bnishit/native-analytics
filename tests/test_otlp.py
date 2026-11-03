@@ -1,4 +1,8 @@
 import gzip
+import os
+import subprocess
+from pathlib import Path
+from contextlib import contextmanager
 import json
 import socket
 import threading
@@ -106,29 +110,67 @@ class OTLPTests(unittest.TestCase):
         response=ExportTraceServiceResponse.FromString(self.send(message).content)
         self.assertEqual(response.partial_success.rejected_spans,1)
 
-    def test_official_exporter_over_real_http_produces_nested_trace(self):
+    @contextmanager
+    def http_service(self):
         sock=socket.socket();sock.bind(('127.0.0.1',0));sock.listen();port=sock.getsockname()[1]
         server=uvicorn.Server(uvicorn.Config(test_analytics.analytics.app,log_level='critical',lifespan='off'))
         thread=threading.Thread(target=server.run,kwargs={'sockets':[sock]},daemon=True);thread.start()
-        provider=None
         try:
             deadline=time.monotonic()+5
             while not server.started and time.monotonic()<deadline:time.sleep(.01)
             self.assertTrue(server.started)
-            provider=TracerProvider(resource=Resource.create({'afterspan.workflow':'document_export','afterspan.environment':'test'}))
-            provider.add_span_processor(SimpleSpanProcessor(OTLPSpanExporter(endpoint=f'http://127.0.0.1:{port}/v1/traces',headers=self.fixture.a,timeout=3)))
-            tracer=provider.get_tracer('afterspan-integration-test')
-            with tracer.start_as_current_span('private outer name') as outer:
-                with tracer.start_as_current_span('private inner name') as inner:
-                    inner.set_attribute('afterspan.step','storage');inner.set_status(Status(StatusCode.OK))
-                outer.set_status(Status(StatusCode.OK))
-            provider.force_flush()
-            trace=self.detail();self.assertEqual(len(trace['spans']),2)
-            self.assertEqual(trace['issues'],[]);self.assertEqual(self.traces()[0]['status'],'observed')
-            self.assertEqual(sum(s['parent'] is not None for s in trace['spans']),1)
+            yield port
         finally:
-            if provider:provider.shutdown()
             server.should_exit=True;thread.join(5);sock.close()
+
+    def test_official_exporter_over_real_http_produces_nested_trace(self):
+        with self.http_service() as port:
+            provider=TracerProvider(resource=Resource.create({'afterspan.workflow':'document_export','afterspan.environment':'test'}))
+            try:
+                provider.add_span_processor(SimpleSpanProcessor(OTLPSpanExporter(endpoint=f'http://127.0.0.1:{port}/v1/traces',headers=self.fixture.a,timeout=3)))
+                tracer=provider.get_tracer('afterspan-integration-test')
+                with tracer.start_as_current_span('private outer name') as outer:
+                    with tracer.start_as_current_span('private inner name') as inner:
+                        inner.set_attribute('afterspan.step','storage');inner.set_status(Status(StatusCode.OK))
+                    outer.set_status(Status(StatusCode.OK))
+                provider.force_flush()
+                trace=self.detail();self.assertEqual(len(trace['spans']),2)
+                self.assertEqual(trace['issues'],[]);self.assertEqual(self.traces()[0]['status'],'observed')
+                self.assertEqual(sum(s['parent'] is not None for s in trace['spans']),1)
+            finally:provider.shutdown()
+
+    @unittest.skipUnless(os.environ.get('AFTERSPAN_OTEL_NODE_MODULES'),'optional official Node consumer is not installed')
+    def test_official_node_http_instrumentation_keeps_parallel_requests_separate(self):
+        script=Path(__file__).resolve().parents[1]/'examples/otel-node-http/emit.cjs'
+        env={'PATH':os.environ['PATH'],'NODE_PATH':os.environ['AFTERSPAN_OTEL_NODE_MODULES']}
+        with self.http_service() as port:
+            config={'origin':f'http://127.0.0.1:{port}','key':self.fixture.a['Authorization'].split(' ',1)[1]}
+            result=subprocess.run(['node',str(script)],input=json.dumps(config),text=True,capture_output=True,env=env,timeout=40)
+            self.assertEqual(result.returncode,0,result.stderr)
+            emitted=json.loads(result.stdout)
+            self.assertFalse(emitted['storage_verified'])
+            self.assertEqual(emitted['export_results'],[0])
+            self.assertEqual(emitted['propagated_requests'],2)
+            rows=self.client.post('/api/traces/review?project=alpha',headers=self.fixture.admin,json={'environment':'test'}).json()['traces']
+            self.assertEqual(len(rows),2)
+            for row in rows:
+                self.assertEqual(row['traffic_kind'],'synthetic');self.assertEqual(row['workflow'],'node_http_interop')
+                self.assertEqual(row['issues'],[]);self.assertEqual(row['checks'],[])
+                self.assertEqual(len(row['spans']),4);self.assertEqual(sum(s['parent'] is not None for s in row['spans']),3)
+                self.assertEqual(sorted(s['step'] for s in row['spans']),['http','processing','processing','receive'])
+                self.assertEqual(sorted(s['state'] for s in row['spans']),['succeeded','succeeded','unknown','unknown'])
+                self.assertTrue(all(s['state']=='unknown' for s in row['spans'] if s['step'] in ('http','receive')))
+                self.assertIsNone(row['request_started_at_ms']);self.assertEqual(row['business_outcome'],'not_established')
+            with test_analytics.analytics.connect() as c:
+                stored=' '.join(r[0] for r in c.execute('SELECT properties FROM events'))
+                self.assertEqual(c.execute('SELECT count(*) FROM events').fetchone()[0],16)
+            for canary in ['synthetic-private-path','omit-me','synthetic inner work','synthetic concurrent request','127.0.0.1','traceparent']:
+                self.assertNotIn(canary,stored)
+            denied=subprocess.run(['node',str(script)],input=json.dumps({**config,'key':'invalid-producer-key'}),text=True,capture_output=True,env=env,timeout=40)
+            self.assertNotEqual(denied.returncode,0);self.assertTrue(denied.stderr.strip().endswith('node_otlp_validation_failed'));self.assertNotIn('invalid-producer-key',denied.stderr)
+            malformed=subprocess.run(['node',str(script)],input='{"key":"private-canary",bad',text=True,capture_output=True,env=env,timeout=5)
+            self.assertNotEqual(malformed.returncode,0);self.assertEqual(malformed.stderr.strip(),'invalid_configuration')
+
     def test_opaque_subject_is_retained_for_erasure_and_erased_trace_cannot_return_anonymously(self):
         subject='account_'+'a'*64;message,span=self.payload()
         attr=message.resource_spans[0].resource.attributes.add();attr.key='afterspan.subject_id';attr.value.string_value=subject

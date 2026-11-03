@@ -1,6 +1,6 @@
 # Capacity and access readiness
 
-The operating-envelope measurements below are local, even where the capabilities are deployed. It is not a hosted SLA, a production load test or an enterprise-security certification.
+The completed operating-envelope measurements below are local. A later paced production-service probe is incomplete and recorded separately. None is a hosted SLA, a sustained production-capacity result or an enterprise-security certification.
 
 ## Measured local envelope — 2026-11-02
 
@@ -21,6 +21,26 @@ The seed accepted 22,000 observations in **2.829 seconds** (7,775.7/second finit
 Each query has 10 measured repetitions per phase. Query workers start with the paced writer; some reads may finish after writes. Each HTTP call opens a fresh connection. Database logical size after queries was 19.70 MiB; database/WAL/shared-memory files occupied 19.73 MiB at that measurement point. The service resident-memory snapshot was 72.70 MiB. These are point measurements, not peak disk/RAM guarantees.
 
 This covers native JSON, one workload size, bounded local concurrency and these read shapes. It does not cover sustained hour/day loads, production disk/network, OTLP throughput, selected-content encryption, provider/model work, broad customer distributions, adversarial traffic or horizontal scaling. Existing rate limits and query bounds were not bypassed. Use the JSON report from an actual run for this machine's timings; do not use these values as pass thresholds on another host.
+
+## Incomplete paced production probe — 2026-11-03
+
+A private, independently reviewed client targeted only the existing isolated verification project on the production service at release `7565e8389cac39f698fb5e9ade91461ad4036ab6`. The plan was 8,000 seed product events, 100 real-time empty synthetic tasks (200 native observations), and 2,000 mixed-phase product events. Native batches contained at most 100 observations, with a one-second pause after every batch. Three read shapes—aggregate p95/breakdown, trace search and outcome evaluation—were checked ten times each after the seed, then started with one paced writer and three readers. The harness stops on the first error or any measured request over five seconds. It does not retry an uncertain write.
+
+The seed and its 30 validation reads completed. During concurrent reads, a TCP connection-establishment timeout stopped the process after three mixed batches. **85 batches acknowledged 8,500 observations; the planned 10,200-observation workload did not finish.** No unresolved write intent remained and no workload was replayed. An existing-intent collision had been tested locally to refuse before HTTP, alongside lost-acknowledgment and slow-request stops.
+
+Separate account-scoped readback verified 8,000 seed product events, 300 mixed product events and 100 synthetic traces. All 100 traces were observed without reported gaps; an opened sample retained its one successful empty-operation span. All 100 mature synthetic tasks correctly remained unclassified, with zero satisfied tasks, because no quality checks or completion milestones were invented. The synthetic goal minimum remained 25. The existing normal-user goals were unchanged. A repeated frozen trace search agreed. The interrupted harness did not persist per-request timing samples before failure, so latency percentiles and a complete mixed-load envelope are unavailable.
+
+| Subsequent fresh-connection control | HTTP 200 | Connection timeouts |
+|---|---:|---:|
+| Same workstation, HTTPX, nine public health reads | 7/9 | 2/9 |
+| Same workstation, curl, nine public health reads | 6/9 | 3/9 |
+| Tracker production runtime, Node HTTPS, nine public health reads | 9/9 | 0/9 |
+
+Each control used three workers, new connections and no retries. The local failures occurred before TCP connection completion; the controls sent no credentials or application data. These small, separately timed controls do not identify a route, provider or service root cause, establish general availability, prove load causality, or measure authenticated query capacity. Impact on other users is unknown. They must not be pooled into a customer failure rate.
+
+The production runtime before and after the probe was Linux x86_64, Python 3.12.16 and SQLite 3.46.1 at the same release. Cgroup ceilings were eight CPU-seconds per second and 8,000,000,000 bytes of memory; these are ceilings, not reserved throughput. The shared database grew from 142,372,864 to 149,602,304 bytes between metadata reads; unrelated activity was not controlled, so the difference is not attributed wholly to this probe. No resource, access, rate-limit, deployment or backup setting changed during measurement. Five offline controls and both source reviews matched probe SHA256 `c10dedac19ea2d56a1da49aa15471aec8b9a6989980051faafe33dca4208b13d` before its one execution.
+
+Full production capacity remains unverified. A future complete measurement needs durable per-request progress, clear cold/persistent-connection conditions and a healthy client path; do not restart this attempt or describe its intended workload as executed. These observations do not replace the local benchmark, confirm an application defect, or establish useful user outcomes.
 
 ## Declared operating limits
 

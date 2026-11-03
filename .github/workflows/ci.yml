@@ -12,7 +12,10 @@ jobs:
         with:
           node-version: '24'
       - run: pip install -r requirements.txt -r requirements-agent.txt -r requirements-test.txt
+      - run: npm install --prefix "$RUNNER_TEMP/otel-node" --save-exact --ignore-scripts @opentelemetry/sdk-node@0.300.0 @opentelemetry/sdk-trace@3.0.0 @opentelemetry/exporter-trace-otlp-proto@0.300.0 @opentelemetry/instrumentation-http@0.300.0 @opentelemetry/api@1.10.0 @opentelemetry/resources@3.0.0
       - run: python -m unittest discover -s tests -v
+        env:
+          AFTERSPAN_OTEL_NODE_MODULES: ${{ runner.temp }}/otel-node/node_modules
       - run: node --check static/evidence.js
       - run: node --check static/loop.js
       - run: node --check static/loop-onboarding.js

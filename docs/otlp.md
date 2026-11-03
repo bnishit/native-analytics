@@ -34,6 +34,12 @@ Usage source is provider_reported by default for emitted gen_ai counts, or expli
 
 Span names, arbitrary attributes, raw error/status text, event bodies, links, prompt/output messages, resource hostnames and user identifiers are deliberately omitted. This intake is not a general raw-span archive. Optional reviewed debugging uses a [separate owner-scoped encrypted snapshot flow](debugging.md); this OTLP intake never captures content. Do not put credentials or personal data into allowlisted provider/model/version fields. Invalid metadata rejects its span instead of retaining a partial favorable result.
 
+## Standard Node HTTP integration
+
+The [runnable Node HTTP recipe](../examples/otel-node-http/README.md) uses the official Node SDK, protobuf exporter and automatic HTTP instrumentation. It sends two concurrent loopback requests with separate W3C trace contexts. Fixed hooks distinguish incoming `receive` from outgoing `http` steps; raw names and URLs remain omitted by intake. The optional real-service test exercises the exact recipe, verifies two four-span traces and content omission, preserves UNSET as unknown, and checks invalid-producer and malformed-configuration failures. CI installs the pinned official consumer separately from the Afterspan SDK dependencies.
+
+An exporter callback is not a stored trace. The recipe explicitly returns `storage_verified:false`; use a separate authorized reader and the frozen send window for delivery proof. This is synthetic interoperability testing, not another deployed product or a useful user task. Production apps should use bounded batching and their own lifecycle policy rather than the example's per-span processor.
+
 ## Evidence
 
 Local tests run the official OpenTelemetry Python SDK and HTTP exporter against a real loopback service, then read the nested trace from the shared explorer. Other tests cover protobuf/JSON/gzip equivalence, idempotency, partial rejection, unknown status, conflicting updates, model provenance and decompression bounds. The official exporter also passed against the production service in an isolated synthetic project: two nested spans, exact declared decimal cost, stable-ID re-export deduplication, content omission, anonymous-ingestion denial, producer-read denial and cross-project audit denial. Those model values are synthetic price-table metadata; Tracker separately supplies real provider-reported usage and charges. This is bounded interoperability proof, not adoption by a second customer product.

@@ -42,3 +42,11 @@ test('missing, null, naive or invalid saved boundaries never fall back to a roll
   await assert.rejects(vm.runInContext('collectionView(1)',c),/saved collection window is invalid/);assert.equal(calls,0);
  }
 });
+
+test('a valid saved window survives collection loading before the shared environment labels',async()=>{
+ const query={environment:'production',start:'2026-11-01T00:00:00Z',end:'2026-11-01T00:05:00Z',as_of:'2026-11-01T00:06:00Z'},calls=[];
+ const {c}=routeContext(query,{environmentNames:undefined,api:async(path,body)=>{calls.push({path,body});return path==='/api/collection/sources'?{sources:[]}:{...empty,query,snapshot:query}}});
+ const page=fs.readFileSync('static/index.html','utf8');assert.ok(page.indexOf('/assets/collection.js')<page.indexOf('/assets/journeys.js'));
+ const declaration=fs.readFileSync('static/journeys.js','utf8').match(/^const environmentNames=.*;$/m)[0];vm.runInContext(declaration,c);
+ await vm.runInContext('collectionView(1)',c);assert.deepEqual(JSON.parse(JSON.stringify(calls[0].body)),query);
+});

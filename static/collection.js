@@ -4,7 +4,7 @@ try{
  const params=new URLSearchParams(location.hash.slice(1));collectionProject=params.get('project')||'';
  if(params.has('collection_query')){
   collectionQuery=JSON.parse(params.get('collection_query'));
-  if(!collectionQuery||Array.isArray(collectionQuery)||typeof collectionQuery!=='object'||!Object.hasOwn(environmentNames,collectionQuery.environment))throw Error();
+  if(!collectionQuery||Array.isArray(collectionQuery)||typeof collectionQuery!=='object')throw Error();
   for(const name of ['start','end','as_of']){
    const value=collectionQuery[name];
    if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)||!Number.isFinite(Date.parse(value)))throw Error();
@@ -27,6 +27,7 @@ function collectionHealthMarkup(r){
 }
 async function collectionView(version){
  if(collectionProject!==project){resetCollectionWindow();collectionProject=project}
+ if(collectionQuery&&!Object.hasOwn(environmentNames,collectionQuery.environment))collectionQueryInvalid=true;
  if(collectionQueryInvalid)throw Error('The saved collection window is invalid. Use Refresh to start a new read.');
  const [r,catalog]=await Promise.all([api(url('/api/collection/health'),collectionQuery||{days,environment:collectionEnvironment}),api(url('/api/collection/sources'))]);if(version!==renderVersion)return;collectionQuery=r.query;collectionEnvironment=r.query.environment;
  $('#content').innerHTML=panel('Review collection',`<label>Environment<select id="collection-environment">${Object.entries(environmentNames).map(([v,label])=>`<option value="${esc(v)}" ${v===collectionEnvironment?'selected':''}>${esc(label)}</option>`).join('')}</select></label>`)+collectionHealthMarkup(r)+(canEdit()?panel('Declare an expected source',`<p>Declare a known source before collecting its evidence. This is current configuration, not proof of a running worker or a past inventory. A changed expectation makes earlier coverage uncertain.</p><form id="collection-source-form"><label>Source handle<input name="source" pattern="[a-z][a-z0-9_.-]{0,63}" required maxlength="64"></label><label>Workflow handle (optional)<input name="workflow" pattern="[a-z][a-z0-9_.-]{0,63}" maxlength="64"></label><label>Expected pulse interval, seconds<input type="number" name="interval_seconds" min="10" max="3600" value="60" required></label><label><input type="checkbox" name="enabled" checked>Source expected to report</label><button>Save expectation for ${esc(collectionEnvironment)}</button></form><p>Existing declarations: ${catalog.sources.map(s=>`${esc(s.definition.source)} · ${esc(s.definition.environment)} · v${s.revision} · ${s.definition.enabled?'enabled':'disabled'}`).join('; ')||'None'}</p>`):'');

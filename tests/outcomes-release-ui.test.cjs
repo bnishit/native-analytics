@@ -4,7 +4,7 @@ const fs=require('node:fs');
 const vm=require('node:vm');
 function context(extra={}){
  const c=vm.createContext({project:'app',location:{hash:''},URLSearchParams,panel:(title,body)=>title+' '+body,esc:v=>String(v??'').replaceAll('<','&lt;'),fmt:String,...extra});
- vm.runInContext(fs.readFileSync('static/outcomes.js','utf8'),c);return c;
+ vm.runInContext(fs.readFileSync('static/collection.js','utf8'),c);vm.runInContext(fs.readFileSync('static/outcomes.js','utf8'),c);return c;
 }
 test('model cost never turns absent observations or missing amounts into free success',()=>{
  const c=context();let html=vm.runInContext('outcomeModelCost({model_spans:0})',c);assert.match(html,/does not establish zero cost/);
@@ -136,4 +136,12 @@ test('release comparison explains the pinned sample shortfall and source warning
  assert.match(html,/Collector report is stale/);assert.match(html,/Evaluator health was not observed/);assert.doesNotMatch(html,/<unsafe>/);assert.match(html,/Change unavailable/);
  const old=vm.runInContext('outcomeReleaseMarkup('+JSON.stringify({...report,goal_definition:undefined})+')',c);
  assert.doesNotMatch(old,/of 25|23 more mature/);assert.match(old,/Pinned comparison criteria were not returned/);
+});
+
+test('release collection drilldown preserves the exact source window and project',()=>{
+ const c=context({workspace:'work',days:7}),query={days:7,start:'2026-11-01T00:00:00Z',end:'2026-11-01T00:05:00Z',as_of:'2026-11-01T00:06:00Z',environment:'staging',workflow:'document_export'};
+ const cohort={counts:{satisfied:0,failed:0,withheld:0,unclassified:0},mature_denominator:0,snapshot:query,tasks:[],collection_health:{status:'attention',reasons:[],sources:[],query}};
+ const data={status:'unknown',reasons:[],experiment:{baseline_pass_rate:1,candidate_pass_rate:1},satisfied_fraction_difference:null,before:cohort,limits:[]};
+ const html=vm.runInContext('outcomeReleaseMarkup('+JSON.stringify(data)+')',c),match=html.match(/href="([^"]+)"[^>]*>Inspect Before collection window/);assert.ok(match);
+ const link=new URL(match[1],'https://example.com'),params=new URLSearchParams(link.hash.slice(1));assert.equal(params.get('project'),'app');assert.equal(params.get('workspace'),'work');assert.equal(params.get('view'),'collection');assert.deepEqual(JSON.parse(params.get('collection_query')),query);
 });

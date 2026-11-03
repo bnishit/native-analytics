@@ -42,6 +42,12 @@ Emit `evidence.observed` with only `properties.afterspan_evidence` and no identi
 
 Receipts use existing immutable, idempotent event storage and retention. Required evidence qualifies only when a receipt resolves in the same project/environment and receipt cutoff, matches all bindings, and was issued no later than the check. A pointer alone, another task's receipt, changed check version, contradictory receipt or missing/expired record leaves required evidence unclassified. Diagnostic reads expose resolution status but neither raw receipt UUID nor digest. Replaying an event cannot overwrite the original; conflicting receipts under a new event ID cannot pick the favorable result.
 
+## Define a goal in the workspace
+
+Editors can use Outcomes → Save a goal to choose one to twenty named, versioned checks. For each check, choose its method, before/after-delivery timing and whether a scoped evidence receipt is required. Choose at least one completion, delivery or usefulness milestone. All selected criteria must qualify; unselected milestones are not silently required. For example, a library answer can require a code citation check after delivery and completion only, while a source-backed Slack reply can require a check before delivery plus completion and delivery.
+
+The defaults retain the stricter existing reply goal: evidence required, check before delivery, completion and delivery, user traffic and 25 mature tasks for a release comparison. New criteria do not change saved goals or instrument the producer. A producer-reported usefulness milestone is not independently measured usefulness. The API retains immutable versioning; this form creates new goals.
+
 ## Release measurement
 
 Goals can select a traffic population and minimum mature comparison sample. Unknown labels never become normal users. Outcomes can join a pinned goal/dataset experiment to two stored verified deployments and frozen mature user-task windows. Reported model cost includes failed and retried mature tasks; missing cost stays unknown. See [release outcomes](release-outcomes.md) for exact bindings, access, limits and interfaces. Normal-use outcome improvement remains unproven.

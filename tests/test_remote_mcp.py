@@ -51,6 +51,15 @@ class RemoteMCPTests(unittest.TestCase):
         code=q['code'][0];r=self.exchange(cid,code,verifier);self.assertEqual(r.status_code,200,r.text)
         return owner,uid,workspace,project,cid,r.json(),code,verifier
 
+    def downgrade_member(self,owner,workspace,user):
+        guardian,_=self.join(owner,workspace,'guardian@example.test','owner')
+        response=guardian.patch('/api/workspaces/'+workspace+'/members/'+user,headers=CSRF,json={'role':'reader'})
+        self.assertEqual(response.status_code,200,response.text)
+        members=guardian.get('/api/workspaces/'+workspace+'/members').json()['members']
+        self.assertEqual(next(m['role'] for m in members if m['id']==user),'reader')
+        self.assertEqual(sum(m['role']=='owner' for m in members),1)
+        return guardian
+
     def test_connection_lasts_six_months_but_access_tokens_stay_short_lived(self):
         owner,uid,w,p,cid,t,code,verifier=self.grant('audit:read')
         self.assertLessEqual(t['expires_in'],3600)
@@ -114,7 +123,7 @@ class RemoteMCPTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/charts',params={'project':p},headers={'Authorization':'Bearer '+new['access_token']}).status_code,401)
         rid,v=self.begin(cid);r=owner.post('/auth/mcp/decision',headers=CSRF,json={'request_id':rid,'project':p,'approve':True})
         code=parse_qs(urlsplit(r.json()['redirect_uri']).query)['code'][0];t=self.exchange(cid,code,v).json();h={'Authorization':'Bearer '+t['access_token']}
-        with closing(app.connect()) as c,c:c.execute("UPDATE memberships SET role='reader' WHERE workspace=? AND user_id=?",(w,uid))
+        self.downgrade_member(owner,w,uid)
         self.assertEqual(self.client.post('/api/charts',params={'project':p},headers=h,json={'title':'Denied','query':{}}).status_code,403)
         self.assertEqual(self.client.get('/api/charts',params={'project':p},headers=h).status_code,200)
         connections=owner.get('/auth/mcp/connections').json()['connections'];gid=connections[0]['id']
@@ -255,7 +264,7 @@ class RemoteMCPTests(unittest.TestCase):
             self.assertEqual(len(call('saved_charts')['charts']),1)
             changed=rpc('tools/call',{'name':'save_chart','arguments':{**chart,'title':'Changed'}})['result'];self.assertTrue(changed['isError'])
             self.assertEqual(len(call('saved_charts')['charts']),1)
-            with closing(app.connect()) as c,c:c.execute("UPDATE memberships SET role='reader' WHERE workspace=? AND user_id=?",(w,uid))
+            self.downgrade_member(owner,w,uid)
             downgraded=rpc('tools/call',{'name':'save_outcome_goal','arguments':{**args,'revision':1}})['result']
             self.assertTrue(downgraded['isError'])
             downgraded=rpc('tools/call',{'name':'experiment_objects','arguments':{'kind':'cases'}})['result']
@@ -325,7 +334,7 @@ class RemoteMCPTests(unittest.TestCase):
             denied=client.post('/api/outcomes/releases/'+receipt_id+'/adopt?project='+project,headers=headers,json=body);self.assertIn(denied.status_code,[401,403])
             adopted=owner.post('/api/outcomes/releases/'+receipt_id+'/adopt?project='+project,headers=CSRF,json=body);self.assertEqual(adopted.status_code,200,adopted.text)
             final=call('release_evidence',{'id':receipt_id});self.assertEqual(final['adopted_by'],uid);self.assertNotIn('private patch',json.dumps(final))
-            with closing(app.connect()) as connection,connection:connection.execute("UPDATE memberships SET role='reader' WHERE workspace=? AND user_id=?",(workspace,uid))
+            self.downgrade_member(owner,workspace,uid)
             self.assertTrue(rpc('tools/call',{'name':'release_sources','arguments':{}})['isError'])
 
     def test_chart_write_scope_cannot_edit_outcome_goals(self):
@@ -348,10 +357,22 @@ class RemoteMCPTests(unittest.TestCase):
         owner,uid,w,p,cid,t,*_=self.grant('audit:read collection:write');headers={'Authorization':'Bearer '+t['access_token']}
         self.assertEqual(self.client.put('/api/collection/sources?project='+p,headers=headers,json=definition).status_code,200)
         self.assertEqual(self.client.get('/api/collection/sources?project=other-project',headers=headers).status_code,403)
-        with closing(app.connect()) as c,c:c.execute("UPDATE memberships SET role='reader' WHERE workspace=? AND user_id=?",(w,uid))
+        guardian=self.downgrade_member(owner,w,uid)
         self.assertEqual(self.client.put('/api/collection/sources?project='+p+'&revision=1',headers=headers,json={**definition,'enabled':False}).status_code,403)
         self.assertEqual(self.client.get('/api/collection/sources?project='+p,headers=headers).status_code,200)
-        self.client.post('/revoke',data={'client_id':cid,'token':t['access_token']}).raise_for_status()
+        refreshed=self.client.post('/token',data={'grant_type':'refresh_token','client_id':cid,'refresh_token':t['refresh_token']})
+        self.assertEqual(refreshed.status_code,200,refreshed.text);fresh=refreshed.json()
+        self.assertEqual(fresh['scope'],'audit:read')
         self.assertEqual(self.client.get('/api/collection/sources?project='+p,headers=headers).status_code,401)
+        headers={'Authorization':'Bearer '+fresh['access_token']}
+        self.assertEqual(self.client.get('/api/collection/sources?project='+p,headers=headers).status_code,200)
+        member='/api/workspaces/'+w+'/members/'+uid
+        self.assertEqual(guardian.patch(member,headers=CSRF,json={'role':'editor'}).status_code,200)
+        self.assertEqual(self.client.put('/api/collection/sources?project='+p+'&revision=1',headers=headers,json={**definition,'enabled':False}).status_code,403)
+        sources=guardian.get('/api/collection/sources?project='+p).json()['sources']
+        self.assertEqual(sources[0]['revision'],1);self.assertTrue(sources[0]['definition']['enabled'])
+        self.assertEqual(guardian.delete(member,headers=CSRF).status_code,200)
+        self.assertEqual(self.client.get('/api/collection/sources?project='+p,headers=headers).status_code,401)
+        self.assertEqual(self.client.post('/token',data={'grant_type':'refresh_token','client_id':cid,'refresh_token':fresh['refresh_token']}).status_code,400)
 
 if __name__=='__main__':unittest.main()

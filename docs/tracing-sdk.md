@@ -201,7 +201,7 @@ return response;
 
 These are local observation boundaries, not proof of remote HTTP receipt or human reading. Neither helper automatically declares a completion/delivery/usefulness milestone, a passed check or a satisfied goal. Active trace emission is nonblocking through the existing bounded collector; final background flush is best effort. Collector failure never reruns the handler, stream factory or business operation. Node's queue is still in memory. Account-bound workflows must use the optional subject binding below; do not decorate native events with raw user identifiers or extra attributes.
 
-The streaming unit passes 53 Node checks, including 15 response/stream boundary cases. Fresh installed-package consumers emit completed and cancelled stream lifecycles accepted by the local service. Fresh Node Git installation at the pin above executes a consumed response successfully. These are synthetic local checks, not a deployed customer-product adoption or proof of native provider calls.
+The SDK passes 54 Node checks, including 15 response/stream boundary cases. Fresh installed-package consumers emit completed and cancelled stream lifecycles accepted by the local service. Fresh Node Git installation at the pin above executes a consumed response successfully. These are synthetic local checks, not a deployed customer-product adoption or proof of native provider calls.
 
 ## Account-linked traces and erasure
 

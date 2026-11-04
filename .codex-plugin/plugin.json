@@ -1,8 +1,37 @@
 {
   "name": "afterspan",
-  "version": "0.1.0",
-  "description": "Connect, inspect tracking, build saved charts, and investigate Afterspan request evidence.",
+  "version": "0.2.0",
+  "description": "Connect a coding agent to project evidence, reproduce supported Tracker checks, review repairs and follow a verified release within fixed limits.",
+  "author": {
+    "name": "Afterspan contributors"
+  },
   "license": "MIT",
+  "homepage": "https://github.com/bnishit/native-analytics",
+  "repository": "https://github.com/bnishit/native-analytics",
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json"
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Afterspan",
+    "shortDescription": "Evidence for coding changes",
+    "longDescription": "Connect to your own Afterspan deployment. Inspect one failed Tracker catalog check, run supported anonymous fixtures on the coding host, compare reviewed tests and inspect exact release evidence. Keep missing replay or outcome evidence visible. Project permissions and release authority remain separate.",
+    "developerName": "Afterspan contributors",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Project evidence",
+      "Reviewed regression cases",
+      "Bounded release follow-up"
+    ],
+    "websiteURL": "https://github.com/bnishit/native-analytics",
+    "defaultPrompt": [
+      "Connect Afterspan to this Tracker checkout and investigate one failed catalog check."
+    ],
+    "brandColor": "#F2673C",
+    "composerIcon": "./static/brand/mark.svg",
+    "logo": "./static/brand/mark.svg"
+  },
+  "extensions": {
+    "com.openai": {
+      "onboardingSkill": "./skills/connect-and-verify/SKILL.md"
+    }
+  }
 }

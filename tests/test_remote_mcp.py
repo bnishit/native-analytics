@@ -28,7 +28,7 @@ class RemoteMCPTests(unittest.TestCase):
     join=test_workspaces.WorkspaceTests.join
 
     def register(self):
-        r=self.client.post('/register',json={'client_name':'Fresh test agent','redirect_uris':['http://127.0.0.1:19191/callback'],'grant_types':['authorization_code','refresh_token'],'response_types':['code'],'token_endpoint_auth_method':'none','scope':'analytics:read charts:write audit:read goals:write experiments:write debug:read collection:write releases:write'})
+        r=self.client.post('/register',json={'client_name':'Fresh test agent','redirect_uris':['http://127.0.0.1:19191/callback'],'grant_types':['authorization_code','refresh_token'],'response_types':['code'],'token_endpoint_auth_method':'none','scope':'analytics:read charts:write audit:read goals:write experiments:write debug:read collection:write releases:write followups:write'})
         self.assertEqual(r.status_code,201,r.text);return r.json()['client_id']
 
     def begin(self,cid,scope='analytics:read charts:write',**overrides):
@@ -68,6 +68,44 @@ class RemoteMCPTests(unittest.TestCase):
             client=c.execute('SELECT expires FROM oauth_clients WHERE id=?',(cid,)).fetchone()
             self.assertGreater(grant['expires'],time.time()+179*86400)
             self.assertGreaterEqual(client['expires'],grant['expires'])
+
+    def test_followups_need_new_consent_and_current_authority(self):
+        from starlette.requests import Request
+        owner,uid,w,p,cid,t,*_=self.grant('audit:read experiments:write')
+        headers={'Authorization':'Bearer '+t['access_token']}
+        self.assertEqual(self.client.post('/api/improvements/status?project='+p,headers=headers,json={}).json()['next_action'],'select_outcome_goal')
+        path='/api/outcomes/followups/'+str(uuid.uuid4())+'?project='+p
+        self.assertEqual(self.client.get(path,headers=headers).status_code,403)
+        owner,uid,w,p,cid,t,*_=self.grant('audit:read experiments:write followups:write')
+        request=Request({'type':'http','method':'PUT','path':'/api/outcomes/followups/'+str(uuid.uuid4()),
+            'headers':[(b'authorization',('Bearer '+t['access_token']).encode())]})
+        authority=app.improvements.authority_for(request,p)
+        self.assertTrue(app.improvements.authority_valid(p,authority))
+        self.assertFalse(app.improvements.authority_valid('alpha',authority))
+        response=self.client.post('/token',data={'grant_type':'refresh_token','client_id':cid,'refresh_token':t['refresh_token'],
+            'scope':'audit:read experiments:write'})
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertFalse(app.improvements.authority_valid(p,authority))
+        self.assertEqual(self.client.get('/api/outcomes/followups/'+str(uuid.uuid4())+'?project='+p,
+            headers={'Authorization':'Bearer '+response.json()['access_token']}).status_code,403)
+
+    def test_followup_session_key_and_member_revocation_are_rechecked(self):
+        from starlette.requests import Request
+        owner,uid,w,p,cid,t,*_=self.grant('audit:read experiments:write followups:write')
+        def request(headers):
+            return Request({'type':'http','method':'PUT','path':'/api/outcomes/followups/'+str(uuid.uuid4()),
+                'headers':[(k.encode(),v.encode()) for k,v in headers.items()]})
+        session_authority=app.improvements.authority_for(request({'cookie':'as_session='+owner.cookies.get('as_session'),'x-native-csrf':'1'}),p)
+        self.assertTrue(app.improvements.authority_valid(p,session_authority))
+        key=test_workspaces.WorkspaceTests.key(self,owner,w,'editor')
+        key_authority=app.improvements.authority_for(request({'authorization':'Bearer '+key['key']}),p)
+        self.assertTrue(app.improvements.authority_valid(p,key_authority))
+        self.assertEqual(owner.delete('/api/workspaces/'+w+'/agent-keys/'+key['id'],headers=CSRF).status_code,200)
+        self.assertFalse(app.improvements.authority_valid(p,key_authority))
+        oauth_authority=app.improvements.authority_for(request({'authorization':'Bearer '+t['access_token']}),p)
+        self.downgrade_member(owner,w,uid)
+        self.assertFalse(app.improvements.authority_valid(p,session_authority))
+        self.assertFalse(app.improvements.authority_valid(p,oauth_authority))
 
     def test_real_protocol_requires_pkce_consent_and_scopes(self):
         metadata=self.client.get('/.well-known/oauth-authorization-server',headers={'Origin':'https://client.example'})

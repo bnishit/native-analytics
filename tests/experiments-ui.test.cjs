@@ -20,3 +20,10 @@ test('non-editors never fetch curated fixture content',async()=>{
  let html='',calls=0;const c=context({canEdit:()=>false,$:()=>({set innerHTML(value){html=value}}),api:()=>{calls++;throw Error('must not fetch')}});
  await vm.runInContext('experimentsView(1)',c);assert.equal(calls,0);assert.match(html,/Editor access is required/);
 });
+test('a new trace handoff clears an earlier unsaved captured fixture',()=>{
+ let renders=0;const c=context({project:'alpha',tab:'traces',render:()=>renders++});
+ vm.runInContext('reviewRegressionCase({reference:"trace_a"},{schema_version:"catalog-check-replay-v1"})',c);
+ assert.equal(vm.runInContext('regressionDraft.schema_version',c),'catalog-check-replay-v1');
+ vm.runInContext('reviewRegressionCase({reference:"trace_b"})',c);
+ assert.equal(vm.runInContext('regressionDraft',c),null);assert.equal(vm.runInContext('regressionSource.reference',c),'trace_b');assert.equal(renders,2);
+});

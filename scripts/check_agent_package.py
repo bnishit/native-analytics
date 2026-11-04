@@ -40,7 +40,8 @@ def check(root):
     accepted=ast.literal_eval(guide.args.args[0].annotation.slice)
     if set(accepted)!=set(names):raise ValueError('remote guide invocation does not accept every packaged workflow')
     mcp=json.loads(local(root,codex['mcpServers']).read_text())
-    if mcp!={'mcpServers':{'afterspan':{'type':'http','url':'${AFTERSPAN_URL}/mcp'}}}:raise ValueError('package must use the caller deployment without credentials')
+    if mcp!={'mcpServers':{}}:raise ValueError('Codex setup must register the chosen deployment explicitly; bundled URL interpolation is unsupported')
+    if load('.mcp.json')!={'mcpServers':{'afterspan':{'type':'http','url':'${AFTERSPAN_URL}/mcp'}}}:raise ValueError('Claude compatibility must use the caller deployment without credentials')
     interface=codex['interface']
     for field in ['composerIcon','logo']:
         icon=local(root,interface[field]);box=ET.parse(icon).getroot().attrib.get('viewBox','').split()
@@ -83,7 +84,7 @@ def main():
         result=check(args.root)
         if args.codex:result['codex_discovery']=discover(args.root,result)
         if args.origin:result['connection']={'mcp_url':origin(args.origin)+'/mcp','authentication_required':True}
-        result['limits']=['Discovery is not installation, OAuth consent, a completed agent task or public publication.','Set AFTERSPAN_URL in the client process; use direct MCP setup when environment substitution is unavailable.']
+        result['limits']=['Discovery is not installation, OAuth consent, a completed agent task or public publication.','Codex loads packaged skills; connect-and-verify registers the chosen deployment through codex mcp add before OAuth.']
         print(json.dumps(result,indent=2))
     except (ValueError,KeyError,StopIteration,OSError,ET.ParseError,subprocess.TimeoutExpired) as exc:
         parser.exit(1,'Agent package check failed: '+str(exc)+'\n')

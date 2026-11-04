@@ -47,7 +47,7 @@ class AgentPackageTests(unittest.TestCase):
         path=self.root/'skills/improve-tracker/SKILL.md';path.unlink();path.symlink_to(external)
         with self.assertRaises(ValueError):package.check(self.root)
     def test_credentials_and_remote_origins_never_enter_the_package(self):
-        self.change('.mcp.json',lambda b:b['mcpServers']['afterspan'].update(url='https://someone-else.example/mcp'))
+        self.change('.codex-plugin/mcp.json',lambda b:b['mcpServers'].update(afterspan={'type':'http','url':'${AFTERSPAN_URL}/mcp'}))
         with self.assertRaises(ValueError):package.check(self.root)
         for value in ['https://token@host.example','https://host.example/?key=secret','http://remote.example','https://host.example/mcp','https://host.example:invalid','https://host.example?','https://host.example#']:
             with self.assertRaises(ValueError):package.origin(value)

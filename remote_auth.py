@@ -22,6 +22,7 @@ class Decision(BaseModel):
     request_id:str=Field(min_length=32,max_length=100)
     project:str=Field(default='',max_length=160)
     approve:bool
+    scopes:list[str]|None=Field(default=None,min_length=1,max_length=len(SCOPES))
 
 class ProjectToken(AccessToken):
     project:str
@@ -211,7 +212,10 @@ class OAuthProvider:
                 if not r:raise HTTPException(400,'request expired or already decided')
                 params=json.loads(r['params']);redirect=params['redirect_uri']
                 if req.approve:
-                    minimum='editor' if set(params['scopes']) & EDITOR_SCOPES else 'reader'
+                    scopes=params['scopes'] if req.scopes is None else req.scopes
+                    if len(scopes)!=len(set(scopes)) or not set(scopes)<=set(params['scopes']):raise HTTPException(422,'Choose only permissions requested by this client')
+                    params['scopes']=scopes
+                    minimum='editor' if set(scopes) & EDITOR_SCOPES else 'reader'
                     row=c.execute('SELECT p.workspace,m.role FROM projects p JOIN memberships m ON m.workspace=p.workspace WHERE p.id=? AND m.user_id=?',(req.project,p['id'])).fetchone()
                     if not row or ROLES[row['role']]<ROLES[minimum]:raise HTTPException(403,'project role does not allow requested access')
                     if c.execute('SELECT count(*) FROM oauth_grants WHERE user_id=? AND revoked=0 AND expires>?',(p['id'],time.time())).fetchone()[0]>=30:raise HTTPException(422,'revoke an unused connection first')

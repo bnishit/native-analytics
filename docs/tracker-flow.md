@@ -23,14 +23,18 @@ The agent calls `connection_status`, then `get_workflow(name="improve-tracker")`
 
 ### Optional skills package
 
-The same six workflows are packaged for compatible clients. Version0.2.1 includes the Tracker improvement entry, metadata-only follow-up discovery, a Codex onboarding skill and a repo-local marketplace. Set `AFTERSPAN_URL` to your own origin in the process that starts the client. Clients without environment substitution should use direct MCP setup above.
-
-After reviewing the package source/version:
+The same six workflows are packaged for compatible clients. Version 0.2.2 installs the Codex skills without a placeholder server URL. Connect your chosen deployment explicitly; Codex 0.163 does not expand environment variables in bundled HTTP URLs. The Claude compatibility file remains separate and still needs client-specific verification.
 
 ```sh
 codex plugin marketplace add bnishit/native-analytics
 codex plugin add afterspan@afterspan-local
 ```
+
+Start a new Codex chat and ask:
+
+> Use the installed Afterspan connect-and-verify skill. Connect my deployment at https://YOUR_HOST, select my Tracker project, and inspect one catalog failure. Stop and explain any missing permission or evidence.
+
+The skill checks an existing connection before changing it, verifies your deployment and uses the scoped OAuth login. Installation does not create an account/project, capture policy or release permission. You still choose the project and approve consent. `codex mcp add` may open consent before the explicit login command. In that screen select only `audit:read` for Tracker inspection. The server accepts a subset of the requested permissions; it cannot expand them. Use `codex mcp login afterspan --scopes audit:read` when connecting again with an explicit scope. After adding or changing a connection, start a new chat so the client loads it.
 
 Use `--ref REVIEWED_COMMIT` on marketplace add when pinning a reviewed Git release. This local/repo marketplace is not a public Plugins Directory listing. The Claude manifest is included; every client still needs its own install, OAuth, representative-task and reconnect/revocation proof. No project hook, capture policy, monitor or release authority is installed automatically.
 
@@ -114,7 +118,7 @@ Run the baseline first and retain its failing assertion. Repair the smallest own
 
 Add references as the work completes and preserve the query in private host state. Wrong project, changed goal, unrelated source/case, different dataset or wrong release cannot silently advance the flow. Baseline reproduction here means a complete failing **reviewed case**, not historical full-request replay. Submitted experiment outputs are checked against reviewed facts; they are not execution attestations.
 
-The equivalent CLI is `tracker-flow-status --project PROJECT --file private-query.json`. This read cannot grant code execution, code review, CI clearance or deployment authority.
+The equivalent CLI is `tracker-flow-status --project PROJECT --file private-query.json`. This read cannot grant code execution, code review, CI clearance or deployment authority. Its follow-up stage is `not_checked`, not a claim that no job exists. Use the separately scoped follow-up discovery before creating a window.
 
 ## 5. Verify the exact release
 

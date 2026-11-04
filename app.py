@@ -34,6 +34,7 @@ from otlp import install as install_otlp
 from regressions import Regressions
 from debugging import Debugging
 from release_outcomes import ReleaseOutcomes
+from improvement import Improvements
 from collection_health import CollectionHealth,CollectionPulse,pipeline_summary
 
 from journeys import JourneyContext,project_journeys,summarize
@@ -116,6 +117,7 @@ def init_db():
         CollectionHealth.init_db(c)
         Outcomes.init_db(c)
         Regressions.init_db(c)
+        Improvements.init_db(c)
         Debugging.init_db(c)
         Catalog.init_db(c)
         Audit.init_db(c)
@@ -134,6 +136,7 @@ def prune():
         c.execute('DELETE FROM collection_ingestion WHERE bucket < ?',(cutoff,))
         c.execute('DELETE FROM regression_objects WHERE expires<=?',(time.time(),))
         c.execute('DELETE FROM debug_snapshots WHERE expires<=?',(time.time(),))
+        c.execute('DELETE FROM outcome_followups WHERE deadline<?',(cutoff,))
         c.execute('DELETE FROM people WHERE last_seen < ?', (cutoff,))
         c.execute('DELETE FROM login_limits WHERE window < ?', (time.time()-3600,))
         c.execute('DELETE FROM setup_checks WHERE created < ?', (cutoff,))
@@ -167,6 +170,11 @@ def startup():
             except sqlite3.Error:pass
             if _prune_stop.wait(2):break
     threading.Thread(target=deliver_mail,name='account-mail',daemon=True).start()
+    def followups():
+        while not _prune_stop.wait(30):
+            try:improvements.work()
+            except sqlite3.Error:pass
+    threading.Thread(target=followups,name='outcome-followups',daemon=True).start()
 
 
 @app.on_event('shutdown')
@@ -1080,6 +1088,7 @@ product_loop=ProductLoop(app,connect,reader,editor,owner,RETENTION_DAYS,store_ev
 from release_evidence import ReleaseEvidence
 release_evidence=ReleaseEvidence(app,product_loop,accounts,editor)
 release_outcomes=ReleaseOutcomes(app,connect,editor,outcomes,regressions,product_loop,collection_health,release_evidence)
+improvements=Improvements(app,connect,editor,outcomes,regressions,release_outcomes,trace_explorer,accounts,oauth)
 
 
 @app.get('/.well-known/afterspan')
@@ -1088,6 +1097,7 @@ def capabilities():
       'analytics':{'catalog':'/api/catalog','funnels':'/api/funnels/analyze','retention':'/api/retention/analyze','unit':'explicit opaque identity; not automatically a person'},
       'product_loop':{'goals':'/api/loop/goals','contract':'committed goals, scoped tracking PRs, independent answer checks and mature observational outcomes','local_mcp':'agent/loop_server.py','production_release_proof':'separate from PR and merge','repo_onboarding':{'sources':'/api/loop/sources','scans':'/api/loop/scans/{UUID}','jobs':'/api/loop/jobs/{UUID}','contract':'afterspan-repo-goal-v2','unit':'declared logged events or observed read requests, not unique people','measurements':['event-outcome-v1','slack-read-outcome-v1'],'credentials':'owner-only encrypted project connections','release':'/api/loop/actions/{id}/release'}},
       'outcomes':{'goals':'/api/outcomes/goals','evaluate':'/api/outcomes/evaluate','contract':'workflow-outcome-v1','scope':'project audit-purpose read; editor writes goal versions','evidence':'producer-reported criteria, not independent business proof'},
+      'improvement_flow':{'status':'/api/improvements/status','workflow':'improve-tracker','followups':'/api/outcomes/followups/{UUID}','max_window_seconds':86400,'max_checks':24,'execution':'host-side reviewed code/tests; service observes only'},
       'release_evidence':{'prepare':'/api/outcomes/release-proposals/{UUID}','adopt':'/api/outcomes/releases/{UUID}/adopt','scope':'separate releases:write for editor preparation; owner account session adopts','max_pr_files':200,'latest_deployment_only':True,'merge_or_deploy_authority':False},
       'traces':{'search':'/api/traces/search','open':'/api/traces/open','contracts':['slack-request-v1','workflow-trace-v1'],'otlp':{'endpoint':'/v1/traces','transport':'OTLP/HTTP protobuf or JSON','content_capture':False,'max_spans':500,'mapping_version':'afterspan-otel-v1'},'scope':'project audit-purpose read key','raw_data':False},
       'debugging':{'policy':'/api/debug/policy','capture':'/v1/debug','review':'/api/debug/review','default_enabled':False,'scope':'owner capture policy; project editor and separate debug:read for remote content reads','max_capture_window_seconds':86400,'max_retention_seconds':604800,'encrypted':True},

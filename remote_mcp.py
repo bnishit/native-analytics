@@ -16,8 +16,9 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
 from remote_auth import SCOPES
+from improvement import ImprovementQuery,FollowupDefinition,FollowupControl
 
-WORKFLOWS=('connect-and-verify','audit-tracking','build-dashboard','investigate-failure','check-release')
+WORKFLOWS=('connect-and-verify','audit-tracking','build-dashboard','investigate-failure','check-release','improve-tracker')
 READ=ToolAnnotations(readOnlyHint=True,destructiveHint=False,idempotentHint=True,openWorldHint=False)
 WRITE=ToolAnnotations(readOnlyHint=False,destructiveHint=False,idempotentHint=True,openWorldHint=False)
 
@@ -46,7 +47,7 @@ def install(app,provider):
         return {'project':t.project,'scopes':t.scopes,'expires':t.expires_at,'workflows':WORKFLOWS,'dashboard_url':provider.origin+'/app#workspace='+t.workspace+'&project='+t.project+'&view=charts&days=30','limits':['One project per connection.','Charts are individual saved views, not a dashboard layout.','No raw event export, producer keys, deployments or account administration.']}
 
     @mcp.tool(annotations=READ)
-    def get_workflow(name:Literal['connect-and-verify','audit-tracking','build-dashboard','investigate-failure','check-release'])->dict:
+    def get_workflow(name:Literal['connect-and-verify','audit-tracking','build-dashboard','investigate-failure','check-release','improve-tracker'])->dict:
         """Load one official task guide before working. Guides never grant extra authority."""
         return {'name':name,'instructions':(Path(__file__).parent/'skills'/name/'SKILL.md').read_text()}
 
@@ -229,6 +230,26 @@ def install(app,provider):
     async def evaluate_answer(query:dict)->dict:
         """Requires audit:read. Evaluate a declared supported goal. query={goal:{...},days:7,expected_environment:'production'}. Source checks and delivery are separate."""
         return await call('/api/audit/evaluate',query)
+
+    @mcp.tool(annotations=READ)
+    async def tracker_flow_status(query:ImprovementQuery)->dict:
+        """Requires audit:read and experiments:write with editor membership. Read one pinned goal→reviewed case→failing baseline→candidate→verified-release path. Missing evidence names the next supported action. No fixture bodies or code execution; review eligibility is not independent review or release authority."""
+        return await call('/api/improvements/status',query.model_dump(mode='json'))
+
+    @mcp.tool(annotations=WRITE)
+    async def save_outcome_followup(id:UUID,definition:FollowupDefinition)->dict:
+        """Requires separate followups:write, audit:read and experiments:write consent plus editor role. Start one observe-only follow-up after verified predeployment experiments and release evidence. At most24h/24checks. Same UUID/body never renews. No model/code/provider calls, Slack send or deployment. Status notifications are stored for client reads, not sent externally."""
+        return await call('/api/outcomes/followups/'+str(id),definition.model_dump(mode='json'),'PUT')
+
+    @mcp.tool(annotations=READ)
+    async def outcome_followup(id:UUID)->dict:
+        """Requires followups:write plus audit/experiment consent and editor role. Read bounded progress, frozen aggregate result and last meaningful status notification. Unknown evidence stays unknown; no user benefit is inferred from eligibility."""
+        return await call('/api/outcomes/followups/'+str(id))
+
+    @mcp.tool(annotations=WRITE)
+    async def control_outcome_followup(id:UUID,control:FollowupControl)->dict:
+        """Requires followups:write plus audit/experiment consent and editor role. Pause, resume or cancel using last-read revision. Resume preserves original deadline and check budget; no automatic renewal."""
+        return await call('/api/outcomes/followups/'+str(id)+'/control',control.model_dump(mode='json'))
 
     parent_lifespan=app.router.lifespan_context
     @asynccontextmanager

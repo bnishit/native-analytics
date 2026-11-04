@@ -227,7 +227,7 @@ class RemoteMCPTests(unittest.TestCase):
                 response=owner.put('/api/debug/policy?project='+p+'&revision=1',headers=CSRF,json={**policy,'contract':'slack-request-v1','workflow':'slack_read_request'})
                 self.assertEqual(response.status_code,200,response.text)
                 content={'schema_version':'catalog-check-replay-v1','release_sha':None,'request':None,'candidate':None,'source':None,'blocked':[],
-                         'quality':{'check_version':'growthbook-catalog-v2','reported_outcome':'unknown','checked_claims':0,'mismatched_claims':0,'unknown_claims':0}}
+                         'quality':{'check_version':'growthbook-catalog-v2','reported_outcome':'failed','checked_claims':1,'mismatched_claims':1,'unknown_claims':0}}
                 capture=DebugSnapshot(id=uuid.uuid4(),policy_revision=2,privacy_reviewed=True,contract='slack-request-v1',kind='replay',workflow='slack_read_request',environment='staging',
                     trace_id=slack['request_ref'],attempt_id=slack['attempt_ref'],span_id=slack['span_ref'],content=content)
                 app.debugging.capture(p,capture)

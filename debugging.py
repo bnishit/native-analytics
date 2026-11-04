@@ -121,6 +121,7 @@ class Debugging:
             if req.contract!=definition.get('contract','workflow-trace-v1'):raise HTTPException(403,'snapshot contract is outside the approved capture scope')
             if req.workflow!=definition['workflow'] or req.environment!=definition['environment']:raise HTTPException(403,'snapshot is outside the approved workflow/environment')
             if req.kind=='replay' and any(value and value['environment']!=req.environment for value in [content['request'],content['candidate']]):raise HTTPException(409,'replay environment does not match its approved source scope')
+            if req.kind=='replay' and content['quality']['reported_outcome']!='failed':raise HTTPException(403,'catalog replay capture accepts failed checks only')
             old=c.execute('SELECT sha256,expires FROM debug_snapshots WHERE project=? AND id=?',(project,str(req.id))).fetchone()
             if old:
                 if old['expires']<=now:raise HTTPException(410,'snapshot expired; retry cannot renew retention')

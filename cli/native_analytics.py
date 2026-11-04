@@ -113,7 +113,7 @@ def parser():
         if name in ['release-prepare','release-adopt']:command.add_argument('--file',required=True)
     for name in ['tracker-flow-status','followup-save','followup','followup-control']:
         command=sub.add_parser(name);command.add_argument('--project',required=True)
-        if name!='tracker-flow-status':command.add_argument('--id',required=True,type=uuid.UUID)
+        if name!='tracker-flow-status':command.add_argument('--id',required=name!='followup',type=uuid.UUID)
         if name!='followup':command.add_argument('--file',required=True)
     command=sub.add_parser('debug-policy');command.add_argument('--project',required=True);command.add_argument('--file');command.add_argument('--revision',type=int)
     command=sub.add_parser('debug-review');command.add_argument('--project',required=True);command.add_argument('--file',required=True)
@@ -246,7 +246,7 @@ def main(argv=None):
     if command in ['release-evidence','release-adopt']:path='/api/outcomes/releases/'+str(args.id)
     if command=='release-adopt':path+='/adopt';body=private_json(args.file);method='POST'
     if command in ['tracker-flow-status','followup-save','followup','followup-control']:
-        path='/api/improvements/status' if command=='tracker-flow-status' else '/api/outcomes/followups/'+str(args.id)+('/control' if command=='followup-control' else '')
+        path='/api/improvements/status' if command=='tracker-flow-status' else '/api/outcomes/followups'+('/'+str(args.id) if args.id else '')+('/control' if command=='followup-control' else '')
         method='GET' if command=='followup' else 'PUT' if command=='followup-save' else 'POST'
         if command!='followup':body=json.loads(Path(args.file).read_text())
     if command=='debug-policy':

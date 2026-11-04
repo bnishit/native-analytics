@@ -30,3 +30,10 @@ test('snapshot content requires a selected read and renders as literal text',asy
  assert.equal(calls,2);assert.equal(text,'');assert.doesNotMatch(markup,/<img/);
  await button.onclick();assert.equal(calls,3);assert.equal(text,JSON.stringify({answer:'<img src=x onerror=unsafe>'},null,2));
 });
+test('check fixtures distinguish available from replayed and explain missing evidence',()=>{
+ const c=context();
+ const available=vm.runInContext('replayAvailability({status:"available",reasons:[]})',c);
+ assert.match(available,/not yet replayed/);assert.match(available,/Full request replay is unavailable/);assert.match(available,/Review expected facts separately/);
+ const blocked=vm.runInContext('debugSnapshotList({snapshots:[],replay:{status:"blocked",reasons:["source_unavailable","not_retained_in_window"]}})',c);
+ assert.match(blocked,/replay blocked/);assert.match(blocked,/source read is unavailable/);assert.match(blocked,/No fixture is retained/);
+});

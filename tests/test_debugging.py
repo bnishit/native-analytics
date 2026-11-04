@@ -110,3 +110,99 @@ class DebuggingTests(unittest.TestCase):
         self.assertFalse(safe['context']['enabled']);self.assertEqual(safe['context']['count'],0)
         for value in [{'x':float('inf')},{'x':'a'*4001},{'x':[0]*101},{'x':object()}]:
             with self.assertRaises((ValueError,TypeError)):redact_debug(value)
+
+class CatalogReplayTests(unittest.TestCase):
+    enable=DebuggingTests.enable
+    capture=DebuggingTests.capture
+    read=DebuggingTests.read
+    tearDown=DebuggingTests.tearDown
+
+    def setUp(self):
+        DebuggingTests.setUp(self)
+        self.policy.update(contract='slack-request-v1',workflow='slack_read_request',environment='production')
+        self.facts={'schema_version':'slack-request-v1','stage':'trace','request_ref':str(uuid.uuid4()),'attempt_ref':str(uuid.uuid4()),
+                    'attempt_number':1,'request_started_at_ms':int(time.time()*1000),'span_ref':str(uuid.uuid4()),
+                    'trace_step':'quality','span_state':'succeeded','duration_ms':1.0,'environment':'production',
+                    'request_kind':'read','release_sha':'a'*40}
+        self.event_id=str(uuid.uuid4())
+        self.f.ingest([{'id':self.event_id,'name':'slack.audit.trace','properties':{'afterspan_audit':self.facts}}]).raise_for_status()
+        request={'environment':'production','status':'enabled','limit':5,'intent':'bounded'}
+        self.content={'schema_version':'catalog-check-replay-v1','release_sha':'a'*40,'request':request,
+          'candidate':{'environment':'production','request':request,'coverage':{'checked':1,'complete':True},'matching':1,
+                       'claims':[{'row':1,'enabled':False,'entries':0,'version':1}]},
+          'source':{'coverage':{'checked':1,'complete':True},'rows':[{'row':1,'enabled':True,'archived':False,'entries':0,'version':1}]},
+          'quality':{'check_version':'growthbook-catalog-v2','reported_outcome':'failed','checked_claims':1,'mismatched_claims':1,'unknown_claims':0},'blocked':[]}
+        self.snapshot.update(contract='slack-request-v1',kind='replay',workflow='slack_read_request',environment='production',
+          trace_id=self.facts['request_ref'],attempt_id=self.facts['attempt_ref'],span_id=self.facts['span_ref'],content=self.content)
+
+    def query(self,project='alpha'):
+        result=self.client.post('/api/traces/search?project='+project,headers=self.auth,json={'environment':'production','contract':'slack-request-v1'}).json()
+        return {**result['query'],'reference':result['traces'][0]['reference']}
+
+    def test_slack_fixture_reuses_encryption_selected_reads_and_exact_reference(self):
+        self.enable().raise_for_status();self.capture().raise_for_status()
+        listed=self.read().json();self.assertNotIn('content',listed['snapshots'][0]);self.assertEqual(listed['snapshots'][0]['replay']['status'],'available')
+        opened=self.read(id=self.snapshot['id']);self.assertEqual(opened.status_code,200,opened.text)
+        self.assertFalse(opened.json()['replay']['full_request_replay']);self.assertFalse(opened.json()['replay']['replayed'])
+        self.assertEqual(opened.json()['content'],self.content)
+        for private in [self.facts['request_ref'],self.facts['span_ref']]:self.assertNotIn(private,opened.text)
+        with closing(test_analytics.analytics.connect()) as c:self.assertNotIn(b'catalog-check',c.execute('SELECT payload FROM debug_snapshots').fetchone()[0])
+        self.assertEqual(self.read(id=self.snapshot['id'],project='beta').status_code,404)
+
+    def test_native_capture_policy_does_not_grant_slack_capture(self):
+        self.enable({**self.policy,'contract':'workflow-trace-v1'}).raise_for_status()
+        self.assertEqual(self.capture().status_code,403)
+
+    def test_arbitrary_text_and_wrong_release_cannot_become_replay_content(self):
+        self.enable().raise_for_status()
+        for extra in [{'message':'private text'},{'password':'private secret'},{'source_url':'https://private.example'}]:
+            response=self.capture({**self.snapshot,'content':{**self.content,**extra}})
+            self.assertEqual(response.status_code,422,response.text);self.assertNotIn('private secret',response.text)
+        self.assertEqual(self.capture({**self.snapshot,'content':{**self.content,'release_sha':'b'*40}}).status_code,409)
+        self.assertEqual(self.capture({**self.snapshot,'content':{**self.content,'request':{**self.content['request'],'environment':'staging'}}}).status_code,409)
+        self.assertEqual(self.capture({**self.snapshot,'kind':'context'}).status_code,422)
+
+    def test_missing_source_and_release_are_explicitly_blocked(self):
+        self.enable().raise_for_status()
+        self.capture({**self.snapshot,'content':{**self.content,'source':None,'release_sha':None}}).raise_for_status()
+        result=self.read(id=self.snapshot['id']).json()['replay']
+        self.assertEqual(result['status'],'blocked');self.assertEqual(result['reasons'],['release_unavailable','source_unavailable'])
+
+    def test_budget_retry_expiry_and_source_erasure_apply_to_slack(self):
+        self.enable({**self.policy,'max_snapshots':1}).raise_for_status();first=self.capture().json()
+        self.assertEqual(self.capture().json()['expires'],first['expires'])
+        self.assertEqual(self.capture({**self.snapshot,'id':str(uuid.uuid4())}).status_code,429)
+        with patch('debugging.time.time',return_value=time.time()+130):self.assertEqual(self.read(id=self.snapshot['id']).status_code,410)
+        query=self.query()
+        with closing(test_analytics.analytics.connect()) as c,c:c.execute('DELETE FROM events WHERE project=? AND id=?',('alpha',self.event_id))
+        self.assertEqual(self.read(query).status_code,404)
+        with closing(test_analytics.analytics.connect()) as c:self.assertEqual(c.execute('SELECT COUNT(*) FROM debug_snapshots').fetchone()[0],0)
+
+    def test_absent_replay_and_revocation_never_look_runnable(self):
+        self.enable().raise_for_status()
+        result=self.read().json();self.assertEqual(result['replay']['status'],'blocked');self.assertIn('not_retained_in_window',result['replay']['reasons'])
+        self.capture().raise_for_status();self.enable({**self.policy,'enabled':False},revision=1).raise_for_status()
+        self.assertEqual(self.read(id=self.snapshot['id']).status_code,403)
+
+    def test_reviewed_case_keeps_replay_limits_and_does_not_guess_expected_facts(self):
+        content={**self.content,'source':None}
+        case={'title':'Reviewed anonymous check','input':content,'expected':{'reported_outcome':'failed'},'privacy_reviewed':True}
+        response=self.client.put('/api/experiments/cases/'+str(uuid.uuid4())+'?project=alpha&revision=0',headers=self.auth,json=case)
+        self.assertEqual(response.status_code,200,response.text);self.assertEqual(response.json()['replay']['status'],'blocked')
+        listed=self.client.get('/api/experiments/cases?project=alpha',headers=self.auth).json()['items'][0]['definition']
+        self.assertEqual(listed['replay']['reasons'],['source_unavailable']);self.assertNotIn('input',listed)
+        self.assertEqual(response.json()['definition']['expected'],case['expected'])
+
+    def test_capture_does_not_leak_into_an_earlier_frozen_receipt(self):
+        self.enable().raise_for_status();query=self.query();self.capture().raise_for_status()
+        result=self.read(query).json();self.assertEqual(result['snapshots'],[])
+        self.assertEqual(result['replay']['status'],'blocked');self.assertEqual(len(self.read().json()['snapshots']),1)
+
+    def test_only_quality_read_spans_and_separately_authorized_readers_can_inspect(self):
+        self.enable().raise_for_status()
+        self.assertEqual(self.capture({**self.snapshot,'attempt_id':str(uuid.uuid4())}).status_code,409)
+        self.capture().raise_for_status();query=self.query()
+        for purpose in ['analytics','audit']:
+            key=self.client.post('/api/projects/alpha/read-keys',headers=self.auth,json={'label':'replay denied','purpose':purpose}).json()['read_key']
+            self.assertIn(self.read(query,self.snapshot['id'],headers={'Authorization':'Bearer '+key}).status_code,[401,403])
+        self.assertEqual(self.read(query,self.snapshot['id'],headers=self.f.a).status_code,401)

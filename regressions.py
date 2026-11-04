@@ -10,6 +10,7 @@ from pydantic import Field,StrictBool,field_validator,model_validator
 from product_analytics import Model
 from trace_explorer import TraceOpen
 from outcomes import OutcomeBinding
+from catalog_replay import CatalogReplay
 
 from sdk.python.afterspan_experiments import reviewed_json,canonical,digest
 
@@ -33,6 +34,7 @@ class CaseDefinition(Reviewed):
     def safe(cls,value):return reviewed_json(value)
     @model_validator(mode='after')
     def frozen(self):
+        if self.input.get('schema_version')=='catalog-check-replay-v1':CatalogReplay.model_validate(self.input)
         if self.source and any(getattr(self.source,k) is None for k in ['start','end','as_of']):raise ValueError('source trace requires its exact frozen start/end/as_of query')
         if self.source:reviewed_json(self.source.search)
         if self.evaluator=='json_subset' and not self.expected:raise ValueError('subset checks require at least one expected fact')
@@ -150,7 +152,8 @@ class Regressions:
         if r['expires']<=time.time():raise HTTPException(410,'fixture or run expired; do not infer reproducibility')
         definition=json.loads(r['definition'])
         if digest(definition)!=r['sha256']:raise HTTPException(409,'stored definition does not match its pinned hash')
-        return {**dict(r),'definition':definition}
+        replay=CatalogReplay.model_validate(definition['input']).availability() if kind=='case' and definition['input'].get('schema_version')=='catalog-check-replay-v1' else None
+        return {**dict(r),'definition':definition,**({'replay':replay} if replay else {})}
 
     def list(self,project,kind):
         with closing(self.connect()) as c:
@@ -162,6 +165,7 @@ class Regressions:
         for row in rows:
             definition=json.loads(row['definition'])
             summary={k:v for k,v in definition.items() if k not in {'input','expected','results','configuration','cases'}}
+            if kind=='case' and definition['input'].get('schema_version')=='catalog-check-replay-v1':summary['replay']=CatalogReplay.model_validate(definition['input']).availability()
             if kind=='dataset':summary['case_count']=len(definition['cases'])
             item={**dict(row),'definition':summary}
             if kind=='run':item.update(bindings.get((definition['dataset'],definition['dataset_version']),{'outcome_goal':None,'dataset_title':None}))

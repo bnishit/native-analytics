@@ -2,7 +2,7 @@
 
 ## User flow
 
-A project editor opens a failed or incomplete request in **Traces**, chooses **Create a reviewed regression case**, and supplies a safe input plus the facts the answer should contain. Afterspan links the exact frozen trace window without copying a private request or model output. The editor pins selected case versions into a dataset. An application developer runs the baseline and repair on those same inputs in their own environment. **Experiments** shows each check, changed facts and whether the repair meets that dataset's review criteria.
+A project editor opens a failed or incomplete request in **Traces**, chooses **Create a reviewed regression case**, and supplies a safe input plus the facts the answer should contain. Afterspan links the exact frozen trace window without copying a private request or model output. When an owner-approved anonymous Tracker check fixture is retained, the editor can inspect it and copy it into the same reviewed-case form. Expected facts remain blank until reviewed. Cases show check-fixture availability or blocked reasons; this never claims full request replay. The editor pins selected case versions into a dataset. An application developer runs the baseline and repair on those same inputs in their own environment. **Experiments** shows each check, changed facts and whether the repair meets that dataset's review criteria.
 
 An experiment is a controlled fixture comparison. It is not a production outcome, a deployment receipt or permission to merge. Existing reviewed release policy still applies. Measuring the later real release remains a separate gate.
 

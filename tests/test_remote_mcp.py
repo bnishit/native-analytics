@@ -221,6 +221,23 @@ class RemoteMCPTests(unittest.TestCase):
                 debugged=call('review_debug_snapshots',{'query':{**debug_query,'snapshot_id':snapshot_id}})
                 self.assertEqual(debugged['content'],{'chosen':'public fixture'});self.assertNotIn(facts['trace_id'],json.dumps(debugged))
                 self.assertEqual(client.put('/api/debug/policy?project='+p+'&revision=1',headers={'Authorization':'Bearer '+t['access_token']},json=policy).status_code,403)
+                slack={'schema_version':'slack-request-v1','stage':'trace','request_ref':str(uuid.uuid4()),'attempt_ref':str(uuid.uuid4()),'span_ref':str(uuid.uuid4()),
+                       'attempt_number':1,'request_started_at_ms':int(time.time()*1000),'trace_step':'quality','span_state':'succeeded','duration_ms':1.0,'environment':'staging','request_kind':'read'}
+                with closing(app.connect()) as c,c:app.store_events(c,p,[app.Event(name='slack.audit.trace',properties={'afterspan_audit':slack})])
+                response=owner.put('/api/debug/policy?project='+p+'&revision=1',headers=CSRF,json={**policy,'contract':'slack-request-v1','workflow':'slack_read_request'})
+                self.assertEqual(response.status_code,200,response.text)
+                content={'schema_version':'catalog-check-replay-v1','release_sha':None,'request':None,'candidate':None,'source':None,'blocked':[],
+                         'quality':{'check_version':'growthbook-catalog-v2','reported_outcome':'unknown','checked_claims':0,'mismatched_claims':0,'unknown_claims':0}}
+                capture=DebugSnapshot(id=uuid.uuid4(),policy_revision=2,privacy_reviewed=True,contract='slack-request-v1',kind='replay',workflow='slack_read_request',environment='staging',
+                    trace_id=slack['request_ref'],attempt_id=slack['attempt_ref'],span_id=slack['span_ref'],content=content)
+                app.debugging.capture(p,capture)
+                fresh=call('search_traces',{'query':{'environment':'staging','contract':'slack-request-v1'}})
+                debug_query={**fresh['query'],'reference':fresh['traces'][0]['reference']}
+                listed=call('review_debug_snapshots',{'query':debug_query})
+                self.assertEqual(listed['snapshots'][0]['replay']['status'],'blocked');self.assertNotIn('content',listed['snapshots'][0])
+                selected=call('review_debug_snapshots',{'query':{**debug_query,'snapshot_id':str(capture.id)}})
+                self.assertEqual(selected['content'],content);self.assertFalse(selected['replay']['full_request_replay'])
+                self.assertIn('release_unavailable',selected['replay']['reasons'])
 
             from outcomes import OutcomeGoal
             goal_id=str(uuid.uuid4())

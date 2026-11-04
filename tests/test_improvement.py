@@ -35,14 +35,17 @@ class ImprovementTests(unittest.TestCase):
         self.assertEqual(self.status({}).json()['next_action'],'select_outcome_goal')
         self.assertEqual(self.status({'outcome_goal':self.f.binding}).json()['next_action'],'review_regression_case')
         response=self.status();self.assertEqual(response.status_code,200,response.text)
-        self.assertEqual(response.json()['next_action'],'start_bounded_followup')
+        self.assertEqual(response.json()['next_action'],'inspect_existing_followups')
+        self.assertEqual(response.json()['stages'][-1]['state'],'not_checked')
+        saved=self.save();self.assertEqual(saved.status_code,200,saved.text)
+        self.assertEqual(self.status().json()['stages'][-1]['state'],'not_checked')
         self.assertFalse(response.json()['original_request_replay']);self.assertFalse(response.json()['deployment_authorized'])
         self.assertNotIn('\"output\":',json.dumps(response.json()))
         forged=self.status({**self.query,'passed':True});self.assertEqual(forged.status_code,422)
         changed={**self.query,'outcome_goal':{**self.f.binding,'sha256':'0'*64}}
         self.assertEqual(self.status(changed).status_code,409)
         self.f.change_receipt(self.f.candidate_action,lambda r:r['release'].update(commit='f'*40))
-        result=self.status().json();self.assertNotEqual(result['next_action'],'start_bounded_followup')
+        result=self.status().json();self.assertNotEqual(result['next_action'],'inspect_existing_followups')
         self.assertIn('verified_release_receipt_missing',result['reasons'])
     def test_postdeployment_runs_and_missing_cases_cannot_unlock_followup(self):
         with closing(app.connect()) as c,c:

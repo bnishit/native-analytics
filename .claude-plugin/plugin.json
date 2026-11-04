@@ -1,6 +1,6 @@
 {
   "name": "afterspan",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Connect a coding agent to project evidence, reproduce supported Tracker checks, review repairs and follow a verified release within fixed limits.",
   "author": {
     "name": "Afterspan contributors"

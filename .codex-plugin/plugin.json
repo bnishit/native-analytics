@@ -1,6 +1,6 @@
 {
   "name": "afterspan",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Connect a coding agent to project evidence, reproduce supported Tracker checks, review repairs and follow a verified release within fixed limits.",
   "author": {
     "name": "Afterspan contributors"
@@ -9,7 +9,7 @@
   "homepage": "https://github.com/bnishit/native-analytics",
   "repository": "https://github.com/bnishit/native-analytics",
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json",
+  "mcpServers": "./.codex-plugin/mcp.json",
   "interface": {
     "displayName": "Afterspan",
     "shortDescription": "Evidence for coding changes",

@@ -122,14 +122,15 @@ class Improvements:
                 if max(baseline['run']['created'],candidate['run']['created'])>datetime.fromisoformat(release['released_at']).timestamp():
                     bound=False;reasons.append('experiments_did_not_precede_deployment')
             stage('release','verified_identity' if repaired and bound else 'blocked' if req.release_action else 'missing','prepare_verified_release' if not (repaired and bound) else None)
-            if repaired and bound:stage('followup','not_started','start_bounded_followup')
+            if repaired and bound:stage('followup','not_checked','inspect_existing_followups')
         next_action=next((s['next_action'] for s in stages if s['next_action']),None)
         return {'stages':stages,'next_action':next_action,'reasons':reasons,'query':req.model_dump(mode='json'),
             'original_request_replay':False,'reproduction_scope':'reviewed_case','deployment_authorized':False,
             'limits':['Fixture checks do not replay original model decisions or Slack delivery.',
                 'Experiment outputs are application-side submissions checked against reviewed facts, not execution attestations.',
                 'Review eligibility and verified release identity do not prove independent review, CI, current runtime health or user benefit.',
-                'Use the coding host for code/tests and existing reviewed release authority. No code executes here.']}
+                'Use the coding host for code/tests and existing reviewed release authority. No code executes here.',
+                'Follow-up jobs are not read by this status call. Discover existing jobs with separate followups:write before creating another window.']}
 
     def authority_for(self,request,project):
         raw=request.headers.get('authorization','').removeprefix('Bearer ')
@@ -167,7 +168,7 @@ class Improvements:
         query=ImprovementQuery(outcome_goal=req.outcome_goal,dataset=CaseRef(id=candidate['run']['definition']['dataset'],version=candidate['run']['definition']['dataset_version']),
             baseline_run=req.baseline_run,candidate_run=req.candidate_run,release_action=req.release_action)
         status=self.status(project,query)
-        if status['next_action']!='start_bounded_followup':raise HTTPException(409,'reproduced baseline, improved candidate and predeployment release binding required')
+        if not any(s['stage']=='release' and s['state']=='verified_identity' for s in status['stages']):raise HTTPException(409,'reproduced baseline, improved candidate and predeployment release binding required')
         release=self.releases.resolve(project,str(req.release_action),goal.environment)
         old=self.releases.resolve(project,str(req.baseline_release_action),goal.environment)
         if not old or old['commit']!=release['base_commit']:raise HTTPException(409,'baseline provider release is not bound')

@@ -51,6 +51,33 @@ class RemoteMCPTests(unittest.TestCase):
         code=q['code'][0];r=self.exchange(cid,code,verifier);self.assertEqual(r.status_code,200,r.text)
         return owner,uid,workspace,project,cid,r.json(),code,verifier
 
+    def test_consent_can_narrow_to_read_access_for_a_reader_and_refresh_cannot_expand_it(self):
+        owner,uid,w,p,cid,t,*_=self.grant('audit:read')
+        self.downgrade_member(owner,w,uid)
+        rid,verifier=self.begin(cid,'audit:read experiments:write followups:write')
+        result=owner.post('/auth/mcp/decision',headers=CSRF,json={'request_id':rid,'project':p,'approve':True,'scopes':['audit:read']})
+        self.assertEqual(result.status_code,200,result.text)
+        code=parse_qs(urlsplit(result.json()['redirect_uri']).query)['code'][0]
+        token=self.exchange(cid,code,verifier);self.assertEqual(token.status_code,200,token.text);token=token.json()
+        self.assertEqual(token['scope'],'audit:read')
+        headers={'Authorization':'Bearer '+token['access_token']}
+        self.assertEqual(self.client.get('/api/outcomes/goals?project='+p,headers=headers).status_code,200)
+        self.assertEqual(self.client.get('/api/experiments/cases?project='+p,headers=headers).status_code,403)
+        expanded=self.client.post('/token',data={'grant_type':'refresh_token','client_id':cid,'refresh_token':token['refresh_token'],'scope':'audit:read experiments:write'})
+        self.assertEqual(expanded.status_code,400)
+        refreshed=self.client.post('/token',data={'grant_type':'refresh_token','client_id':cid,'refresh_token':token['refresh_token']})
+        self.assertEqual(refreshed.status_code,200,refreshed.text);self.assertEqual(refreshed.json()['scope'],'audit:read')
+
+    def test_consent_rejects_empty_duplicate_or_unrequested_permissions_without_spending_request(self):
+        owner,uid,w,p,cid,t,*_=self.grant('audit:read')
+        rid,verifier=self.begin(cid,'audit:read')
+        for scopes in [[],['audit:read','audit:read'],['audit:read','experiments:write'],['unknown'],[True]]:
+            result=owner.post('/auth/mcp/decision',headers=CSRF,json={'request_id':rid,'project':p,'approve':True,'scopes':scopes})
+            self.assertEqual(result.status_code,422,result.text)
+            self.assertEqual(owner.get('/auth/mcp/request',params={'request_id':rid}).status_code,200)
+        result=owner.post('/auth/mcp/decision',headers=CSRF,json={'request_id':rid,'project':p,'approve':True,'scopes':['audit:read']})
+        self.assertEqual(result.status_code,200,result.text)
+
     def downgrade_member(self,owner,workspace,user):
         guardian,_=self.join(owner,workspace,'guardian@example.test','owner')
         response=guardian.patch('/api/workspaces/'+workspace+'/members/'+user,headers=CSRF,json={'role':'reader'})

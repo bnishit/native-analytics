@@ -157,7 +157,7 @@ class OAuthProvider:
         experiment=bool(re.fullmatch(r'/api/experiments/(cases|datasets|runs)(/[0-9a-f-]{36})?',path)) and (request.method=='GET' or request.method=='PUT' and bool(re.fullmatch(r'/api/experiments/(cases|datasets|runs)/[0-9a-f-]{36}',path))) or path=='/api/experiments/compare' and request.method=='POST' or release_view
         debug=request.method=='GET' and path=='/api/debug/policy' or request.method=='POST' and path=='/api/debug/review'
         improvement=request.method=='POST' and path=='/api/improvements/status'
-        followup=bool(re.fullmatch(r'/api/outcomes/followups/[0-9a-f-]{36}(/control)?',path)) and (request.method in {'GET','PUT'} and not path.endswith('/control') or request.method=='POST' and path.endswith('/control'))
+        followup=(request.method=='GET' and path=='/api/outcomes/followups') or bool(re.fullmatch(r'/api/outcomes/followups/[0-9a-f-]{36}(/control)?',path)) and (request.method in {'GET','PUT'} and not path.endswith('/control') or request.method=='POST' and path.endswith('/control'))
         if (improvement or followup) and not {'audit:read','experiments:write'}<=set(token.scopes):raise HTTPException(403,'improvement flow requires audit and experiment access')
         scope='followups:write' if followup else 'experiments:write' if improvement else 'releases:write' if release_evidence else 'collection:write' if collection_write else 'debug:read' if debug else 'experiments:write' if experiment else 'goals:write' if goal_write else 'audit:read' if audit else 'charts:write' if chart and request.method!='GET' else 'analytics:read'
         if release_view and not {'audit:read','experiments:write'}<=set(token.scopes):raise HTTPException(403,'release comparisons require audit and experiment access')

@@ -242,9 +242,9 @@ def install(app,provider):
         return await call('/api/outcomes/followups/'+str(id),definition.model_dump(mode='json'),'PUT')
 
     @mcp.tool(annotations=READ)
-    async def outcome_followup(id:UUID)->dict:
-        """Requires followups:write plus audit/experiment consent and editor role. Read bounded progress, frozen aggregate result and last meaningful status notification. Unknown evidence stays unknown; no user benefit is inferred from eligibility."""
-        return await call('/api/outcomes/followups/'+str(id))
+    async def outcome_followup(id:UUID|None=None)->dict:
+        """Requires followups:write plus audit/experiment consent and editor role. Omit id to reconnect through the up to twenty project follow-ups, active first then recent (metadata only, has_more). Select an id for bounded progress, frozen aggregate result and last meaningful status notification. Listing never creates/renews a window. Unknown evidence stays unknown; no user benefit is inferred from eligibility."""
+        return await call('/api/outcomes/followups'+('/'+str(id) if id else ''))
 
     @mcp.tool(annotations=WRITE)
     async def control_outcome_followup(id:UUID,control:FollowupControl)->dict:

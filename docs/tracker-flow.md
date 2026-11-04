@@ -23,7 +23,7 @@ The agent calls `connection_status`, then `get_workflow(name="improve-tracker")`
 
 ### Optional skills package
 
-The same six workflows are packaged for compatible clients. Version0.2.0 adds the Tracker improvement entry, a Codex onboarding skill and a repo-local marketplace. Set `AFTERSPAN_URL` to your own origin in the process that starts the client. Clients without environment substitution should use direct MCP setup above.
+The same six workflows are packaged for compatible clients. Version0.2.1 includes the Tracker improvement entry, metadata-only follow-up discovery, a Codex onboarding skill and a repo-local marketplace. Set `AFTERSPAN_URL` to your own origin in the process that starts the client. Clients without environment substitution should use direct MCP setup above.
 
 After reviewing the package source/version:
 
@@ -136,8 +136,10 @@ Use `prepare_release_evidence` with separate release consent, poll `release_prop
 
 The candidate entry window starts at server acceptance. Its deadline and budget cannot be renewed by retry, pause/resume or restart. The server periodically evaluates existing retained outcomes/collection metadata; it executes no code, model, provider, Slack or deployment call. The worker resumes retained due work after a service restart. This is product follow-up, separate from private capture settings and operational backup schedules.
 
+After a new chat/client connection, call `outcome_followup()` first. It lists at most twenty project jobs as metadata, active first then most recent, with `has_more` when older jobs are omitted. Select an existing ID and read its definition to confirm the exact goal/release before proposing another window. A truncated list cannot prove that an older job is absent. Listing neither creates nor renews anything.
+
 Read `outcome_followup(id)` for progress, the frozen result and the last meaningful status notification. Notifications are retained for client reads; they are not sent through email or Slack. `control_outcome_followup(id, control)` accepts `{operation:"pause"|"resume"|"cancel",revision:LAST_READ_REVISION}`. Read before retrying a control after uncertainty. Resume never starts a new clock. Revoke/narrow the initiating access or lose editor membership and the worker stops authorized progress.
 
-CLI equivalents are `followup-save --project PROJECT --id UUID --file private-definition.json`, `followup --project PROJECT --id UUID`, and `followup-control --project PROJECT --id UUID --file private-control.json`. Normal CLI authentication rules apply; never pass credentials as command arguments.
+CLI equivalents are `followup-save --project PROJECT --id UUID --file private-definition.json`, `followup --project PROJECT` to discover existing jobs, `followup --project PROJECT --id UUID` for a selected job, and `followup-control --project PROJECT --id UUID --file private-control.json`. Normal CLI authentication rules apply; never pass credentials as command arguments.
 
 Finish with six separate claims: reproduced check/case, repaired tests, reviewed source, verified release identity, observed collection and measured user outcome. Low samples, immature deadlines, stale collection, changed meaning or expired evidence keep improvement unknown. No sample count grants readiness, and before/after does not prove causality. Keep the client quiet on unchanged waiting state. A validated lesson may become a reviewed regression or skill change; no instructions are promoted automatically.

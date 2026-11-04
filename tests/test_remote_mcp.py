@@ -89,6 +89,25 @@ class RemoteMCPTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/outcomes/followups/'+str(uuid.uuid4())+'?project='+p,
             headers={'Authorization':'Bearer '+response.json()['access_token']}).status_code,403)
 
+    def test_followup_reconnect_listing_reuses_new_scope_and_project(self):
+        owner,uid,w,p,cid,t,*_=self.grant('audit:read experiments:write')
+        self.assertEqual(self.client.get('/api/outcomes/followups?project='+p,headers={'Authorization':'Bearer '+t['access_token']}).status_code,403)
+        owner,uid,w,p,cid,t,*_=self.grant('audit:read experiments:write followups:write')
+        headers={'Authorization':'Bearer '+t['access_token'],'Accept':'application/json, text/event-stream'}
+        id=str(uuid.uuid4())
+        with closing(app.connect()) as c,c:
+            c.execute("INSERT INTO outcome_followups(project,id,definition,authority,created,deadline,next_due,state) VALUES(?,?,?,?,?,?,?,?)",
+                (p,id,json.dumps({'private':'fixture-body-sentinel'}),json.dumps({'ref':'private-authority-sentinel'}),time.time(),time.time()+120,time.time()+60,'completed'))
+        response=self.client.get('/api/outcomes/followups?project='+p,headers=headers)
+        self.assertEqual(response.status_code,200,response.text);listed=response.json()
+        self.assertEqual(listed['followups'][0]['id'],id);self.assertFalse(listed['has_more'])
+        self.assertNotIn('sentinel',json.dumps(listed))
+        selected=self.client.get('/api/outcomes/followups/'+id+'?project='+p,headers=headers)
+        self.assertEqual(selected.status_code,200,selected.text)
+        self.assertEqual(selected.json()['definition'],{'private':'fixture-body-sentinel'})
+        self.assertEqual(self.client.get('/api/outcomes/followups?project=alpha',headers=headers).status_code,403)
+        self.assertEqual(self.client.get('/api/outcomes/followups?project='+p).status_code,401)
+
     def test_followup_session_key_and_member_revocation_are_rechecked(self):
         from starlette.requests import Request
         owner,uid,w,p,cid,t,*_=self.grant('audit:read experiments:write followups:write')
@@ -197,7 +216,7 @@ class RemoteMCPTests(unittest.TestCase):
         self.assertEqual(owner.get('/auth/mcp/connections').json()['connections'],[])
 
     def test_remote_transport_tools_and_idempotent_chart_storage(self):
-        owner,uid,w,p,cid,t,*_=self.grant('analytics:read charts:write audit:read goals:write experiments:write debug:read collection:write')
+        owner,uid,w,p,cid,t,*_=self.grant('analytics:read charts:write audit:read goals:write experiments:write debug:read collection:write followups:write')
         with TestClient(app.app,base_url=ORIGIN) as client:
             headers={'Authorization':'Bearer '+t['access_token'],'Accept':'application/json, text/event-stream'}
             def rpc(method,params=None):
@@ -212,6 +231,7 @@ class RemoteMCPTests(unittest.TestCase):
                 result=rpc('tools/call',{'name':name,'arguments':args})['result']
                 self.assertFalse(result.get('isError'),result);return json.loads(result['content'][0]['text'])
             self.assertEqual(call('connection_status')['project'],p)
+            self.assertEqual(call('outcome_followup')['followups'],[])
             self.assertEqual(call('collection_sources')['sources'],[])
             self.assertEqual(call('save_collection_source',{'definition':{'source':'worker','environment':'staging','interval_seconds':60},'revision':0})['revision'],1)
             health=call('collection_health',{'query':{'environment':'staging'}})

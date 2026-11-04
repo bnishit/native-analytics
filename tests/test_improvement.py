@@ -132,6 +132,45 @@ class ImprovementTests(unittest.TestCase):
         with patch.object(app.release_outcomes,'compare',side_effect=prune_while_evaluating):self.work(first['created']+60)
         self.assertEqual(self.read().status_code,404)
 
+    def test_reconnect_lists_existing_jobs_without_creating_or_renewing(self):
+        first=self.save().json();path='/api/outcomes/followups?project=alpha'
+        response=self.client.get(path,headers=self.auth);self.assertEqual(response.status_code,200,response.text)
+        listed=response.json();self.assertEqual(listed['followups'][0]['id'],self.id);self.assertFalse(listed['has_more'])
+        self.assertEqual(listed['limit'],20);self.assertNotIn('definition',listed['followups'][0])
+        self.assertNotIn('authority',json.dumps(listed));self.assertNotIn('result',listed['followups'][0])
+        self.assertEqual(self.read().json(),first)
+        self.assertEqual(self.client.get(path).status_code,401)
+        self.assertEqual(self.client.get('/api/outcomes/followups?project=beta',headers=self.auth).json()['followups'],[])
+        with closing(app.connect()) as c,c:
+            for i in range(21):
+                c.execute("INSERT INTO outcome_followups SELECT project,?,definition,authority,created+?,deadline,next_due,checks,pending,'completed',revision,result,signal,notification FROM outcome_followups WHERE id=?",(str(uuid.uuid4()),i+1,self.id))
+        page=self.client.get(path,headers=self.auth).json()
+        self.assertEqual(len(page['followups']),20);self.assertTrue(page['has_more'])
+        self.assertEqual(page['followups'][0]['id'],self.id)
+        self.assertEqual(page['followups'][0]['state'],'watching')
+        self.assertTrue(all(r['state']=='completed' for r in page['followups'][1:]))
+        self.assertEqual([r['created'] for r in page['followups'][1:]],sorted([r['created'] for r in page['followups'][1:]],reverse=True))
+
+    def test_cli_can_discover_followups_without_remembering_a_job_id(self):
+        import os,subprocess,sys,threading
+        from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
+        from pathlib import Path
+        paths=[]
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(inner):
+                paths.append(inner.path);self.assertEqual(inner.headers['Authorization'],'Bearer as_workspace_fixture')
+                inner.send_response(200);inner.send_header('Content-Type','application/json');inner.end_headers()
+                inner.wfile.write(b'{"followups":[],"has_more":false,"limit":20}')
+            def log_message(self,*unused):pass
+        server=ThreadingHTTPServer(('127.0.0.1',0),Handler);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        try:
+            env={k:v for k,v in os.environ.items() if k in {'PATH','LANG'}}
+            env.update(NATIVE_ANALYTICS_URL='http://127.0.0.1:'+str(server.server_port),AFTERSPAN_WORKSPACE_KEY='as_workspace_fixture')
+            run=subprocess.run([sys.executable,str(Path(__file__).resolve().parents[1]/'cli/native_analytics.py'),'followup','--project','alpha'],env=env,capture_output=True,text=True,timeout=10)
+            self.assertEqual(run.returncode,0,run.stderr);self.assertEqual(json.loads(run.stdout)['followups'],[])
+            self.assertEqual(paths,['/api/outcomes/followups?project=alpha'])
+        finally:server.shutdown();server.server_close();thread.join()
+
     def test_scope_and_project_isolation(self):
         self.save().raise_for_status()
         self.assertEqual(self.read(headers={}).status_code,401)

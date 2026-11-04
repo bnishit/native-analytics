@@ -63,6 +63,8 @@ class Improvements:
         @app.put('/api/outcomes/followups/{id}',dependencies=[Depends(editor)])
         def save(project:str,id:uuid.UUID,req:FollowupDefinition,request:Request):
             return self.save(project,str(id),req,self.authority_for(request,project))
+        @app.get('/api/outcomes/followups',dependencies=[Depends(editor)])
+        def following(project:str):return self.list(project)
         @app.get('/api/outcomes/followups/{id}',dependencies=[Depends(editor)])
         def read(project:str,id:uuid.UUID):return self.read(project,str(id))
         @app.post('/api/outcomes/followups/{id}/control',dependencies=[Depends(editor)])
@@ -195,6 +197,14 @@ class Improvements:
                 old=c.execute('SELECT definition FROM outcome_followups WHERE project=? AND id=?',(project,id)).fetchone()
                 if not old or old['definition']!=payload:raise
         return self.read(project,id)
+
+    def list(self,project):
+        with closing(self.connect()) as c:
+            rows=c.execute("SELECT id,created,deadline,next_due,checks,state,revision FROM outcome_followups WHERE project=? ORDER BY (state IN ('watching','checking','paused')) DESC,created DESC,id DESC LIMIT 21",(project,)).fetchall()
+        return {'followups':[dict(row) for row in rows[:20]],'has_more':len(rows)>20,'limit':20,
+                'next_action':'read_selected_followup',
+                'limits':['At most twenty project follow-ups: active first, then most recent. A truncated list cannot establish that an older job is absent.',
+                    'Metadata only; select an existing ID for its definition and result. Listing never creates or renews a window.']}
 
     def read(self,project,id):
         with closing(self.connect()) as c:r=c.execute('SELECT * FROM outcome_followups WHERE project=? AND id=?',(project,id)).fetchone()

@@ -153,6 +153,15 @@ class CatalogReplayTests(unittest.TestCase):
         self.enable({**self.policy,'contract':'workflow-trace-v1'}).raise_for_status()
         self.assertEqual(self.capture().status_code,403)
 
+    def test_only_failed_checks_can_consume_the_approved_capture_budget(self):
+        self.enable().raise_for_status()
+        for outcome in ['unknown','succeeded']:
+            body={**self.snapshot,'id':str(uuid.uuid4()),'content':{**self.content,'quality':{**self.content['quality'],'reported_outcome':outcome}}}
+            response=self.capture(body);self.assertEqual(response.status_code,403,response.text)
+        self.assertEqual(self.client.get('/api/debug/policy?project=alpha',headers=self.auth).json()['captured_count'],0)
+        self.capture().raise_for_status()
+        self.assertEqual(self.client.get('/api/debug/policy?project=alpha',headers=self.auth).json()['captured_count'],1)
+
     def test_arbitrary_text_and_wrong_release_cannot_become_replay_content(self):
         self.enable().raise_for_status()
         for extra in [{'message':'private text'},{'password':'private secret'},{'source_url':'https://private.example'}]:

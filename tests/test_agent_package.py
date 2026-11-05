@@ -69,10 +69,16 @@ class AgentSetupWebTests(unittest.TestCase):
             self.assertTrue('<script src="/assets/agent-setup.js" defer></script>' in response.text,'Setup script must be an external same-origin asset')
             self.assertNotIn('<script>',response.text)
             asset=fixture.client.get('/assets/agent-setup.js');self.assertEqual(asset.status_code,200)
-            harness="const vm=require('node:vm');const field={textContent:''};vm.runInNewContext(JSON.parse(process.argv[1]),{document:{getElementById:()=>field},location:{origin:'http://127.0.0.1:8786'}});process.stdout.write(field.textContent);"
+            harness="const vm=require('node:vm');const field={textContent:''},task={value:process.argv[2]};vm.runInNewContext(JSON.parse(process.argv[1]),{document:{getElementById:id=>id==='tracker-setup'?field:task},location:{origin:'http://127.0.0.1:8786'}});process.stdout.write(field.textContent);"
             run=subprocess.run(['node','-e',harness,json.dumps(asset.text)],capture_output=True,text=True,timeout=10)
             self.assertEqual(run.returncode,0,run.stderr)
-            self.assertEqual(run.stdout,'codex mcp add afterspan --url http://127.0.0.1:8786/mcp\ncodex mcp login afterspan --scopes audit:read')
+            self.assertEqual(run.stdout,'codex mcp add afterspan --url http://127.0.0.1:8786/mcp\ncodex mcp login afterspan --scopes analytics:read')
+            for task,scope in [('audit:read','audit:read'),('charts:write','analytics:read')]:
+                run=subprocess.run(['node','-e',harness,json.dumps(asset.text),task],capture_output=True,text=True,timeout=10)
+                self.assertEqual(run.returncode,0,run.stderr)
+                self.assertTrue(run.stdout.endswith('--scopes '+scope))
+            self.assertIn('Check usage and metrics',response.text)
+            self.assertIn('Start a new chat',response.text)
         finally:fixture.tearDown()
 
 

@@ -1,5 +1,6 @@
 """Remote agent tools delegate to the same scoped API used by the workspace."""
 from contextlib import asynccontextmanager
+import json
 from pathlib import Path
 from typing import Literal
 from uuid import UUID
@@ -153,8 +154,12 @@ def install(app,provider):
 
     @mcp.tool(annotations=READ)
     async def query_metric(query:dict)->dict:
-        """Compute count/users/sum/average/p95. query={days:30,event:'contact.clicked',metric:'count',breakdown:'channel'}. Optional measure, interval, typed filters, start/end/as_of. users means opaque identities, not people."""
-        return await call('/api/query',query)
+        """Compute count/users/sum/average/p95 and return view_url for the same frozen query in Afterspan. query={days:30,event:'contact.clicked',metric:'count',breakdown:'channel'}. Optional measure, interval, typed filters, start/end/as_of. users means opaque identities, not people. Opening the view requires a signed-in account; no chart is saved."""
+        result=await call('/api/query',query)
+        token=get_access_token()
+        result['view_url']=provider.origin+'/app#'+urlencode({'workspace':token.workspace,
+            'project':token.project,'view':'charts','metric_query':json.dumps(result['query'],separators=(',',':'))})
+        return result
 
     @mcp.tool(annotations=READ)
     async def saved_charts()->dict:

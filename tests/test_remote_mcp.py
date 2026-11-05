@@ -242,9 +242,33 @@ class RemoteMCPTests(unittest.TestCase):
         app.init_db()  # Safe migration/restart of the same persisted store.
         self.assertEqual(owner.get('/auth/mcp/connections').json()['connections'],[])
 
+    def assert_read_only_metric(self,client):
+        owner,uid,w,p,cid,t,*_=self.grant('analytics:read')
+        headers={'Authorization':'Bearer '+t['access_token'],'Accept':'application/json, text/event-stream'}
+        def rpc(method,params):
+            response=client.post('/mcp',headers=headers,json={'jsonrpc':'2.0','id':1,'method':method,'params':params})
+            self.assertEqual(response.status_code,200,response.text)
+            return response.json()['result']
+        rpc('initialize',{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'usage-reader','version':'1'}})
+        result=rpc('tools/call',{'name':'query_metric','arguments':{'query':{'days':7,'event':'http.request','distinct_id':'support:example','breakdown':'operation'}}})
+        self.assertFalse(result.get('isError'),result)
+        result=json.loads(result['content'][0]['text']);parsed=urlsplit(result.pop('view_url'))
+        self.assertEqual(parsed.scheme+'://'+parsed.netloc+parsed.path,ORIGIN+'/app')
+        link=parse_qs(parsed.fragment)
+        self.assertEqual(link['project'],[p]);self.assertEqual(link['workspace'],[w]);self.assertEqual(link['view'],['charts'])
+        query=json.loads(link['metric_query'][0]);self.assertEqual(query,result['query'])
+        self.assertTrue(all(query[key] for key in ['start','end','as_of']))
+        self.assertNotIn(t['access_token'],parsed.fragment)
+        api=client.post('/api/query?project='+p,headers=headers,json=query)
+        self.assertEqual(api.status_code,200,api.text);self.assertEqual(api.json(),result)
+        self.assertEqual(owner.get('/api/charts?project='+p).json()['charts'],[])
+        denied=rpc('tools/call',{'name':'save_chart','arguments':{'chart_id':str(uuid.uuid4()),'title':'Not authorized','query':query}})
+        self.assertTrue(denied.get('isError'))
+
     def test_remote_transport_tools_and_idempotent_chart_storage(self):
         owner,uid,w,p,cid,t,*_=self.grant('analytics:read charts:write audit:read goals:write experiments:write debug:read collection:write followups:write')
         with TestClient(app.app,base_url=ORIGIN) as client:
+            self.assert_read_only_metric(client)
             headers={'Authorization':'Bearer '+t['access_token'],'Accept':'application/json, text/event-stream'}
             def rpc(method,params=None):
                 r=client.post('/mcp',headers=headers,json={'jsonrpc':'2.0','id':1,'method':method,**({'params':params} if params else {})})

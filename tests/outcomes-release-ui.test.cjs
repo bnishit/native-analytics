@@ -146,6 +146,17 @@ test('release collection drilldown preserves the exact source window and project
  const link=new URL(match[1],'https://example.com'),params=new URLSearchParams(link.hash.slice(1));assert.equal(params.get('project'),'app');assert.equal(params.get('workspace'),'work');assert.equal(params.get('view'),'collection');assert.deepEqual(JSON.parse(params.get('collection_query')),query);
 });
 
+test('release monitors render project alert boundaries and escaped titles',async()=>{
+ let html='';const host={querySelectorAll:()=>[],set innerHTML(value){html=value}};
+ const monitor={id:'monitor-1',definition:{outcome_title:'<script>bad</script>',regression_threshold:.05},state:'clear',revision:2,active:true};
+ const c=context({project:'app',renderVersion:7,tab:'outcomes',canEdit:()=>true,$:selector=>selector==='#release-monitor-list'?host:null,
+  url:path=>path,api:async()=>({monitors:[monitor]})});
+ await vm.runInContext('releaseMonitorsView(7)',c);
+ assert.match(html,/&lt;script>bad&lt;\/script>/);assert.doesNotMatch(html,/<script>/);
+ assert.match(html,/checks hourly/);assert.match(html,/Show alert history/);assert.match(html,/Stop monitor/);
+ assert.match(vm.runInContext('releaseMonitorEntry()',c),/No email or chat message is sent/);
+});
+
 test('the actual initial route rewrite preserves a collection window only for its project',()=>{
  const query={environment:'production',start:'2026-11-01T00:00:00Z',end:'2026-11-01T00:05:00Z',as_of:'2026-11-01T00:06:00Z'},hash='#'+new URLSearchParams({project:'app',view:'collection',collection_query:JSON.stringify(query)}),{c,location}=routeContext(hash);
  vm.runInContext('tab="collection";rememberView()',c);assert.deepEqual(JSON.parse(new URLSearchParams(location.hash.slice(1)).get('collection_query')),query);

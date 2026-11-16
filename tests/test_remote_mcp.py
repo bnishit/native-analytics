@@ -178,6 +178,20 @@ class RemoteMCPTests(unittest.TestCase):
         self.assertEqual(self.exchange(cid,nextcode,'wrong'*12).status_code,400)
         self.assertEqual(self.exchange(cid,nextcode,v).status_code,200)
 
+    def test_chart_write_scope_uses_last_read_revision_for_edit_and_delete(self):
+        owner,uid,w,p,cid,t,*_=self.grant('analytics:read charts:write')
+        h={'Authorization':'Bearer '+t['access_token']}
+        created=self.client.post('/api/charts',params={'project':p,'chart_id':str(uuid.uuid4())},headers=h,json={'title':'Requests','query':{'event':'http.request'}})
+        self.assertEqual(created.status_code,200,created.text)
+        chart_id=created.json()['id'];row=self.client.get('/api/charts',params={'project':p},headers=h).json()['charts'][0]
+        changed=self.client.put('/api/charts/'+chart_id,params={'project':p,'revision':row['revision']},headers=h,json={'title':'Errors','query':{'event':'http.request','property':'status','value':'500'}})
+        self.assertEqual(changed.status_code,200,changed.text)
+        stale=self.client.delete('/api/charts/'+chart_id,params={'project':p,'revision':row['revision']},headers=h)
+        self.assertEqual(stale.status_code,409)
+        current=self.client.get('/api/charts',params={'project':p},headers=h).json()['charts'][0]
+        deleted=self.client.delete('/api/charts/'+chart_id,params={'project':p,'revision':current['revision']},headers=h)
+        self.assertEqual(deleted.status_code,200,deleted.text);self.assertTrue(deleted.json()['deleted'])
+
     def test_analytics_scope_cannot_read_trace_properties_through_product_queries(self):
         owner,uid,w,p,cid,t,*_=self.grant('analytics:read')
         trace_id=str(uuid.uuid4())
@@ -277,12 +291,13 @@ class RemoteMCPTests(unittest.TestCase):
             meta=client.get('/.well-known/oauth-protected-resource/mcp').json();self.assertEqual(meta['resource'],ORIGIN+'/mcp')
             rpc('initialize',{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'fresh','version':'1'}})
             names={x['name'] for x in rpc('tools/list')['result']['tools']}
-            self.assertTrue({'save_chart','request_trace','get_workflow','connection_status'}<=names)
+            self.assertTrue({'save_chart','update_chart','delete_chart','release_monitors','create_release_monitor','release_monitor_alerts','stop_release_monitor','request_trace','get_workflow','connection_status'}<=names)
             def call(name,args={}):
                 result=rpc('tools/call',{'name':name,'arguments':args})['result']
                 self.assertFalse(result.get('isError'),result);return json.loads(result['content'][0]['text'])
             self.assertEqual(call('connection_status')['project'],p)
             self.assertEqual(call('outcome_followup')['followups'],[])
+            self.assertEqual(call('release_monitors')['monitors'],[])
             self.assertEqual(call('collection_sources')['sources'],[])
             self.assertEqual(call('save_collection_source',{'definition':{'source':'worker','environment':'staging','interval_seconds':60},'revision':0})['revision'],1)
             health=call('collection_health',{'query':{'environment':'staging'}})
@@ -387,9 +402,16 @@ class RemoteMCPTests(unittest.TestCase):
             self.assertEqual(len(detail['linked_inputs']),1)
             chart={'chart_id':str(uuid.uuid4()),'title':'Contacts','query':{'event':'contact.clicked','days':30}}
             a=call('save_chart',chart);b=call('save_chart',chart);self.assertEqual(a['id'],b['id'])
-            self.assertEqual(len(call('saved_charts')['charts']),1)
+            saved=call('saved_charts')['charts'];self.assertEqual(len(saved),1);self.assertEqual(saved[0]['revision'],1)
             changed=rpc('tools/call',{'name':'save_chart','arguments':{**chart,'title':'Changed'}})['result'];self.assertTrue(changed['isError'])
-            self.assertEqual(len(call('saved_charts')['charts']),1)
+            updated=call('update_chart',{'chart_id':a['id'],'revision':saved[0]['revision'],'title':'Contact clicks','query':chart['query']})
+            self.assertEqual(updated['revision'],2)
+            stale=rpc('tools/call',{'name':'update_chart','arguments':{'chart_id':a['id'],'revision':1,'title':'Old edit','query':chart['query']}})['result']
+            self.assertTrue(stale['isError'])
+            stale_delete=rpc('tools/call',{'name':'delete_chart','arguments':{'chart_id':a['id'],'revision':1}})['result']
+            self.assertTrue(stale_delete['isError'])
+            self.assertEqual(call('delete_chart',{'chart_id':a['id'],'revision':2})['deleted'],True)
+            self.assertEqual(call('saved_charts')['charts'],[])
             self.downgrade_member(owner,w,uid)
             downgraded=rpc('tools/call',{'name':'save_outcome_goal','arguments':{**args,'revision':1}})['result']
             self.assertTrue(downgraded['isError'])
@@ -405,9 +427,13 @@ class RemoteMCPTests(unittest.TestCase):
             owner,uid,w,p,cid,t,*_=self.grant(scope)
             response=self.client.get('/api/outcomes/releases?project='+p+'&environment=staging',headers={'Authorization':'Bearer '+t['access_token']})
             self.assertEqual(response.status_code,403)
+            response=self.client.get('/api/outcomes/release-monitors?project='+p,headers={'Authorization':'Bearer '+t['access_token']})
+            self.assertEqual(response.status_code,403)
         owner,uid,w,p,cid,t,*_=self.grant('audit:read experiments:write')
         response=self.client.get('/api/outcomes/releases?project='+p+'&environment=staging',headers={'Authorization':'Bearer '+t['access_token']})
         self.assertEqual(response.status_code,200,response.text)
+        response=self.client.get('/api/outcomes/release-monitors?project='+p,headers={'Authorization':'Bearer '+t['access_token']})
+        self.assertEqual(response.status_code,200,response.text);self.assertEqual(response.json()['monitors'],[])
 
     def test_release_preparation_needs_new_consent_and_cannot_adopt(self):
         _,_,_,project,_,old,*_=self.grant('audit:read experiments:write')

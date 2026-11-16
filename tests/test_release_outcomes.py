@@ -93,6 +93,45 @@ class ReleaseOutcomeTests(unittest.TestCase):
         self.assertEqual(r['after']['mature_denominator'],1);self.assertEqual(r['after']['coverage']['traffic_excluded'],1)
         self.assertNotIn('results',r['experiment']);self.assertNotIn('content',r['experiment'])
         self.assertEqual(self.compare().json()['fingerprint'],r['fingerprint'])
+
+    def test_release_monitor_alerts_once_per_regression_episode_and_keeps_evidence(self):
+        def report(difference):
+            return {'status':'comparable','reasons':[],'satisfied_fraction_difference':difference,
+                'before':{'counts':{'satisfied':8,'failed':2},'mature_denominator':10,'satisfied_fraction':.8,'coverage':{'traffic_unknown':0}},
+                'after':{'counts':{'satisfied':5,'failed':5},'mature_denominator':10,'satisfied_fraction':.5,'coverage':{'traffic_unknown':0}},
+                'baseline_release':{'commit':'a'*40},'release':{'commit':'c'*40},'observational':True,'deployment_authorized':False}
+        monitor_id=str(uuid.uuid4());body={'id':monitor_id,'query':self.query,'regression_threshold':.1}
+        with patch.object(app.release_outcomes,'compare',side_effect=[report(0),report(-.3),report(-.3),report(0),report(-.3)]):
+            created=self.client.post('/api/outcomes/release-monitors?project=alpha',headers=self.auth,json=body)
+            self.assertEqual(created.status_code,200,created.text);self.assertEqual(created.json()['state'],'regressed')
+            self.assertEqual(self.client.post(f'/api/outcomes/release-monitors/{monitor_id}/evaluate?project=alpha',headers=self.auth).json()['alert'],None)
+            self.client.post(f'/api/outcomes/release-monitors/{monitor_id}/evaluate?project=alpha',headers=self.auth).raise_for_status()
+            self.client.post(f'/api/outcomes/release-monitors/{monitor_id}/evaluate?project=alpha',headers=self.auth).raise_for_status()
+        alerts=self.client.get(f'/api/outcomes/release-monitors/{monitor_id}/alerts?project=alpha',headers=self.auth).json()['alerts']
+        self.assertEqual([a['kind'] for a in alerts],['regression','recovered','regression'])
+        self.assertEqual([a['episode'] for a in alerts],[2,1,1])
+        self.assertEqual(alerts[0]['evidence']['satisfied_fraction_difference'],-.3)
+        self.assertEqual(alerts[0]['evidence']['release']['commit'],'c'*40)
+
+    def test_release_monitor_retry_returns_saved_result_without_rechecking_evidence(self):
+        monitor_id=str(uuid.uuid4());body={'id':monitor_id,'query':self.query,'regression_threshold':.1}
+        created=self.client.post('/api/outcomes/release-monitors?project=alpha',headers=self.auth,json=body)
+        self.assertEqual(created.status_code,200,created.text)
+        with patch.object(app.release_outcomes,'compare',side_effect=app.HTTPException(409,'evidence changed')):
+            retried=self.client.post('/api/outcomes/release-monitors?project=alpha',headers=self.auth,json=body)
+        self.assertEqual(retried.status_code,200,retried.text)
+        self.assertTrue(retried.json()['reused'])
+        self.assertEqual(retried.json()['id'],monitor_id)
+        changed={**body,'regression_threshold':.2}
+        conflict=self.client.post('/api/outcomes/release-monitors?project=alpha',headers=self.auth,json=changed)
+        self.assertEqual(conflict.status_code,409)
+
+    def test_release_monitor_contract_is_discoverable_with_scope_and_delivery_limits(self):
+        contract=self.client.get('/.well-known/afterspan').json()['release_monitors']
+        self.assertEqual(contract['cadence'],'hourly')
+        self.assertEqual(contract['delivery'],'project-scoped in-app alert history')
+        self.assertEqual(contract['scope'],'audit:read plus experiments:write and editor membership')
+        self.assertFalse(contract['deployment_authority'])
     def test_returned_comparison_criteria_are_the_pinned_goal_not_its_latest_revision(self):
         self.f.save(2,{**self.goal,'min_sample_size':99}).raise_for_status()
         report=self.compare().json()

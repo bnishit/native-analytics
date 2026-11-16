@@ -89,6 +89,11 @@ class Comparison(Model):
     baseline:uuid.UUID
     candidate:uuid.UUID
 
+class HumanReview(Model):
+    case:uuid.UUID
+    version:int=Field(ge=1,le=1000,strict=True)
+    label:Literal['useful','incorrect','unsafe','incomplete','uncertain']
+
 def matches(expected,output,subset=False):
     # Python equality alone treats true and 1 as equal. JSON facts do not.
     if type(expected) is not type(output):return False
@@ -118,6 +123,9 @@ class Regressions:
         c.execute('''CREATE TABLE IF NOT EXISTS regression_objects(project TEXT NOT NULL REFERENCES projects(id),
           kind TEXT NOT NULL,id TEXT NOT NULL,version INTEGER NOT NULL,definition TEXT NOT NULL,
           sha256 TEXT NOT NULL,created REAL NOT NULL,expires REAL NOT NULL,PRIMARY KEY(project,kind,id,version))''')
+        c.execute('''CREATE TABLE IF NOT EXISTS experiment_reviews(project TEXT NOT NULL,run_id TEXT NOT NULL,case_id TEXT NOT NULL,
+          case_version INTEGER NOT NULL,label TEXT NOT NULL,revision INTEGER NOT NULL,updated REAL NOT NULL,
+          PRIMARY KEY(project,run_id,case_id,case_version))''')
 
     def __init__(self,app,connect,editor,explorer,retention_days,outcomes):
         self.connect=connect;self.explorer=explorer;self.retention_days=retention_days;self.outcomes=outcomes
@@ -138,6 +146,8 @@ class Regressions:
         def runs(project:str):return self.list(project,'run')
         @app.get('/api/experiments/runs/{id}',dependencies=[Depends(editor)])
         def run(project:str,id:uuid.UUID):return self.run_report(project,str(id))
+        @app.put('/api/experiments/runs/{id}/reviews',dependencies=[Depends(editor)])
+        def save_review(project:str,id:uuid.UUID,revision:int,req:HumanReview):return self.save_review(project,str(id),revision,req)
         @app.put('/api/experiments/runs/{id}',dependencies=[Depends(editor)])
         def save_run(project:str,id:uuid.UUID,req:ExperimentRun):
             dataset=self.validate_run(project,req)
@@ -229,10 +239,31 @@ class Regressions:
             rows.append({'case':ref['id'],'version':ref['version'],'title':case['definition']['title'],'state':state,'duration_ms':duration,
                          'evaluator':case['definition']['evaluator'],'evaluator_version':case['definition']['evaluator_version'],
                          'differences':diff[:20],'difference_count':len(diff),'previews_may_be_truncated':True})
+        with closing(self.connect()) as c:
+            reviews={r['case_id']:{'label':r['label'],'revision':r['revision'],'updated':r['updated']} for r in c.execute('SELECT case_id,label,revision,updated FROM experiment_reviews WHERE project=? AND run_id=?',(project,id))}
+        for row in rows:row['human_review']=reviews.get(row['case'])
         counts=Counter(r['state'] for r in rows);complete=counts['missing']==0
         return {'run':saved,'dataset_sha256':dataset['sha256'],'dataset':dataset,'cases':rows,
                 'counts':{k:counts[k] for k in ['passed','failed','error','missing']},'complete':complete,
+                'human_review':{'reviewed':sum(row['human_review'] is not None for row in rows),'remaining':sum(row['human_review'] is None for row in rows)},
                 'pass_rate':counts['passed']/len(rows),'limits':['Fixed reviewed expected facts, not independent source verification or subjective answer quality.','Every pinned case remains in the denominator. Errors and missing cases cannot pass.','A declared release SHA is not deployment proof. Experiment results do not authorize a release.']}
+
+    def save_review(self,project,id,revision,req):
+        report=self.run_report(project,id)
+        row=next((case for case in report['cases'] if case['case']==str(req.case) and case['version']==req.version),None)
+        if row is None:raise HTTPException(404,'case version is not part of this run')
+        now=time.time()
+        with closing(self.connect()) as c,c:
+            c.execute('BEGIN IMMEDIATE')
+            current=c.execute('SELECT * FROM experiment_reviews WHERE project=? AND run_id=? AND case_id=? AND case_version=?',(project,id,str(req.case),req.version)).fetchone()
+            latest=current['revision'] if current else 0
+            if current and current['label']==req.label and revision in {latest,latest-1}:return {'case':str(req.case),'version':req.version,'label':req.label,'revision':latest,'updated':current['updated']}
+            if revision!=latest:raise HTTPException(409,'review changed; reload the run before saving')
+            next_revision=latest+1
+            c.execute('''INSERT INTO experiment_reviews(project,run_id,case_id,case_version,label,revision,updated) VALUES(?,?,?,?,?,?,?)
+              ON CONFLICT(project,run_id,case_id,case_version) DO UPDATE SET label=excluded.label,revision=excluded.revision,updated=excluded.updated''',
+              (project,id,str(req.case),req.version,req.label,next_revision,now))
+        return {'case':str(req.case),'version':req.version,'label':req.label,'revision':next_revision,'updated':now}
 
     def compare(self,project,baseline,candidate):
         return compare_runs(self.run_report(project,baseline),self.run_report(project,candidate))

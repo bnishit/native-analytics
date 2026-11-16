@@ -14,7 +14,7 @@ type Result = 'passed'|'failed'|'unknown';
 type Milestone = 'completion'|'delivery'|'usefulness';
 type Disposition = 'delivered'|'withheld'|'clarification'|'partial';
 type SpanOptions = {milestone?:Milestone;disposition?:Disposition};
-type TaskOptions = {workflow?:string;environment?:Environment;releaseSha?:string;context?:TraceContext;trafficKind?:TrafficKind};
+type TaskOptions = {workflow?:string;environment?:Environment;releaseSha?:string;context?:TraceContext;trafficKind?:TrafficKind;sessionId?:string};
 class StreamCancelled extends Error {}
 class ResponseFailed extends Error {
  readonly code:'rejected'|'unavailable';
@@ -23,7 +23,7 @@ class ResponseFailed extends Error {
 function failure(error:unknown){return error instanceof StreamCancelled?{state:'cancelled',code:'cancelled'}:{state:'failed',code:error instanceof ResponseFailed?error.code:'internal'}}
 export interface TraceContext {
  traceId:string; attemptId:string; attemptNumber:number; workflow:string; environment:Environment;
- requestStartedAtMs:number; releaseSha?:string; spanId?:string; sampled:boolean; trafficKind?:TrafficKind;
+ requestStartedAtMs:number; releaseSha?:string; spanId?:string; sampled:boolean; trafficKind?:TrafficKind; sessionId?:string;
 }
 type CheckExecution = 'completed'|'not_run';
 type CheckReason = 'evidence_absent'|'evidence_binding_rejected';
@@ -42,7 +42,7 @@ export function mappedId(traceId:string,spanId?:string):string {
 function validate(c:TraceContext):TraceContext {
  mappedId(c.traceId,c.spanId);
  if(c.trafficKind!==undefined&&!['user','synthetic','internal','unknown'].includes(c.trafficKind))throw Error('Invalid traffic kind');
- if(!uuid4.test(c.attemptId)||!Number.isInteger(c.attemptNumber)||c.attemptNumber<1||c.attemptNumber>10000||typeof c.workflow!=='string'||!identifier.test(c.workflow)||!['production','staging','development','test','local'].includes(c.environment)||!Number.isSafeInteger(c.requestStartedAtMs)||c.requestStartedAtMs<0||c.requestStartedAtMs>4102444800000||typeof c.sampled!=='boolean'||c.releaseSha!==undefined&&!/^[a-f0-9]{40}$/.test(c.releaseSha))throw Error('Invalid workflow context');
+ if(!uuid4.test(c.attemptId)||!Number.isInteger(c.attemptNumber)||c.attemptNumber<1||c.attemptNumber>10000||typeof c.workflow!=='string'||!identifier.test(c.workflow)||!['production','staging','development','test','local'].includes(c.environment)||!Number.isSafeInteger(c.requestStartedAtMs)||c.requestStartedAtMs<0||c.requestStartedAtMs>4102444800000||typeof c.sampled!=='boolean'||c.releaseSha!==undefined&&!/^[a-f0-9]{40}$/.test(c.releaseSha)||c.sessionId!==undefined&&!uuid4.test(c.sessionId))throw Error('Invalid workflow context');
  return Object.freeze({...c});
 }
 export function retryContext(c:TraceContext):TraceContext {return validate({...c,attemptId:randomUUID(),attemptNumber:c.attemptNumber+1,spanId:undefined})}
@@ -50,6 +50,7 @@ export function inject(context:TraceContext|undefined=current.getStore()):Record
  if(!context?.spanId)return {};
  const c=validate(context);const values:Record<string,string>={workflow:c.workflow,environment:c.environment,attempt:c.attemptId,number:String(c.attemptNumber),clock:String(c.requestStartedAtMs),traffic:c.trafficKind||'unknown'};
  if(c.releaseSha)values.release=c.releaseSha;
+ if(c.sessionId)values.session=c.sessionId;
  return {traceparent:`00-${c.traceId}-${c.spanId}-${c.sampled?'01':'00'}`,baggage:Object.entries(values).map(([k,v])=>'afterspan.'+k+'='+encodeURIComponent(v)).join(',')};
 }
 export function extract(headers:Record<string,string>,trusted=false):TraceContext|undefined {
@@ -60,7 +61,7 @@ export function extract(headers:Record<string,string>,trusted=false):TraceContex
   const values:Record<string,string>={};
   for(const item of baggage.split(',')){const i=item.indexOf('=');if(i<0)return;const key=item.slice(0,i).trim();if(key.startsWith('afterspan.')){const name=key.slice(10);if(Object.hasOwn(values,name))return;values[name]=decodeURIComponent(item.slice(i+1))}}
   if(!/^\d+$/.test(values.number)||!/^\d+$/.test(values.clock))return;
-  return validate({traceId:parent.slice(3,35),spanId:parent.slice(36,52),attemptId:values.attempt,attemptNumber:Number(values.number),workflow:values.workflow,environment:values.environment as Environment,requestStartedAtMs:Number(values.clock),releaseSha:values.release,sampled:(parseInt(parent.slice(-2),16)&1)===1,trafficKind:(values.traffic||'unknown') as TrafficKind});
+  return validate({traceId:parent.slice(3,35),spanId:parent.slice(36,52),attemptId:values.attempt,attemptNumber:Number(values.number),workflow:values.workflow,environment:values.environment as Environment,requestStartedAtMs:Number(values.clock),releaseSha:values.release,sessionId:values.session,sampled:(parseInt(parent.slice(-2),16)&1)===1,trafficKind:(values.traffic||'unknown') as TrafficKind});
  } catch {return}
 }
 export class Span {
@@ -84,7 +85,7 @@ export class Span {
   if(duration>86400000)delete result.first_output_ms;
   return result;
  }
- facts(){const c=this.context;return {schema_version:'workflow-trace-v1',trace_id:mappedId(c.traceId),attempt_id:c.attemptId,attempt_number:c.attemptNumber,span_id:mappedId(c.traceId,c.spanId),parent_span_id:this.parent,workflow:c.workflow,environment:c.environment,traffic_kind:c.trafficKind||'unknown',release_sha:c.releaseSha,request_started_at_ms:c.requestStartedAtMs,step:this.step}}
+ facts(){const c=this.context;return {schema_version:'workflow-trace-v1',trace_id:mappedId(c.traceId),attempt_id:c.attemptId,attempt_number:c.attemptNumber,span_id:mappedId(c.traceId,c.spanId),parent_span_id:this.parent,workflow:c.workflow,environment:c.environment,traffic_kind:c.trafficKind||'unknown',release_sha:c.releaseSha,request_started_at_ms:c.requestStartedAtMs,...(c.sessionId?{session_id:c.sessionId}:{}),step:this.step}}
  check(name:string,result:Result,options:{version?:number;method?:Method;phase?:Phase;required?:boolean;evidenceDigest?:string;execution?:CheckExecution;reasonCode?:CheckReason}={}):Result {
   const {version=1,method='source',phase='before_delivery',required=true,evidenceDigest,execution,reasonCode}=options;
   if(this.closed||typeof name!=='string'||!identifier.test(name)||!['passed','failed','unknown'].includes(result)||!Number.isInteger(version)||version<1||version>1000000||!['source','code','model','human'].includes(method)||!['before_delivery','after_delivery'].includes(phase)||typeof required!=='boolean'||this.checks.length>=20||this.checks.some(c=>c.name===name))throw Error('Invalid or closed check');
@@ -112,7 +113,9 @@ export class WorkflowTracer {
   try{const job=this.client.track(name,this.subjectId??null,properties).catch(()=>{this.emitFailures++});this.pending.add(job);void job.finally(()=>this.pending.delete(job))}catch{this.emitFailures++}
  }
  async task<T>(options:TaskOptions,run:(span:Span)=>Promise<T>|T):Promise<T>{
-  const context=validate(options.context||{traceId:randomBytes(16).toString('hex'),attemptId:randomUUID(),attemptNumber:1,workflow:options.workflow||'',environment:options.environment||'production',requestStartedAtMs:Date.now(),releaseSha:options.releaseSha,sampled:true,trafficKind:options.trafficKind||'unknown'});
+  const base=options.context||{traceId:randomBytes(16).toString('hex'),attemptId:randomUUID(),attemptNumber:1,workflow:options.workflow||'',environment:options.environment||'production',requestStartedAtMs:Date.now(),releaseSha:options.releaseSha,sampled:true,trafficKind:options.trafficKind||'unknown',sessionId:options.sessionId};
+  if(options.sessionId!==undefined&&base.sessionId!==undefined&&options.sessionId!==base.sessionId)throw Error('Session ID conflicts with inherited context');
+  const context=validate(options.sessionId!==undefined&&base.sessionId===undefined?{...base,sessionId:options.sessionId}:base);
   return current.run(context,()=>this.span('processing',run));
  }
  private openSpan(step:Step,options:SpanOptions,context=current.getStore()):Span {

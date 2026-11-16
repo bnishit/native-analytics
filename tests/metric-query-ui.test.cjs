@@ -7,17 +7,17 @@ const viewCode=source.slice(source.indexOf('function chartResult('),source.index
 function harness(text,{stale=false}={}){
  const requests=[],content={innerHTML:''};
  const query={event:'http.request',distinct_id:'support:example',start:'2026-11-01T00:00:00Z',end:'2026-11-02T00:00:00Z',as_of:'2026-11-02T00:00:00Z'};
- const context=vm.createContext({metricQueryText:()=>text,viewParams:new URLSearchParams(text===null?'':'metric_query='+encodeURIComponent(text)),renderVersion:1,
+ const context=vm.createContext({metricQueryText:()=>text,viewParams:new URLSearchParams(text===null?'':'metric_query='+encodeURIComponent(text)),renderVersion:1,selectedDashboardId:null,
   $:()=>content,canEdit:()=>false,url:path=>path,esc:s=>String(s).replaceAll('<','&lt;'),fmt:String,
   graph:()=>'<svg>Real query chart</svg>',bars:()=>'',panel:(title,body)=>'<section><h2>'+title+'</h2>'+body+'</section>',
-  api:async(path,body)=>{requests.push({path,body});if(stale)context.renderVersion=2;return path==='/api/charts'?{charts:[]}:{total:4,matched_events:4,query,series:[],breakdown:[]};}});
+  api:async(path,body)=>{requests.push({path,body});if(stale)context.renderVersion=2;return path==='/api/charts'?{charts:[]}:path==='/api/dashboards'?{dashboards:[]}:{total:4,matched_events:4,query,series:[],breakdown:[]};}});
  vm.runInContext(viewCode,context);
  return {context,requests,content,query};
 }
 test('reader opens the exact frozen query without saving a chart',async()=>{
  const h=harness(JSON.stringify({event:'http.request',distinct_id:'support:example'}));
  await vm.runInContext('chartsView(1)',h.context);
- assert.deepEqual(h.requests.map(r=>r.path),['/api/query','/api/charts']);
+ assert.deepEqual(h.requests.map(r=>r.path),['/api/query','/api/charts','/api/dashboards']);
  assert.equal(h.requests[0].body.distinct_id,'support:example');
  assert.match(h.content.innerHTML,/4 matching events/);assert.match(h.content.innerHTML,/Snapshot/);
  assert.match(h.content.innerHTML,/Read-only preview/);assert.doesNotMatch(h.content.innerHTML,/Build a graph/);
@@ -30,7 +30,7 @@ test('malformed and oversized links do not make requests',async()=>{
 });
 test('normal saved-chart visits do not execute a query and stale results do not render',async()=>{
  const normal=harness(null);await vm.runInContext('chartsView(1)',normal.context);
- assert.deepEqual(normal.requests.map(r=>r.path),['/api/charts']);
+ assert.deepEqual(normal.requests.map(r=>r.path),['/api/charts','/api/dashboards']);
  const stale=harness('{}',{stale:true});await vm.runInContext('chartsView(1)',stale.context);
  assert.equal(stale.content.innerHTML,'');assert.deepEqual(stale.requests.map(r=>r.path),['/api/query']);
 });

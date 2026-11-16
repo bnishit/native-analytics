@@ -47,7 +47,7 @@ def install(app,provider):
     def connection_status()->dict:
         """Inspect the approved project, permissions and expiry. No secrets."""
         t=get_access_token()
-        return {'project':t.project,'scopes':t.scopes,'expires':t.expires_at,'workflows':WORKFLOWS,'dashboard_url':provider.origin+'/app#workspace='+t.workspace+'&project='+t.project+'&view=charts&days=30','limits':['One project per connection.','Charts are individual saved views, not a dashboard layout.','No raw event export, producer keys, deployments or account administration.']}
+        return {'project':t.project,'scopes':t.scopes,'expires':t.expires_at,'workflows':WORKFLOWS,'dashboard_url':provider.origin+'/app#workspace='+t.workspace+'&project='+t.project+'&view=charts&days=30','limits':['One project per connection.','Dashboards arrange saved charts; each chart keeps its own query.','No raw event export, producer keys, deployments or account administration.']}
 
     @mcp.tool(annotations=READ)
     def get_workflow(name:Literal['connect-and-verify','audit-tracking','build-dashboard','investigate-failure','check-release','improve-tracker'])->dict:
@@ -88,6 +88,11 @@ def install(app,provider):
     async def compare_experiments(baseline:UUID,candidate:UUID)->dict:
         """Requires experiments:write and editor role. Compare the same pinned dataset/check versions. Missing cases remain counted. Eligibility for review is not deployment authority or production impact."""
         return await call('/api/experiments/compare',{'baseline':str(baseline),'candidate':str(candidate)})
+
+    @mcp.tool(annotations=WRITE)
+    async def annotate_experiment_case(run_id:UUID,case_id:UUID,case_version:int,label:Literal['useful','incorrect','unsafe','incomplete','uncertain'],revision:int=0)->dict:
+        """Requires experiments:write and editor role. Save one fixed human-review label for an exact case version in a run. No free-text comments or model calls; stale revisions are rejected."""
+        return await call('/api/experiments/runs/'+str(run_id)+'/reviews?revision='+str(revision),{'case':str(case_id),'version':case_version,'label':label},'PUT')
 
     @mcp.tool(annotations=READ)
     async def released_artifacts(environment:Literal['production','staging','development','test','local'],offset:int=0,limit:int=20)->dict:
@@ -188,6 +193,56 @@ def install(app,provider):
         """Read saved definitions before creating anything; inspect definitions, not just titles."""
         return await call('/api/charts')
 
+    @mcp.tool(annotations=READ)
+    async def saved_dashboards()->dict:
+        """Read project dashboards and the saved chart IDs they arrange."""
+        return await call('/api/dashboards')
+
+    @mcp.tool(annotations=WRITE)
+    async def save_dashboard(dashboard_id:UUID,title:str,chart_ids:list[UUID])->dict:
+        """Create a named dashboard from saved charts in this project. Reuse dashboard_id on retry; no chart data is copied."""
+        return await call('/api/dashboards?dashboard_id='+str(dashboard_id),{'title':title,'chart_ids':[str(i) for i in chart_ids]},'POST')
+
+    @mcp.tool(annotations=WRITE)
+    async def update_dashboard(dashboard_id:UUID,revision:int,title:str,chart_ids:list[UUID])->dict:
+        """Requires charts:manage and editor access. Use the exact latest revision from saved_dashboards."""
+        return await call('/api/dashboards/'+str(dashboard_id)+'?revision='+str(revision),{'title':title,'chart_ids':[str(i) for i in chart_ids]},'PUT')
+
+    @mcp.tool(annotations=WRITE)
+    async def delete_dashboard(dashboard_id:UUID,revision:int)->dict:
+        """Requires charts:manage and editor access. Delete only at the revision returned by saved_dashboards."""
+        return await call('/api/dashboards/'+str(dashboard_id)+'?revision='+str(revision),None,'DELETE')
+
+    @mcp.tool(annotations=READ)
+    async def saved_prompts()->dict:
+        """Requires a separate prompts:read grant. Returns names and version numbers only; open_prompt is needed to read saved text."""
+        return await call('/api/prompts')
+
+    @mcp.tool(annotations=READ)
+    async def open_prompt(prompt_id:UUID,version:int|None=None)->dict:
+        """Requires prompts:read. Reads text that a person explicitly saved; this tool does not run the prompt or attach it to telemetry."""
+        return await call('/api/prompts/'+str(prompt_id)+('?version='+str(version) if version else ''))
+
+    @mcp.tool(annotations=READ)
+    async def prompt_versions(prompt_id:UUID)->dict:
+        """Requires prompts:read. List saved version numbers and dates without returning prompt text."""
+        return await call('/api/prompts/'+str(prompt_id)+'/versions')
+
+    @mcp.tool(annotations=WRITE)
+    async def create_prompt(prompt_id:UUID,title:str,content:str)->dict:
+        """Requires separately approved prompts:write. Saves explicit prompt text encrypted at rest; reuse prompt_id on retry."""
+        return await call('/api/prompts?prompt_id='+str(prompt_id),{'title':title,'content':content},'POST')
+
+    @mcp.tool(annotations=WRITE)
+    async def add_prompt_version(prompt_id:UUID,expected_version:int,content:str)->dict:
+        """Requires prompts:write. Adds a new immutable version only when expected_version is still latest."""
+        return await call('/api/prompts/'+str(prompt_id)+'/versions?expected_version='+str(expected_version),{'content':content},'POST')
+
+    @mcp.tool(annotations=WRITE)
+    async def delete_prompt(prompt_id:UUID,revision:int)->dict:
+        """Requires prompts:write. Permanently deletes the prompt and its encrypted versions after checking the current revision."""
+        return await call('/api/prompts/'+str(prompt_id)+'?revision='+str(revision),None,'DELETE')
+
     @mcp.tool(annotations=WRITE)
     async def save_chart(chart_id:UUID,title:str,query:dict)->dict:
         """Create a chart with charts:write. Generate one UUID and reuse it on retry; an existing different chart cannot be overwritten."""
@@ -232,6 +287,16 @@ def install(app,provider):
     async def open_trace(reference:str,query:dict)->dict:
         """Requires audit:read. Open a trace from search_traces with its exact query. Returns parent-linked spans, attempts and evidence gaps. Observed is not business success."""
         return await call('/api/traces/open',{**query,'reference':reference})
+
+    @mcp.tool(annotations=READ)
+    async def search_trace_sessions(query:dict)->dict:
+        """Requires audit:read. Group only traces that producers explicitly linked with the same opaque UUIDv4 session_id. query={days:7,environment:'production',limit:20,offset:0}. No customer identity or private content is added."""
+        return await call('/api/traces/sessions/search',query)
+
+    @mcp.tool(annotations=READ)
+    async def open_trace_session(session_id:str,query:dict)->dict:
+        """Requires audit:read. Open one session from search_trace_sessions with its exact frozen window and opaque session_id."""
+        return await call('/api/traces/sessions/open',{**query,'session_id':session_id})
 
     @mcp.tool(annotations=READ)
     async def workflow_trace_catalog()->dict:

@@ -19,6 +19,13 @@ test('release comparison keeps unknown evidence and observational limits visible
  const known=vm.runInContext('outcomeReleaseMarkup('+JSON.stringify({...data,status:'comparable',reasons:[],satisfied_fraction_difference:0})+')',c);
  assert.match(known,/0 percentage-point change/);assert.doesNotMatch(known,/Change unavailable/);
 });
+
+test('chart action URLs retain existing revisions while adding the selected project',()=>{
+ const source=fs.readFileSync('static/app.js','utf8'),definition=source.match(/function url\(path,extras=\{\}\)\{[^\n]+\}/)[0];
+ const c=vm.createContext({URL,URLSearchParams,location:{origin:'https://afterspan.example'},project:'project-1',days:30});vm.runInContext(definition,c);
+ const result=new URL(vm.runInContext('url("/api/charts/chart-1?revision=4")',c),'https://afterspan.example');
+ assert.equal(result.pathname,'/api/charts/chart-1');assert.equal(result.searchParams.get('revision'),'4');assert.equal(result.searchParams.get('project'),'project-1');assert.equal(result.searchParams.get('days'),'30');
+});
 test('synthetic or mixed goals cannot start a user-outcome comparison',async()=>{
  let html='',calls=0;const c=context({$:()=>({set innerHTML(v){html=v}}),api:()=>{calls++}});
  await vm.runInContext('outcomeReleaseView(1,{definition:{traffic_kind:"synthetic"}})',c);
@@ -144,6 +151,17 @@ test('release collection drilldown preserves the exact source window and project
  const data={status:'unknown',reasons:[],experiment:{baseline_pass_rate:1,candidate_pass_rate:1},satisfied_fraction_difference:null,before:cohort,limits:[]};
  const html=vm.runInContext('outcomeReleaseMarkup('+JSON.stringify(data)+')',c),match=html.match(/href="([^"]+)"[^>]*>Inspect Before collection window/);assert.ok(match);
  const link=new URL(match[1],'https://example.com'),params=new URLSearchParams(link.hash.slice(1));assert.equal(params.get('project'),'app');assert.equal(params.get('workspace'),'work');assert.equal(params.get('view'),'collection');assert.deepEqual(JSON.parse(params.get('collection_query')),query);
+});
+
+test('release monitors render project alert boundaries and escaped titles',async()=>{
+ let html='';const host={querySelectorAll:()=>[],set innerHTML(value){html=value}};
+ const monitor={id:'monitor-1',definition:{outcome_title:'<script>bad</script>',regression_threshold:.05},state:'clear',revision:2,active:true};
+ const c=context({project:'app',renderVersion:7,tab:'outcomes',canEdit:()=>true,$:selector=>selector==='#release-monitor-list'?host:null,
+  url:path=>path,api:async()=>({monitors:[monitor]})});
+ await vm.runInContext('releaseMonitorsView(7)',c);
+ assert.match(html,/&lt;script>bad&lt;\/script>/);assert.doesNotMatch(html,/<script>/);
+ assert.match(html,/checks hourly/);assert.match(html,/Show alert history/);assert.match(html,/Stop monitor/);
+ assert.match(vm.runInContext('releaseMonitorEntry()',c),/No email or chat message is sent/);
 });
 
 test('the actual initial route rewrite preserves a collection window only for its project',()=>{

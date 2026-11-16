@@ -317,12 +317,20 @@ def main(argv=None):
     headers={'Content-Type':'application/json','X-Native-CSRF':'1'}
     if receipt:headers['Cookie']=receipt.cookie_name+'='+receipt.session
     if key and not public:headers['Authorization']='Bearer '+key
-    request=urllib.request.Request(origin+path+('?' + urllib.parse.urlencode(params) if params else ''),
-                                   data=json.dumps(body).encode() if body is not None else None,headers=headers,method=method)
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self,*args):return None
+    opener=urllib.request.build_opener(NoRedirect)
+    if command=='delete-chart':
+        listing=urllib.request.Request(origin+'/api/charts?'+urllib.parse.urlencode({'project':args.project}),headers=headers)
+        with opener.open(listing,timeout=20) as response:charts=json.load(response)['charts']
+        saved=next((chart for chart in charts if chart['id']==args.id),None)
+        if saved is None:
+            print(json.dumps({'id':args.id,'ok':True,'deleted':False}));return 0
+        params['revision']=saved['revision']
+    request=urllib.request.Request(origin+path+('?' + urllib.parse.urlencode(params) if params else ''),
+                                   data=json.dumps(body).encode() if body is not None else None,headers=headers,method=method)
     try:
-        with urllib.request.build_opener(NoRedirect).open(request,timeout=60 if command.startswith('loop-') else 20) as r:
+        with opener.open(request,timeout=60 if command.startswith('loop-') else 20) as r:
             result=json.load(r)
             if command in ['complete-login','login-existing']:
                 name='na_session' if command=='login-existing' else 'as_session'

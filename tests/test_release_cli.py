@@ -53,3 +53,12 @@ class ReleaseCliTests(unittest.TestCase):
   self.assertEqual(request.get_method(),'POST');self.assertTrue(urlsplit(request.full_url).path.endswith('/'+ID+'/adopt'))
   self.assertEqual(request.get_header('Cookie'),'as_session=as_session_fixture')
   self.assertIsNone(request.get_header('Authorization'));self.assertEqual(json.loads(request.data),body)
+ def test_delete_chart_reads_revision_then_deletes_with_the_same_project(self):
+  output=io.StringIO();listing=io.BytesIO(json.dumps({'charts':[{'id':ID,'revision':4}]}).encode());deleted=io.BytesIO(json.dumps({'id':ID,'deleted':True}).encode())
+  with patch.dict(os.environ,self.env,clear=True),patch.object(cli.urllib.request,'build_opener') as opener,contextlib.redirect_stdout(output):
+   opener.return_value.open.side_effect=[listing,deleted]
+   self.assertEqual(cli.main(['delete-chart','--project','app','--id',ID]),0)
+   read_request,delete_request=opener.return_value.open.call_args_list[0].args[0],opener.return_value.open.call_args_list[1].args[0]
+  self.assertEqual(read_request.get_method(),'GET');self.assertEqual(parse_qs(urlsplit(read_request.full_url).query),{'project':['app']})
+  self.assertEqual(delete_request.get_method(),'DELETE');self.assertEqual(parse_qs(urlsplit(delete_request.full_url).query),{'project':['app'],'revision':['4']})
+  self.assertEqual(json.loads(output.getvalue()),{'id':ID,'deleted':True})

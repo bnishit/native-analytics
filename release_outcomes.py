@@ -1,13 +1,17 @@
 """Connect fixed experiments to existing verified release receipts and mature outcomes."""
 from contextlib import closing
 from datetime import datetime,timedelta
+import json
+import logging
 import time
 import uuid
 from fastapi import Depends,HTTPException,Query
-from pydantic import model_validator
+from pydantic import Field,model_validator
 from collection_health import HealthQuery
 from outcomes import OutcomeBinding,OutcomeQuery,OutcomeGoal
 from product_analytics import Model,Window
+
+log=logging.getLogger(__name__)
 from product_loop import released_artifact
 from regressions import compare_runs
 from sdk.python.afterspan_experiments import digest
@@ -30,6 +34,11 @@ class ReleaseComparison(Model):
     before:FrozenWindow
     after:FrozenWindow
 
+class ReleaseMonitorCreate(Model):
+    id:uuid.UUID
+    query:ReleaseComparison
+    regression_threshold:float=Field(default=.05,gt=0,le=1)
+
 def public_release(action,release):
     return {'action':action['id'],'repository':action['plan'].get('repository'),
             **{k:release.get(k) for k in ['provider','commit','base_commit','environment','released_at','deployment_id','timestamp_basis']}}
@@ -43,6 +52,141 @@ class ReleaseOutcomes:
             return self.list(project,environment,limit,offset)
         @app.post('/api/outcomes/releases/compare',dependencies=[Depends(editor)])
         def compare(project:str,req:ReleaseComparison):return self.compare(project,req)
+        @app.get('/api/outcomes/release-monitors',dependencies=[Depends(editor)])
+        def monitors(project:str):return self.list_monitors(project)
+        @app.post('/api/outcomes/release-monitors',dependencies=[Depends(editor)])
+        def create_monitor(project:str,req:ReleaseMonitorCreate):return self.create_monitor(project,req)
+        @app.post('/api/outcomes/release-monitors/{monitor_id}/evaluate',dependencies=[Depends(editor)])
+        def evaluate_monitor(monitor_id:uuid.UUID,project:str):return self.evaluate_monitor(project,str(monitor_id))
+        @app.get('/api/outcomes/release-monitors/{monitor_id}/alerts',dependencies=[Depends(editor)])
+        def monitor_alerts(monitor_id:uuid.UUID,project:str,limit:int=Query(50,ge=1,le=100)):
+            return self.monitor_alerts(project,str(monitor_id),limit)
+        @app.delete('/api/outcomes/release-monitors/{monitor_id}',dependencies=[Depends(editor)])
+        def disable_monitor(monitor_id:uuid.UUID,project:str,revision:int):
+            return self.disable_monitor(project,str(monitor_id),revision)
+
+    def list_monitors(self,project):
+        with closing(self.connect()) as c:
+            rows=c.execute('SELECT id,definition,state,revision,active,created,updated FROM release_monitors WHERE project=? ORDER BY active DESC,created DESC LIMIT 50',(project,)).fetchall()
+        return {'monitors':[{'id':r['id'],'definition':json.loads(r['definition']),'state':r['state'],'revision':r['revision'],'active':bool(r['active']),'created':r['created'],'updated':r['updated']} for r in rows],
+            'limits':['At most 50 active monitors service-wide. Checks run hourly. Unknown evidence never triggers an alert.']}
+
+    def create_monitor(self,project,req):
+        monitor_id=str(req.id);query=req.query.model_dump(mode='json')
+        with closing(self.connect()) as c:
+            existing=c.execute('SELECT project,definition,state,revision,created,active FROM release_monitors WHERE id=?',(monitor_id,)).fetchone()
+        if existing:
+            if existing['project']!=project:raise HTTPException(404,'release monitor not found')
+            saved=json.loads(existing['definition'])
+            if saved.get('query')!=query or saved.get('regression_threshold')!=req.regression_threshold:
+                raise HTTPException(409,'monitor ID already exists with a different definition')
+            return {'id':monitor_id,'state':existing['state'],'revision':existing['revision'],'active':bool(existing['active']),
+                'created':existing['created'],'reused':True}
+        preview=self.compare(project,req.query)
+        blocked=[reason for reason in preview['reasons'] if not reason.startswith('after_')]
+        if blocked:raise HTTPException(409,{'message':'release baseline is not ready for monitoring','reasons':blocked})
+        now=time.time()
+        definition={'query':query,'regression_threshold':req.regression_threshold,
+            'outcome_title':preview.get('goal_definition',{}).get('title','Outcome goal')}
+        with closing(self.connect()) as c,c:
+            c.execute('BEGIN IMMEDIATE')
+            existing=c.execute('SELECT project,definition,state,revision,created,active FROM release_monitors WHERE id=?',(monitor_id,)).fetchone()
+            if existing:
+                if existing['project']!=project:raise HTTPException(404,'release monitor not found')
+                if json.loads(existing['definition'])!=definition:raise HTTPException(409,'monitor ID already exists with a different definition')
+                return {'id':monitor_id,'state':existing['state'],'revision':existing['revision'],'active':bool(existing['active']),'created':existing['created'],'reused':True}
+            if c.execute('SELECT count(*) FROM release_monitors WHERE active=1').fetchone()[0]>=50:
+                raise HTTPException(429,'maximum active release monitors reached')
+            c.execute("INSERT INTO release_monitors(id,project,definition,state,revision,active,created,updated) VALUES(?,?,?,'waiting',1,1,?,?)",
+                (monitor_id,project,json.dumps(definition,separators=(',',':')),now,now))
+        result=self.evaluate_monitor(project,monitor_id)
+        return {'id':monitor_id,'state':result['state'],'revision':result['revision'],'created':now,
+            'alert':result.get('alert'),'limits':['Regression episodes create one in-app alert; unchanged checks do not repeat it. Unknown comparisons do not alert.']}
+
+    def monitor_query(self,project,definition):
+        query=definition['query']
+        saved=self.outcomes.get(project,query['outcome_goal']['id'],query['outcome_goal']['version'])
+        goal=OutcomeGoal.model_validate(saved['definition'])
+        now=datetime.now().astimezone();end=now-timedelta(seconds=goal.deadline_seconds)
+        start=datetime.fromisoformat(query['after']['start'])
+        if end<=start:return None
+        start=max(start,end-timedelta(days=90))
+        query={**query,'after':{'days':7,'start':start.isoformat(),'end':end.isoformat(),'as_of':now.isoformat()}}
+        return ReleaseComparison.model_validate(query)
+
+    @staticmethod
+    def alert_evidence(report):
+        def side(value):
+            if not value:return None
+            return {k:value.get(k) for k in ['counts','mature_denominator','satisfied_fraction','coverage']}
+        return {'status':report['status'],'reasons':report['reasons'],'before':side(report.get('before')),
+            'after':side(report.get('after')),'satisfied_fraction_difference':report.get('satisfied_fraction_difference'),
+            'baseline_release':report.get('baseline_release'),'release':report.get('release'),
+            'observational':True,'deployment_authorized':False}
+
+    def evaluate_monitor(self,project,monitor_id):
+        with closing(self.connect()) as c:
+            row=c.execute('SELECT * FROM release_monitors WHERE id=? AND project=?',(monitor_id,project)).fetchone()
+        if not row:raise HTTPException(404,'release monitor not found')
+        if not row['active']:
+            return {'id':monitor_id,'state':row['state'],'revision':row['revision'],'active':False}
+        started=time.time()
+        definition=json.loads(row['definition'])
+        try:
+            query=self.monitor_query(project,definition)
+            report=self.compare(project,query) if query else {'status':'waiting','reasons':['after_window_not_mature']}
+        except HTTPException:
+            report={'status':'unknown','reasons':['pinned_release_evidence_unavailable']}
+        threshold=definition['regression_threshold']
+        comparable=report['status']=='comparable'
+        regressed=comparable and report['satisfied_fraction_difference']<=-threshold
+        alert=None
+        if comparable:evidence=self.alert_evidence(report);fingerprint=digest(evidence)
+        with closing(self.connect()) as c,c:
+            c.execute('BEGIN IMMEDIATE')
+            current=c.execute('SELECT state,episode,revision,active,updated FROM release_monitors WHERE id=? AND project=?',(monitor_id,project)).fetchone()
+            if not current:raise HTTPException(404,'release monitor not found')
+            if not current['active'] or current['updated']>started:
+                row=current
+            else:
+                state=('regressed' if regressed else 'clear') if comparable else current['state'] if current['state']=='regressed' else 'unknown'
+                kind='regression' if comparable and regressed and current['state']!='regressed' else 'recovered' if comparable and not regressed and current['state']=='regressed' else None
+                episode=current['episode']+(1 if kind=='regression' else 0)
+                if kind:
+                    alert_id=str(uuid.uuid4())
+                    c.execute('INSERT INTO release_monitor_alerts(id,monitor_id,project,episode,kind,evidence,fingerprint,created) VALUES(?,?,?,?,?,?,?,?)',
+                        (alert_id,monitor_id,project,episode,kind,json.dumps(evidence,separators=(',',':')),fingerprint,started))
+                    alert={'id':alert_id,'episode':episode,'kind':kind,'evidence':evidence,'created':started}
+                changed=state!=current['state']
+                c.execute('UPDATE release_monitors SET state=?,episode=?,revision=revision+?,updated=? WHERE id=? AND project=? AND active=1',
+                    (state,episode,int(changed),started,monitor_id,project))
+                row=c.execute('SELECT state,revision,episode,active FROM release_monitors WHERE id=? AND project=?',(monitor_id,project)).fetchone()
+        return {'id':monitor_id,'state':row['state'],'revision':row['revision'],'episode':row['episode'],'active':bool(row['active']),
+            'comparison_status':report['status'],'reasons':report['reasons'],'alert':alert}
+
+    def evaluate_active(self):
+        with closing(self.connect()) as c:
+            rows=c.execute('SELECT project,id FROM release_monitors WHERE active=1 ORDER BY updated LIMIT 50').fetchall()
+        for row in rows:
+            try:self.evaluate_monitor(row['project'],row['id'])
+            except Exception as exc:log.warning('release monitor evaluation failed (%s)',type(exc).__name__)
+
+    def monitor_alerts(self,project,monitor_id,limit):
+        with closing(self.connect()) as c:
+            rows=c.execute('SELECT id,episode,kind,evidence,fingerprint,created FROM release_monitor_alerts WHERE project=? AND monitor_id=? ORDER BY created DESC LIMIT ?',
+                (project,monitor_id,limit)).fetchall()
+        return {'alerts':[{**dict(r),'evidence':json.loads(r['evidence'])} for r in rows]}
+
+    def disable_monitor(self,project,monitor_id,revision):
+        with closing(self.connect()) as c,c:
+            c.execute('BEGIN IMMEDIATE')
+            row=c.execute('SELECT active,revision,state FROM release_monitors WHERE id=? AND project=?',(monitor_id,project)).fetchone()
+            if not row:raise HTTPException(404,'release monitor not found')
+            if not row['active']:return {'id':monitor_id,'active':False,'revision':row['revision']}
+            if revision!=row['revision']:raise HTTPException(409,'monitor changed since it was read; reload before stopping')
+            c.execute('UPDATE release_monitors SET active=0,revision=revision+1,updated=? WHERE id=? AND project=? AND revision=?',
+                (time.time(),monitor_id,project,revision))
+        return {'id':monitor_id,'active':False,'revision':revision+1}
 
     def resolve(self,project,id,environment):
         with closing(self.connect()) as c:

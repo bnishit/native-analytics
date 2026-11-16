@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import logging
 import math
 import os
 import re
@@ -102,7 +103,15 @@ def init_db():
         CREATE TABLE IF NOT EXISTS people(project TEXT NOT NULL REFERENCES projects(id),distinct_id TEXT NOT NULL,
           attributes TEXT NOT NULL,first_seen REAL NOT NULL,last_seen REAL NOT NULL,PRIMARY KEY(project,distinct_id));
         CREATE TABLE IF NOT EXISTS charts(id TEXT PRIMARY KEY,project TEXT NOT NULL REFERENCES projects(id),title TEXT NOT NULL,
-          definition TEXT NOT NULL,created REAL NOT NULL);
+          definition TEXT NOT NULL,created REAL NOT NULL,revision INTEGER NOT NULL DEFAULT 1);
+        CREATE TABLE IF NOT EXISTS release_monitors(id TEXT PRIMARY KEY,project TEXT NOT NULL REFERENCES projects(id),definition TEXT NOT NULL,
+          state TEXT NOT NULL CHECK(state IN ('waiting','unknown','clear','regressed')),episode INTEGER NOT NULL DEFAULT 0,
+          revision INTEGER NOT NULL DEFAULT 1,active INTEGER NOT NULL DEFAULT 1,created REAL NOT NULL,updated REAL NOT NULL);
+        CREATE INDEX IF NOT EXISTS release_monitors_active ON release_monitors(active,updated);
+        CREATE TABLE IF NOT EXISTS release_monitor_alerts(id TEXT PRIMARY KEY,monitor_id TEXT NOT NULL REFERENCES release_monitors(id) ON DELETE CASCADE,
+          project TEXT NOT NULL REFERENCES projects(id),episode INTEGER NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('regression','recovered')),
+          evidence TEXT NOT NULL,fingerprint TEXT NOT NULL,created REAL NOT NULL,UNIQUE(monitor_id,episode,kind));
+        CREATE INDEX IF NOT EXISTS release_monitor_alert_history ON release_monitor_alerts(project,monitor_id,created);
         CREATE TABLE IF NOT EXISTS read_keys(id TEXT PRIMARY KEY,project TEXT NOT NULL REFERENCES projects(id),
           label TEXT NOT NULL,key_hash TEXT UNIQUE NOT NULL,created REAL NOT NULL,expires REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS login_limits(ip TEXT PRIMARY KEY,window REAL NOT NULL,attempts INTEGER NOT NULL);
@@ -125,6 +134,8 @@ def init_db():
         init_trace_subjects(c)
         if 'origins' not in {r['name'] for r in c.execute('PRAGMA table_info(relay_projects)')}:
             c.execute("ALTER TABLE relay_projects ADD COLUMN origins TEXT NOT NULL DEFAULT '[]'")
+        if 'revision' not in {r['name'] for r in c.execute('PRAGMA table_info(charts)')}:
+            c.execute('ALTER TABLE charts ADD COLUMN revision INTEGER NOT NULL DEFAULT 1')
     prune()
 
 
@@ -132,6 +143,7 @@ def prune():
     cutoff = time.time() - RETENTION_DAYS * 86400
     with closing(connect()) as c, c:
         c.execute('DELETE FROM events WHERE ts < ?', (cutoff,))
+        c.execute('DELETE FROM release_monitor_alerts WHERE created < ?', (cutoff,))
         c.execute('DELETE FROM workflow_trace_subjects WHERE erased IS NULL AND last_seen < ?',(cutoff-300,))
         c.execute('DELETE FROM collection_ingestion WHERE bucket < ?',(cutoff,))
         c.execute('DELETE FROM regression_objects WHERE expires<=?',(time.time(),))
@@ -163,6 +175,8 @@ def startup():
         while not _prune_stop.wait(3600):
             try:prune()
             except sqlite3.Error:pass
+            try:release_outcomes.evaluate_active()
+            except Exception:logging.getLogger(__name__).warning('release monitor sweep failed')
     threading.Thread(target=cleanup,name='retention',daemon=True).start()
     def deliver_mail():
         while not _prune_stop.is_set():
@@ -1014,19 +1028,43 @@ def save_chart(req:Chart,project:str,chart_id:uuid.UUID|None=None):
                 if prior['project']==project and prior['title']==req.title and json.loads(prior['definition'])==req.query.model_dump(mode='json'):return {'id':str(chart_id),'created':False}
                 raise HTTPException(409,'chart ID already exists with a different definition')
         if c.execute('SELECT count(*) FROM charts WHERE project=?',(project,)).fetchone()[0]>=30:raise HTTPException(422,'maximum 30 saved charts per project')
-        cid=str(chart_id or uuid.uuid4());c.execute('INSERT INTO charts VALUES(?,?,?,?,?)',(cid,project,req.title,req.query.model_dump_json(),time.time()))
+        cid=str(chart_id or uuid.uuid4());c.execute('INSERT INTO charts(id,project,title,definition,created,revision) VALUES(?,?,?,?,?,1)',(cid,project,req.title,req.query.model_dump_json(),time.time()))
     return {'id':cid}
 
 
 @app.put('/api/charts/{chart_id}',dependencies=[Depends(editor)])
-def put_chart(chart_id:uuid.UUID,req:Chart,project:str):
-    return save_chart(req,project,chart_id)
+def put_chart(chart_id:uuid.UUID,req:Chart,project:str,revision:int|None=None):
+    project_exists(project)
+    if req.query.metric not in {'count','users'} and not req.query.measure:raise HTTPException(422,'numeric metric needs measure')
+    with closing(connect()) as c,c:
+        c.execute('BEGIN IMMEDIATE')
+        prior=c.execute('SELECT project,title,definition,revision FROM charts WHERE id=?',(str(chart_id),)).fetchone()
+        if prior and prior['project']!=project:raise HTTPException(404,'chart not found')
+        definition=req.query.model_dump_json()
+        if prior and prior['title']==req.title and json.loads(prior['definition'])==req.query.model_dump(mode='json'):
+            return {'id':str(chart_id),'revision':prior['revision'],'updated':False}
+        if prior:
+            if revision is None or revision!=prior['revision']:raise HTTPException(409,'chart changed since it was read; reload before updating')
+            changed=c.execute('UPDATE charts SET title=?,definition=?,revision=revision+1 WHERE id=? AND project=? AND revision=?',
+                (req.title,definition,str(chart_id),project,revision)).rowcount
+            if not changed:raise HTTPException(409,'chart changed since it was read; reload before updating')
+            return {'id':str(chart_id),'revision':revision+1,'updated':True}
+        if revision not in (None,0):raise HTTPException(409,'chart does not exist at that revision')
+        if c.execute('SELECT count(*) FROM charts WHERE project=?',(project,)).fetchone()[0]>=30:raise HTTPException(422,'maximum 30 saved charts per project')
+        c.execute('INSERT INTO charts(id,project,title,definition,created,revision) VALUES(?,?,?,?,?,1)',(str(chart_id),project,req.title,definition,time.time()))
+    return {'id':str(chart_id),'revision':1,'updated':True}
 
 
 @app.delete('/api/charts/{chart_id}',dependencies=[Depends(editor)])
-def delete_chart(chart_id:str,project:str):
-    with closing(connect()) as c,c:c.execute('DELETE FROM charts WHERE id=? AND project=?',(chart_id,project))
-    return {'ok':True}
+def delete_chart(chart_id:uuid.UUID,project:str,revision:int):
+    project_exists(project)
+    with closing(connect()) as c,c:
+        c.execute('BEGIN IMMEDIATE')
+        prior=c.execute('SELECT revision FROM charts WHERE id=? AND project=?',(str(chart_id),project)).fetchone()
+        if not prior:return {'ok':True,'deleted':False}
+        if revision!=prior['revision']:raise HTTPException(409,'chart changed since it was read; reload before deleting')
+        c.execute('DELETE FROM charts WHERE id=? AND project=? AND revision=?',(str(chart_id),project,revision))
+    return {'ok':True,'deleted':True}
 
 
 @app.post('/api/maintenance',dependencies=[Depends(admin)])
@@ -1099,6 +1137,7 @@ def capabilities():
       'outcomes':{'goals':'/api/outcomes/goals','evaluate':'/api/outcomes/evaluate','contract':'workflow-outcome-v1','scope':'project audit-purpose read; editor writes goal versions','evidence':'producer-reported criteria, not independent business proof'},
       'improvement_flow':{'status':'/api/improvements/status','workflow':'improve-tracker','followups':'/api/outcomes/followups/{UUID}','max_window_seconds':86400,'max_checks':24,'execution':'host-side reviewed code/tests; service observes only'},
       'release_evidence':{'prepare':'/api/outcomes/release-proposals/{UUID}','adopt':'/api/outcomes/releases/{UUID}/adopt','scope':'separate releases:write for editor preparation; owner account session adopts','max_pr_files':200,'latest_deployment_only':True,'merge_or_deploy_authority':False},
+      'release_monitors':{'list':'/api/outcomes/release-monitors','create':'/api/outcomes/release-monitors','evaluate':'/api/outcomes/release-monitors/{UUID}/evaluate','alerts':'/api/outcomes/release-monitors/{UUID}/alerts','stop':'/api/outcomes/release-monitors/{UUID}?revision=N','scope':'audit:read plus experiments:write and editor membership','cadence':'hourly','delivery':'project-scoped in-app alert history','max_active':50,'unknown_evidence':'does not alert','deployment_authority':False},
       'traces':{'search':'/api/traces/search','open':'/api/traces/open','contracts':['slack-request-v1','workflow-trace-v1'],'otlp':{'endpoint':'/v1/traces','transport':'OTLP/HTTP protobuf or JSON','content_capture':False,'max_spans':500,'mapping_version':'afterspan-otel-v1'},'scope':'project audit-purpose read key','raw_data':False},
       'debugging':{'policy':'/api/debug/policy','capture':'/v1/debug','review':'/api/debug/review','default_enabled':False,'scope':'owner capture policy; project editor and separate debug:read for remote content reads','max_capture_window_seconds':86400,'max_retention_seconds':604800,'encrypted':True},
       'experiments':{'cases':'/api/experiments/cases','datasets':'/api/experiments/datasets','runs':'/api/experiments/runs','compare':'/api/experiments/compare','scope':'project editor; separate experiments:write for remote OAuth','raw_trace_content':False,'deployment_authority':False},

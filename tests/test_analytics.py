@@ -139,9 +139,24 @@ class AnalyticsTests(unittest.TestCase):
 
     def test_saved_charts_are_project_isolated(self):
         chart=self.client.post('/api/charts?project=alpha',headers=self.admin,json={'title':'Invoices','query':{'event':'http.request','breakdown':'operation'}}).json()
-        self.client.delete('/api/charts/'+chart['id']+'?project=beta',headers=self.admin)
+        self.client.delete('/api/charts/'+chart['id']+'?project=beta&revision=1',headers=self.admin)
         self.assertEqual(len(self.client.get('/api/charts?project=alpha',headers=self.admin).json()['charts']),1)
         self.assertEqual(self.client.get('/api/charts?project=beta',headers=self.admin).json()['charts'],[])
+
+    def test_saved_chart_updates_and_deletes_require_the_last_read_revision(self):
+        headers=self.admin
+        chart=self.client.post('/api/charts?project=alpha',headers=headers,json={'title':'Invoices','query':{'event':'http.request'}}).json()
+        row=self.client.get('/api/charts?project=alpha',headers=headers).json()['charts'][0]
+        self.assertEqual(row['revision'],1)
+        updated=self.client.put('/api/charts/'+chart['id']+'?project=alpha&revision=1',headers=headers,json={'title':'Invoice errors','query':{'event':'http.request','property':'status','value':'500'}})
+        self.assertEqual(updated.status_code,200,updated.text);self.assertEqual(updated.json(),{'id':chart['id'],'revision':2,'updated':True})
+        stale=self.client.put('/api/charts/'+chart['id']+'?project=alpha&revision=1',headers=headers,json={'title':'Wrong overwrite','query':{'event':'http.request'}})
+        self.assertEqual(stale.status_code,409)
+        self.assertEqual(self.client.get('/api/charts?project=alpha',headers=headers).json()['charts'][0]['title'],'Invoice errors')
+        self.assertEqual(self.client.delete('/api/charts/'+chart['id']+'?project=alpha&revision=1',headers=headers).status_code,409)
+        deleted=self.client.delete('/api/charts/'+chart['id']+'?project=alpha&revision=2',headers=headers)
+        self.assertEqual(deleted.status_code,200);self.assertTrue(deleted.json()['deleted'])
+        self.assertFalse(self.client.delete('/api/charts/'+chart['id']+'?project=alpha&revision=2',headers=headers).json()['deleted'])
 
     def test_overview_requests_errors_latency_and_ips(self):
         self.ingest([self.event(),self.event('error',properties={'status':502,'duration_ms':500,'ip':'203.0.113.2'})])

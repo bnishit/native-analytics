@@ -4,6 +4,27 @@ const initialReleaseParams=new URLSearchParams(location.hash.slice(1));
 let releaseEvidenceProject=initialReleaseParams.get('project')||'',releaseProposalSelection=initialReleaseParams.get('release_proposal')||'',releaseReceiptSelection=initialReleaseParams.get('release_receipt')||'',releaseEvidenceVersion=0;
 function releaseEvidenceParams(){return tab==='outcomes'&&releaseEvidenceProject===project?{...(releaseProposalSelection?{release_proposal:releaseProposalSelection}:{}),...(releaseReceiptSelection?{release_receipt:releaseReceiptSelection}:{})}:{}}
 function releaseEvidenceEntry(){return canEdit()?panel('Verify a deployed change','<p>Read the exact merged source and current successful deployment. An owner adopts the evidence; this cannot merge or deploy code.</p><button id="release-evidence-open">Verify an existing deployment</button><div id="release-evidence-panel"></div>'):''}
+function releaseMonitorEntry(){return canEdit()?panel('Release regression monitors','<p>Monitors check pinned, verified releases hourly. A comparable drop creates one in-app alert for that regression episode; unknown evidence does not alert. Create one with <code>create_release_monitor</code> through MCP, then review its evidence here. No email or chat message is sent.</p><div id="release-monitor-list"><p>Loading monitors…</p></div>'):''}
+async function releaseMonitorsView(version){
+ const host=$('#release-monitor-list');if(!host)return;
+ const targetProject=project,result=await api(url('/api/outcomes/release-monitors'));
+ if(version!==renderVersion||targetProject!==project)return;
+ if(!result.monitors.length){host.innerHTML='<p>No release monitors are set for this project.</p>';return}
+ host.innerHTML=result.monitors.map(m=>`<section class="panel"><div class="panel-head"><div><h3>${esc(m.definition.outcome_title)} · ${esc(m.state)}</h3><p class="small muted">Regression threshold ${fmt(m.definition.regression_threshold*100)}% · ${m.active?'checks hourly':'stopped'} · revision ${fmt(m.revision)}</p></div><div><button class="monitor-alerts" data-id="${esc(m.id)}">Show alert history</button>${m.active?'<button class="monitor-stop" data-id="'+esc(m.id)+'" data-revision="'+esc(m.revision)+'">Stop monitor</button>':''}</div></div><div class="monitor-alert-history" id="monitor-alerts-${esc(m.id)}"></div></section>`).join('');
+ host.querySelectorAll('.monitor-alerts').forEach(button=>button.onclick=async()=>{
+  if(version!==renderVersion||targetProject!==project)return;
+  const box=$('#monitor-alerts-'+button.dataset.id);button.disabled=true;
+  try{const data=await api(url('/api/outcomes/release-monitors/'+button.dataset.id+'/alerts'));if(version!==renderVersion||targetProject!==project)return;
+   box.innerHTML=data.alerts.length?data.alerts.map(alert=>{const e=alert.evidence,d=e.satisfied_fraction_difference;return `<p><b>${alert.kind==='regression'?'Regression detected':'Regression cleared'}</b> · ${esc(new Date(alert.created*1000).toLocaleString())} · episode ${fmt(alert.episode)} · before ${fmt((e.before?.satisfied_fraction??0)*100)}% / after ${fmt((e.after?.satisfied_fraction??0)*100)}%${d===null?'':' · change '+fmt(d*100)+'%'}</p><p class="small muted">${fmt(e.before?.mature_denominator||0)} before tasks, ${fmt(e.after?.mature_denominator||0)} after tasks · release ${esc(e.release?.commit||'unknown')} · observational evidence only</p>`}).join(''):'<p>No alerts. Unknown or incomplete comparisons stay quiet.</p>';
+  }catch(error){if(version===renderVersion)box.textContent=error.message}finally{button.disabled=false}
+ });
+ host.querySelectorAll('.monitor-stop').forEach(button=>button.onclick=async()=>{
+  if(version!==renderVersion||targetProject!==project)return;
+  button.disabled=true;
+  try{await api(url('/api/outcomes/release-monitors/'+button.dataset.id,{revision:button.dataset.revision}),null,'DELETE');await releaseMonitorsView(version)}
+  catch(error){if(version===renderVersion){button.disabled=false;showError(error)}}
+ });
+}
 function releaseEvidenceMarkup(value,owner){
  if(value.status==='pending')return '<p>Checking source and deployment. No release evidence is confirmed yet.</p><button id="release-evidence-poll">Check progress</button>';
  if(['failed','interrupted'].includes(value.status))return '<p>The evidence check did not finish. No release is verified.</p><button id="release-evidence-poll">Check or retry the same request</button>';
@@ -125,11 +146,12 @@ async function outcomesView(version){
  $('#content').innerHTML=panel('Outcome goal',`<label>Goal<select id="outcome-goal">${listed.goals.map(g=>`<option value="${esc(g.id)}" ${g.id===selected.id?'selected':''}>${esc(g.definition.title)} · v${g.version}</option>`).join('')}</select></label><p>${esc(selected.definition.workflow)} · ${esc(selected.definition.environment)} · ${fmt(selected.definition.deadline_seconds)} second deadline · ${esc(selected.definition.traffic_kind||'all')} traffic · ${fmt(selected.definition.min_sample_size||25)} mature tasks needed for a release comparison</p><p>Criteria: ${selected.definition.checks.map(c=>`${esc(c.name)} v${c.version} (${esc(c.method)}, ${c.phase==='before_delivery'?'before delivery':'after delivery'}, ${c.evidence_required?'receipt required':'receipt not required'})`).join(', ')}. Required milestones: ${selected.definition.milestones.map(esc).join(', ')}.</p>`)+
  panel('Observed task results',`<div class="trace-evidence">${outcomeCounts(report)}</div><p>${fmt(report.mature_denominator)} mature observed tasks · satisfied fraction ${report.satisfied_fraction===null?'unavailable':fmt(report.satisfied_fraction*100)+'%'}. Waiting tasks have not reached the deadline. Withheld and unclassified mature tasks stay in the denominator.</p><p>${fmt(report.coverage.traffic_excluded||0)} tasks excluded by traffic kind; ${fmt(report.coverage.traffic_unknown||0)} have unknown kind. Unknown population labels prevent a clean fraction.</p><p>These results apply declared criteria to producer evidence. They do not establish independent business correctness or causation.</p>`)+
  outcomeModelCost(report.model_cost)+
- (canEdit()?panel('Did a release help?','<button id="outcome-release-open">Compare verified deployments</button><div id="outcome-release-panel"></div>'):'')+releaseEvidenceEntry()+
+ (canEdit()?panel('Did a release help?','<button id="outcome-release-open">Compare verified deployments</button><div id="outcome-release-panel"></div>'):'')+releaseEvidenceEntry()+releaseMonitorEntry()+
  panel('Tasks to inspect',report.tasks.length?`<table><thead><tr><th>Task trace</th><th>Outcome</th><th>Evidence</th></tr></thead><tbody>${report.tasks.map(t=>`<tr><td><a href="#${new URLSearchParams({workspace,project,view:'traces',days,trace:t.trace,trace_query:JSON.stringify(report.trace_query)})}">${esc(t.trace)}</a></td><td>${esc(t.state)}</td><td>${t.reasons.map(r=>esc(outcomeReason(r))).join(', ')||'Declared criteria satisfied'} · ${fmt(t.attempts)} attempts</td></tr>`).join('')}</tbody></table><p>${report.total>report.tasks.length?'More tasks exist; use frozen API/MCP pagination to inspect the full set.':''}</p>`:'<p>No task traces are observed in this entry window. This does not prove no tasks occurred.</p>')+
  panel('Evidence window',`<p>Task entries: ${esc(report.snapshot.start)} → ${esc(report.snapshot.end)}. Receipts through ${esc(report.snapshot.as_of)}.</p>${report.limits.map(l=>`<p class="small muted">${esc(l)}</p>`).join('')}`)+outcomeGoalForm();
  $('#outcome-goal').onchange=()=>{outcomeSelection=$('#outcome-goal').value;render()};
  if($('#outcome-release-open'))$('#outcome-release-open').onclick=()=>outcomeReleaseView(version,selected).catch(showError);
+ if($('#release-monitor-list'))releaseMonitorsView(version).catch(showError);
  for(const a of $('#content').querySelectorAll('a[href^="#"]'))a.onclick=e=>{e.preventDefault();const p=new URLSearchParams(a.hash.slice(1));traceReference=p.get('trace');traceQuery=JSON.parse(p.get('trace_query'));tab='traces';render()};
  bindOutcomeGoalForm();
  bindReleaseEvidence(version);

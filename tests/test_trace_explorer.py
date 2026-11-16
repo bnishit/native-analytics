@@ -36,6 +36,30 @@ class ExplorerTests(unittest.TestCase):
                           'evidence':[{'state':'observed'},{'state':'succeeded'}]})
         self.assertTrue(row['has_gaps']);self.assertEqual(row['status'],'gaps')
 
+    def test_explicit_sessions_group_only_linked_workflow_traces(self):
+        session=str(uuid.uuid4());ids=[]
+        for i in range(2):
+            self.f.tid=str(uuid.uuid4());self.f.aid=str(uuid.uuid4());self.f.sid=str(uuid.uuid4());ids.append(self.f.tid)
+            self.assertEqual(self.f.ingest(self.f.event(at=i*3,workflow='document_export',step='processing',session_id=session),
+                self.f.event('succeeded',i*3+1,workflow='document_export',step='processing',session_id=session)).status_code,200)
+        self.f.tid=str(uuid.uuid4());self.f.aid=str(uuid.uuid4());self.f.sid=str(uuid.uuid4())
+        self.assertEqual(self.f.ingest(self.f.event(workflow='document_export',step='processing')).status_code,200)
+        path='/api/traces/sessions/search?project=alpha'
+        sessions=self.client.post(path,headers=self.admin,json={'environment':'staging'});self.assertEqual(sessions.status_code,200,sessions.text)
+        result=sessions.json();self.assertEqual(result['total'],1);self.assertEqual(result['sessions'][0]['trace_count'],2)
+        opened=self.client.post('/api/traces/sessions/open?project=alpha',headers=self.admin,json={**result['query'],'session_id':session})
+        self.assertEqual(opened.status_code,200,opened.text);self.assertEqual(len(opened.json()['traces']),2)
+        searched=self.client.post('/api/traces/search?project=alpha',headers=self.admin,json={'environment':'staging','session_id':session}).json()
+        self.assertEqual(searched['total'],2)
+        self.assertNotIn('private message',json.dumps(result));self.assertTrue(all(i not in json.dumps(opened.json()) for i in ids))
+
+    def test_session_id_is_opaque_uuid_only_and_not_a_slack_join(self):
+        for invalid in ['patient-123','not-a-uuid','00000000-0000-0000-0000-000000000000']:
+            response=self.client.post('/api/traces/search?project=alpha',headers=self.admin,json={'session_id':invalid})
+            self.assertEqual(response.status_code,422)
+        response=self.client.post('/api/traces/search?project=alpha',headers=self.admin,json={'contract':'slack-request-v1','session_id':str(uuid.uuid4())})
+        self.assertEqual(response.status_code,422)
+
     def test_missing_start_failure_and_denied_reads(self):
         self.f.ingest(self.f.event('failed',1,workflow='checkout',step='http',outcome_code='timeout'))
         r=self.search(status='gaps');self.assertEqual(r['total'],0)

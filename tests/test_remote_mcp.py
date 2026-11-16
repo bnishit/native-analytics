@@ -28,7 +28,7 @@ class RemoteMCPTests(unittest.TestCase):
     join=test_workspaces.WorkspaceTests.join
 
     def register(self):
-        r=self.client.post('/register',json={'client_name':'Fresh test agent','redirect_uris':['http://127.0.0.1:19191/callback'],'grant_types':['authorization_code','refresh_token'],'response_types':['code'],'token_endpoint_auth_method':'none','scope':'analytics:read charts:write charts:manage audit:read goals:write experiments:write debug:read collection:write releases:write followups:write'})
+        r=self.client.post('/register',json={'client_name':'Fresh test agent','redirect_uris':['http://127.0.0.1:19191/callback'],'grant_types':['authorization_code','refresh_token'],'response_types':['code'],'token_endpoint_auth_method':'none','scope':'analytics:read charts:write charts:manage audit:read goals:write experiments:write debug:read collection:write releases:write followups:write prompts:read prompts:write'})
         self.assertEqual(r.status_code,201,r.text);return r.json()['client_id']
 
     def begin(self,cid,scope='analytics:read charts:write',**overrides):
@@ -163,6 +163,8 @@ class RemoteMCPTests(unittest.TestCase):
         owner,uid,w,p,cid,t,code,verifier=self.grant('analytics:read')
         h={'Authorization':'Bearer '+t['access_token']}
         self.assertEqual(self.client.get('/api/charts',params={'project':p},headers=h).status_code,200)
+        self.assertEqual(self.client.get('/api/prompts',params={'project':p},headers=h).status_code,403)
+        self.assertEqual(self.client.put('/api/experiments/runs/'+str(uuid.uuid4())+'/reviews',params={'project':p,'revision':0},headers=h,json={'case':str(uuid.uuid4()),'version':1,'label':'useful'}).status_code,403)
         self.assertEqual(self.client.get('/api/charts?project=alpha',headers=h).status_code,403)
         self.assertEqual(self.client.get('/api/events',params={'project':p},headers=h).status_code,403)
         self.assertEqual(self.client.post('/api/charts',params={'project':p},headers=h,json={'title':'Denied','query':{}}).status_code,403)
@@ -178,6 +180,15 @@ class RemoteMCPTests(unittest.TestCase):
         nextcode=parse_qs(urlsplit(r.json()['redirect_uri']).query)['code'][0]
         self.assertEqual(self.exchange(cid,nextcode,'wrong'*12).status_code,400)
         self.assertEqual(self.exchange(cid,nextcode,v).status_code,200)
+
+    def test_prompt_remote_read_scope_does_not_allow_writes(self):
+        owner,uid,w,p,cid,t,*_=self.grant('prompts:read')
+        h={'Authorization':'Bearer '+t['access_token']}
+        self.assertEqual(self.client.get('/api/prompts',params={'project':p},headers=h).status_code,200)
+        history=self.client.get('/api/prompts/'+str(uuid.uuid4())+'/versions',params={'project':p},headers=h)
+        self.assertEqual(history.status_code,404)
+        response=self.client.post('/api/prompts',params={'project':p,'prompt_id':str(uuid.uuid4())},headers=h,json={'title':'Denied','content':'private'})
+        self.assertEqual(response.status_code,403)
 
     def test_chart_write_scope_uses_last_read_revision_for_edit_and_delete(self):
         owner,uid,w,p,cid,t,*_=self.grant('analytics:read charts:write')
@@ -290,7 +301,7 @@ class RemoteMCPTests(unittest.TestCase):
         self.assertTrue(denied.get('isError'))
 
     def test_remote_transport_tools_and_idempotent_chart_storage(self):
-        owner,uid,w,p,cid,t,*_=self.grant('analytics:read charts:write charts:manage audit:read goals:write experiments:write debug:read collection:write followups:write')
+        owner,uid,w,p,cid,t,*_=self.grant('analytics:read charts:write charts:manage audit:read goals:write experiments:write debug:read collection:write followups:write prompts:read prompts:write')
         with TestClient(app.app,base_url=ORIGIN) as client:
             self.assert_read_only_metric(client)
             headers={'Authorization':'Bearer '+t['access_token'],'Accept':'application/json, text/event-stream'}
@@ -301,7 +312,7 @@ class RemoteMCPTests(unittest.TestCase):
             meta=client.get('/.well-known/oauth-protected-resource/mcp').json();self.assertEqual(meta['resource'],ORIGIN+'/mcp')
             rpc('initialize',{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'fresh','version':'1'}})
             names={x['name'] for x in rpc('tools/list')['result']['tools']}
-            self.assertTrue({'save_chart','update_chart','delete_chart','release_monitors','create_release_monitor','release_monitor_alerts','stop_release_monitor','request_trace','get_workflow','connection_status'}<=names)
+            self.assertTrue({'save_chart','update_chart','delete_chart','release_monitors','create_release_monitor','release_monitor_alerts','stop_release_monitor','request_trace','get_workflow','connection_status','prompt_versions','annotate_experiment_case'}<=names)
             def call(name,args={}):
                 result=rpc('tools/call',{'name':name,'arguments':args})['result']
                 self.assertFalse(result.get('isError'),result);return json.loads(result['content'][0]['text'])
@@ -401,6 +412,9 @@ class RemoteMCPTests(unittest.TestCase):
                 call('save_experiment_object',{'kind':'runs','id':run_id,'definition':definition})
             compared=call('compare_experiments',{'baseline':ids[0],'candidate':ids[1]})
             self.assertTrue(compared['eligible_for_review']);self.assertFalse(compared['deployment_authorized'])
+            call('annotate_experiment_case',{'run_id':ids[0],'case_id':case_id,'case_version':1,'label':'useful'})
+            reviewed_run=call('experiment_objects',{'kind':'runs','id':ids[0]})
+            self.assertEqual(reviewed_run['cases'][0]['human_review']['label'],'useful')
 
             batch_event=app.Event(name='trace.observed',properties={'afterspan_trace':{
                 **trace_event.properties['afterspan_trace'],'trace_id':str(uuid.uuid4()),'span_id':str(uuid.uuid4()),

@@ -13,9 +13,9 @@ from mcp.server.auth.provider import AccessToken,AuthorizationCode,AuthorizeErro
 from mcp.shared.auth import OAuthClientInformationFull,OAuthToken
 from pydantic import BaseModel,ConfigDict,Field
 
-SCOPES=['analytics:read','charts:write','charts:manage','audit:read','goals:write','experiments:write','debug:read','collection:write','releases:write','followups:write']
+SCOPES=['analytics:read','charts:write','charts:manage','audit:read','goals:write','experiments:write','debug:read','collection:write','releases:write','followups:write','prompts:read','prompts:write']
 
-EDITOR_SCOPES={'charts:write','charts:manage','goals:write','experiments:write','debug:read','collection:write','releases:write','followups:write'}
+EDITOR_SCOPES={'charts:write','charts:manage','goals:write','experiments:write','debug:read','collection:write','releases:write','followups:write','prompts:read','prompts:write'}
 
 class Decision(BaseModel):
     model_config=ConfigDict(extra='forbid')
@@ -150,12 +150,16 @@ class OAuthProvider:
         path=request.url.path
         allowed={'/api/overview','/api/catalog','/api/query','/api/charts','/api/setup','/api/journeys','/api/funnels','/api/funnels/analyze','/api/segments','/api/segments/analyze','/api/retention','/api/retention/analyze'}
         collection_write=request.method=='PUT' and path=='/api/collection/sources'
-        audit=(request.method=='GET' and (path=='/api/outcomes/goals' or bool(re.fullmatch(r'/api/outcomes/goals/[0-9a-f-]{36}',path)))) or path in {'/api/audit/catalog','/api/audit/review','/api/audit/trace','/api/audit/evaluate','/api/audit/onboarding','/api/outcomes/evaluate','/api/collection/health','/api/collection/sources','/api/traces/search','/api/traces/open','/api/traces/catalog','/api/traces/review','/api/traces/detail'}
+        audit=(request.method=='GET' and (path=='/api/outcomes/goals' or bool(re.fullmatch(r'/api/outcomes/goals/[0-9a-f-]{36}',path)))) or path in {'/api/audit/catalog','/api/audit/review','/api/audit/trace','/api/audit/evaluate','/api/audit/onboarding','/api/outcomes/evaluate','/api/collection/health','/api/collection/sources','/api/traces/search','/api/traces/open','/api/traces/sessions/search','/api/traces/sessions/open','/api/traces/catalog','/api/traces/review','/api/traces/detail'}
         chart=path=='/api/charts' or bool(re.fullmatch(r'/api/charts/[0-9a-f-]{36}',path))
+        dashboard=path=='/api/dashboards' or bool(re.fullmatch(r'/api/dashboards/[0-9a-f-]{36}',path))
+        chart=chart or dashboard
+        prompt=path=='/api/prompts' or bool(re.fullmatch(r'/api/prompts/[0-9a-f-]{36}(/versions)?',path))
+        prompt_write=prompt and request.method in {'POST','PUT','DELETE'}
         goal_write=request.method=='PUT' and bool(re.fullmatch(r'/api/outcomes/goals/[0-9a-f-]{36}',path))
         release_view=request.method=='GET' and path=='/api/outcomes/releases' or request.method=='POST' and path=='/api/outcomes/releases/compare'
         release_evidence=(request.method=='GET' and (path=='/api/outcomes/release-sources' or bool(re.fullmatch(r'/api/outcomes/releases/[0-9a-f-]{36}',path)))) or (request.method in {'GET','PUT'} and bool(re.fullmatch(r'/api/outcomes/release-proposals/[0-9a-f-]{36}',path)))
-        experiment=bool(re.fullmatch(r'/api/experiments/(cases|datasets|runs)(/[0-9a-f-]{36})?',path)) and (request.method=='GET' or request.method=='PUT' and bool(re.fullmatch(r'/api/experiments/(cases|datasets|runs)/[0-9a-f-]{36}',path))) or path=='/api/experiments/compare' and request.method=='POST' or release_view
+        experiment=bool(re.fullmatch(r'/api/experiments/(cases|datasets|runs)(/[0-9a-f-]{36})?',path)) and (request.method=='GET' or request.method=='PUT' and bool(re.fullmatch(r'/api/experiments/(cases|datasets|runs)/[0-9a-f-]{36}',path))) or bool(re.fullmatch(r'/api/experiments/runs/[0-9a-f-]{36}/reviews',path)) and request.method=='PUT' or path=='/api/experiments/compare' and request.method=='POST' or release_view
         debug=request.method=='GET' and path=='/api/debug/policy' or request.method=='POST' and path=='/api/debug/review'
         improvement=request.method=='POST' and path=='/api/improvements/status'
         followup=(request.method=='GET' and path=='/api/outcomes/followups') or bool(re.fullmatch(r'/api/outcomes/followups/[0-9a-f-]{36}(/control)?',path)) and (request.method in {'GET','PUT'} and not path.endswith('/control') or request.method=='POST' and path.endswith('/control'))
@@ -163,10 +167,10 @@ class OAuthProvider:
         if (improvement or followup) and not {'audit:read','experiments:write'}<=set(token.scopes):raise HTTPException(403,'improvement flow requires audit and experiment access')
         if release_monitor and not {'audit:read','experiments:write'}<=set(token.scopes):raise HTTPException(403,'release monitors require audit and experiment access')
         chart_manage=chart and request.method in {'PUT','DELETE'}
-        scope='followups:write' if followup else 'experiments:write' if improvement else 'releases:write' if release_evidence else 'collection:write' if collection_write else 'debug:read' if debug else 'experiments:write' if release_monitor and request.method!='GET' else 'audit:read' if release_monitor else 'experiments:write' if experiment else 'goals:write' if goal_write else 'audit:read' if audit else 'charts:manage' if chart_manage else 'charts:write' if chart and request.method=='POST' else 'analytics:read'
+        scope='prompts:write' if prompt_write else 'prompts:read' if prompt else 'followups:write' if followup else 'experiments:write' if improvement else 'releases:write' if release_evidence else 'collection:write' if collection_write else 'debug:read' if debug else 'experiments:write' if release_monitor and request.method!='GET' else 'audit:read' if release_monitor else 'experiments:write' if experiment else 'goals:write' if goal_write else 'audit:read' if audit else 'charts:manage' if chart_manage else 'charts:write' if chart and request.method=='POST' else 'analytics:read'
         if release_view and not {'audit:read','experiments:write'}<=set(token.scopes):raise HTTPException(403,'release comparisons require audit and experiment access')
         if chart and request.method not in {'GET','POST','PUT','DELETE'}:raise HTTPException(403,'agent chart access is read-only or separately scoped for writes')
-        if project!=token.project or scope not in token.scopes or not (path in allowed or audit or chart or goal_write or experiment or debug or collection_write or release_evidence or improvement or followup or release_monitor) or role=='owner' or role=='editor' and not (chart or goal_write or experiment or debug or collection_write or release_evidence or improvement or followup or release_monitor):
+        if project!=token.project or scope not in token.scopes or not (path in allowed or audit or chart or goal_write or experiment or debug or collection_write or release_evidence or improvement or followup or release_monitor or prompt) or role=='owner' or role=='editor' and not (chart or goal_write or experiment or debug or collection_write or release_evidence or improvement or followup or release_monitor or prompt):
             raise HTTPException(403,'agent scope does not allow this action')
 
     def install(self,app):

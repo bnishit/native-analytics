@@ -32,6 +32,7 @@ class TraceContext:
     span_id:str|None=None
     sampled:bool=True
     traffic_kind:str="unknown"
+    session_id:str|None=None
 
     def validate(self):
         mapped_id(self.trace_id,self.span_id)
@@ -42,6 +43,7 @@ class TraceContext:
         if not isinstance(self.workflow,str) or not re.fullmatch(r'[a-z][a-z0-9_.-]{0,63}',self.workflow) or self.environment not in _ENVIRONMENTS:raise ValueError('invalid workflow context')
         if type(self.request_started_at_ms) is not int or not 0<=self.request_started_at_ms<=4102444800000:raise ValueError('invalid original clock')
         if self.release_sha is not None and not re.fullmatch(r'[a-f0-9]{40}',self.release_sha):raise ValueError('invalid release')
+        if self.session_id is not None and (not isinstance(self.session_id,str) or str(uuid.UUID(self.session_id,version=4))!=self.session_id):raise ValueError('session ID must be an opaque UUIDv4')
         return self
 
     def retry(self):
@@ -54,6 +56,7 @@ def inject(context=None):
     values={'workflow':context.workflow,'environment':context.environment,'attempt':context.attempt_id,
             'number':str(context.attempt_number),'clock':str(context.request_started_at_ms),'traffic':context.traffic_kind}
     if context.release_sha:values['release']=context.release_sha
+    if context.session_id:values['session']=context.session_id
     return {'traceparent':'00-'+context.trace_id+'-'+context.span_id+('-01' if context.sampled else '-00'),
             'baggage':','.join('afterspan.'+k+'='+quote(v,safe='') for k,v in values.items())}
 
@@ -70,7 +73,7 @@ def extract(headers,*,trusted=False):
                 key=key[10:]
                 if key in values:return None
                 values[key]=unquote(value)
-        return TraceContext(parent[3:35],values['attempt'],int(values['number']),values['workflow'],values['environment'],int(values['clock']),values.get('release'),parent[36:52],bool(int(parent[-2:],16)&1),values.get('traffic','unknown')).validate()
+        return TraceContext(parent[3:35],values['attempt'],int(values['number']),values['workflow'],values['environment'],int(values['clock']),values.get('release'),parent[36:52],bool(int(parent[-2:],16)&1),values.get('traffic','unknown'),values.get('session')).validate()
     except (ValueError,TypeError,KeyError,AttributeError):return None
 
 class Span:
@@ -105,7 +108,8 @@ class Span:
         c=self.context
         return {'schema_version':'workflow-trace-v1','trace_id':mapped_id(c.trace_id),'attempt_id':c.attempt_id,
                 'attempt_number':c.attempt_number,'span_id':mapped_id(c.trace_id,c.span_id),'parent_span_id':self.parent,
-                'workflow':c.workflow,'environment':c.environment,'traffic_kind':c.traffic_kind,'release_sha':c.release_sha,'request_started_at_ms':c.request_started_at_ms,'step':self.step}
+                'workflow':c.workflow,'environment':c.environment,'traffic_kind':c.traffic_kind,'release_sha':c.release_sha,'request_started_at_ms':c.request_started_at_ms,'step':self.step,
+                **({'session_id':c.session_id} if c.session_id else {})}
     def check(self,name,result,*,version=1,method='source',phase='before_delivery',required=True,evidence_digest=None,execution=None,reason_code=None):
         if self.closed:raise ValueError('span already closed')
         if not isinstance(name,str) or not re.fullmatch(r'[a-z][a-z0-9_.-]{0,63}',name) or result not in {'passed','failed','unknown'} or type(version) is not int or not 1<=version<=1000000:raise ValueError('invalid check')
@@ -138,8 +142,9 @@ class WorkflowTracer:
             if self.collector.track(name,distinct_id=self._subject_id,properties=properties) is None:self.emit_failures+=1
         except Exception:self.emit_failures+=1
     @contextmanager
-    def task(self,workflow=None,environment='production',release_sha=None,*,context=None,traffic_kind='unknown'):
-        context=context or TraceContext(secrets.token_hex(16),str(uuid.uuid4()),1,workflow,environment,int(time.time()*1000),release_sha,traffic_kind=traffic_kind)
+    def task(self,workflow=None,environment='production',release_sha=None,*,context=None,traffic_kind='unknown',session_id=None):
+        context=context or TraceContext(secrets.token_hex(16),str(uuid.uuid4()),1,workflow,environment,int(time.time()*1000),release_sha,traffic_kind=traffic_kind,session_id=session_id)
+        if session_id is not None and context.session_id!=session_id:raise ValueError('session ID conflicts with the supplied context')
         context.validate();token=_current.set(context)
         try:
             with self.span('processing') as span:yield span

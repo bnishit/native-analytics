@@ -1,4 +1,5 @@
 import hashlib
+import base64
 import json
 import os
 import sqlite3
@@ -6,6 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 from fastapi.testclient import TestClient
@@ -142,6 +144,47 @@ class AnalyticsTests(unittest.TestCase):
         self.client.delete('/api/charts/'+chart['id']+'?project=beta&revision=1',headers=self.admin)
         self.assertEqual(len(self.client.get('/api/charts?project=alpha',headers=self.admin).json()['charts']),1)
         self.assertEqual(self.client.get('/api/charts?project=beta',headers=self.admin).json()['charts'],[])
+
+    def test_dashboards_reuse_only_same_project_charts_and_reject_stale_edits(self):
+        chart=self.client.post('/api/charts?project=alpha',headers=self.admin,json={'title':'Usage','query':{'event':'http.request'}}).json()
+        foreign=self.client.post('/api/charts?project=beta',headers=self.admin,json={'title':'Other','query':{'event':'http.request'}}).json()
+        url='/api/dashboards?project=alpha';body={'title':'My overview','chart_ids':[chart['id']]}
+        created=self.client.post(url,headers=self.admin,json=body);self.assertEqual(created.status_code,200,created.text)
+        did=created.json()['id'];stored=self.client.get(url,headers=self.admin).json()['dashboards'][0]
+        self.assertEqual(stored['chart_ids'],[chart['id']]);self.assertEqual(stored['revision'],1)
+        self.assertEqual(self.client.delete('/api/charts/'+chart['id']+'?project=alpha&revision=1',headers=self.admin).status_code,409)
+        wrong=self.client.post(url,headers=self.admin,json={'title':'Wrong project','chart_ids':[foreign['id']]})
+        self.assertEqual(wrong.status_code,422)
+        changed=self.client.put(f'/api/dashboards/{did}?project=alpha&revision=1',headers=self.admin,json={'title':'Renamed','chart_ids':[chart['id']]})
+        self.assertEqual(changed.status_code,200,changed.text);self.assertEqual(changed.json()['revision'],2)
+        stale=self.client.put(f'/api/dashboards/{did}?project=alpha&revision=1',headers=self.admin,json=body)
+        self.assertEqual(stale.status_code,409)
+        self.assertEqual(self.client.get('/api/dashboards?project=beta',headers=self.admin).json()['dashboards'],[])
+
+    def test_prompt_text_is_encrypted_versioned_and_project_scoped(self):
+        prompt_id='5ec983f2-6e13-467e-b088-9fdc7866b810';secret='private prompt text sentinel'
+        oversized='😀'*6000
+        self.assertEqual(self.client.post(f'/api/prompts?project=alpha&prompt_id={uuid.uuid4()}',headers=self.admin,json={'title':'Large','content':oversized}).status_code,422)
+        key=base64.urlsafe_b64encode(b'k'*32).decode()
+        with patch.dict(os.environ,{'AFTERSPAN_CONNECTION_KEY':key}):
+            created=self.client.post(f'/api/prompts?project=alpha&prompt_id={prompt_id}',headers=self.admin,json={'title':'My helper','content':secret})
+            self.assertEqual(created.status_code,200,created.text)
+            self.assertEqual(self.client.get(f'/api/prompts/{prompt_id}?project=alpha',headers=self.admin).json()['content'],secret)
+            with sqlite3.connect(analytics.DB_PATH) as db:
+                encrypted=db.execute('SELECT payload FROM prompt_versions WHERE prompt_id=?',(prompt_id,)).fetchone()[0]
+            self.assertNotIn(secret.encode(),encrypted)
+            newer=self.client.post(f'/api/prompts/{prompt_id}/versions?project=alpha&expected_version=1',headers=self.admin,json={'content':'version two'})
+            self.assertEqual(newer.status_code,200,newer.text);self.assertEqual(newer.json()['version'],2)
+            self.assertEqual(self.client.get(f'/api/prompts/{prompt_id}?project=alpha&version=1',headers=self.admin).json()['content'],secret)
+            history=self.client.get(f'/api/prompts/{prompt_id}/versions?project=alpha',headers=self.admin)
+            self.assertEqual(history.status_code,200);self.assertEqual([v['version'] for v in history.json()['versions']],[2,1])
+            self.assertNotIn('content',history.json()['versions'][0])
+            self.assertEqual(self.client.get(f'/api/prompts/{prompt_id}?project=alpha&version=0',headers=self.admin).status_code,422)
+            self.assertEqual(self.client.post(f'/api/prompts/{prompt_id}/versions?project=alpha&expected_version=1',headers=self.admin,json={'content':'stale'}).status_code,409)
+            self.assertEqual(self.client.get(f'/api/prompts/{prompt_id}?project=beta',headers=self.admin).status_code,404)
+            deleted=self.client.delete(f'/api/prompts/{prompt_id}?project=alpha&revision=2',headers=self.admin)
+            self.assertEqual(deleted.status_code,200);self.assertTrue(deleted.json()['deleted'])
+            self.assertEqual(self.client.get('/api/prompts?project=alpha',headers=self.admin).json()['prompts'],[])
 
     def test_saved_chart_updates_and_deletes_require_the_last_read_revision(self):
         headers=self.admin

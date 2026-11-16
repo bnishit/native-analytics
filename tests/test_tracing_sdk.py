@@ -127,8 +127,10 @@ class TracingSDKTests(unittest.TestCase):
 
     def test_python_to_node_context_and_receipts_round_trip_through_real_ingestion(self):
         import subprocess
-        with self.tracer.task('document_export','test'):
+        session_id=str(uuid.uuid4())
+        with self.tracer.task('document_export','test',session_id=session_id):
             with self.tracer.span('http'):carrier=inject()
+        self.assertEqual(extract(carrier,trusted=True).session_id,session_id)
         script="""
 import {readFileSync} from 'node:fs';
 import {createAnalytics} from './sdk/typescript/native-analytics.ts';
@@ -146,6 +148,7 @@ await tracer.flush();process.stdout.write(JSON.stringify(events));
         self.assertLessEqual(model['model_usage']['first_output_ms'],model['duration_ms'])
         self.assertEqual(model['model_usage']['cost_usd_decimal'],'0.000000037125')
         response=self.fixture.ingest(events);self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(next(e['properties']['afterspan_trace']['session_id'] for e in events if e['properties']['afterspan_trace'].get('session_id')),session_id)
         report=self.fixture.client.post('/api/traces/review?project=alpha',headers=self.fixture.admin,json={'environment':'test'}).json()
         self.assertEqual(len(report['traces']),1)
         self.assertEqual(report['traces'][0]['issues'],[])

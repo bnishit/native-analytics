@@ -34,13 +34,14 @@ from outcome_adapters import INTEGRATIONS
 from otlp import install as install_otlp
 from regressions import Regressions
 from debugging import Debugging
+from private_storage import storage_cipher
 from release_outcomes import ReleaseOutcomes
 from improvement import Improvements
 from collection_health import CollectionHealth,CollectionPulse,pipeline_summary
 
 from journeys import JourneyContext,project_journeys,summarize
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query as QueryParam, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
@@ -104,6 +105,12 @@ def init_db():
           attributes TEXT NOT NULL,first_seen REAL NOT NULL,last_seen REAL NOT NULL,PRIMARY KEY(project,distinct_id));
         CREATE TABLE IF NOT EXISTS charts(id TEXT PRIMARY KEY,project TEXT NOT NULL REFERENCES projects(id),title TEXT NOT NULL,
           definition TEXT NOT NULL,created REAL NOT NULL,revision INTEGER NOT NULL DEFAULT 1);
+        CREATE TABLE IF NOT EXISTS dashboards(id TEXT PRIMARY KEY,project TEXT NOT NULL REFERENCES projects(id),title TEXT NOT NULL,
+          chart_ids TEXT NOT NULL,created REAL NOT NULL,revision INTEGER NOT NULL DEFAULT 1);
+        CREATE TABLE IF NOT EXISTS prompt_library(id TEXT PRIMARY KEY,project TEXT NOT NULL REFERENCES projects(id),title TEXT NOT NULL,
+          created REAL NOT NULL,latest_version INTEGER NOT NULL DEFAULT 1,revision INTEGER NOT NULL DEFAULT 1);
+        CREATE TABLE IF NOT EXISTS prompt_versions(project TEXT NOT NULL,prompt_id TEXT NOT NULL,version INTEGER NOT NULL,payload BLOB NOT NULL,
+          created REAL NOT NULL,PRIMARY KEY(project,prompt_id,version),FOREIGN KEY(prompt_id) REFERENCES prompt_library(id) ON DELETE CASCADE);
         CREATE TABLE IF NOT EXISTS release_monitors(id TEXT PRIMARY KEY,project TEXT NOT NULL REFERENCES projects(id),definition TEXT NOT NULL,
           state TEXT NOT NULL CHECK(state IN ('waiting','unknown','clear','regressed')),episode INTEGER NOT NULL DEFAULT 0,
           revision INTEGER NOT NULL DEFAULT 1,active INTEGER NOT NULL DEFAULT 1,created REAL NOT NULL,updated REAL NOT NULL);
@@ -147,6 +154,7 @@ def prune():
         c.execute('DELETE FROM workflow_trace_subjects WHERE erased IS NULL AND last_seen < ?',(cutoff-300,))
         c.execute('DELETE FROM collection_ingestion WHERE bucket < ?',(cutoff,))
         c.execute('DELETE FROM regression_objects WHERE expires<=?',(time.time(),))
+        c.execute("DELETE FROM experiment_reviews WHERE NOT EXISTS (SELECT 1 FROM regression_objects r WHERE r.project=experiment_reviews.project AND r.kind='run' AND r.id=experiment_reviews.run_id)")
         c.execute('DELETE FROM debug_snapshots WHERE expires<=?',(time.time(),))
         c.execute('DELETE FROM outcome_followups WHERE deadline<?',(cutoff,))
         c.execute('DELETE FROM people WHERE last_seen < ?', (cutoff,))
@@ -323,6 +331,44 @@ def evidence_metadata(project,q,definition):
 class Chart(Model):
     title: str = Field(min_length=1,max_length=100)
     query: Query
+
+class Dashboard(Model):
+    title: str = Field(min_length=1,max_length=100)
+    chart_ids: list[uuid.UUID] = Field(min_length=1,max_length=12)
+
+    @field_validator('chart_ids')
+    @classmethod
+    def unique_charts(cls,value):
+        if len(set(value))!=len(value):raise ValueError('dashboard charts must be unique')
+        return value
+
+def bounded_prompt_text(value):
+    if len(value.encode('utf-8'))>20000:raise ValueError('prompt text exceeds 20 KB')
+    return value
+
+class PromptCreate(Model):
+    title:str=Field(min_length=1,max_length=100)
+    content:str=Field(min_length=1,max_length=20000)
+    @field_validator('content')
+    @classmethod
+    def bounded_utf8(cls,value):return bounded_prompt_text(value)
+
+class PromptVersion(Model):
+    content:str=Field(min_length=1,max_length=20000)
+    @field_validator('content')
+    @classmethod
+    def bounded_utf8(cls,value):return bounded_prompt_text(value)
+
+def prompt_aad(project,prompt_id,version):
+    return f'afterspan-prompt-v1:{project}:{prompt_id}:{version}'.encode()
+
+def encrypt_prompt(project,prompt_id,version,content):
+    nonce=os.urandom(12)
+    return nonce+storage_cipher().encrypt(nonce,content.encode(),prompt_aad(project,prompt_id,version))
+
+def decrypt_prompt(project,prompt_id,version,payload):
+    try:return storage_cipher().decrypt(payload[:12],payload[12:],prompt_aad(project,prompt_id,version)).decode()
+    except Exception:raise HTTPException(503,'Prompt storage cannot be decrypted with the configured key') from None
 
 
 def credential(request):
@@ -1016,6 +1062,139 @@ def charts(project:str):
     return {'charts':[{**dict(r),'definition':json.loads(r['definition'])} for r in rows]}
 
 
+@app.get('/api/dashboards',dependencies=[Depends(reader)])
+def dashboards(project:str):
+    project_exists(project)
+    with closing(connect()) as c:rows=c.execute('SELECT * FROM dashboards WHERE project=? ORDER BY created',(project,)).fetchall()
+    return {'dashboards':[{**dict(r),'chart_ids':json.loads(r['chart_ids'])} for r in rows]}
+
+
+def validate_dashboard_charts(c,project,chart_ids):
+    found={r[0] for r in c.execute('SELECT id FROM charts WHERE project=? AND id IN ('+','.join('?' for _ in chart_ids)+')',(project,*chart_ids)).fetchall()}
+    if found!=set(chart_ids):raise HTTPException(422,'dashboard can include only saved charts from this project')
+
+
+@app.post('/api/dashboards',dependencies=[Depends(editor)])
+def save_dashboard(req:Dashboard,project:str,dashboard_id:uuid.UUID|None=None):
+    project_exists(project);chart_ids=[str(i) for i in req.chart_ids]
+    with closing(connect()) as c,c:
+        c.execute('BEGIN IMMEDIATE');validate_dashboard_charts(c,project,chart_ids)
+        if dashboard_id:
+            prior=c.execute('SELECT project,title,chart_ids FROM dashboards WHERE id=?',(str(dashboard_id),)).fetchone()
+            if prior:
+                if prior['project']==project and prior['title']==req.title and json.loads(prior['chart_ids'])==chart_ids:return {'id':str(dashboard_id),'created':False}
+                raise HTTPException(409,'dashboard ID already exists with a different definition')
+        if c.execute('SELECT count(*) FROM dashboards WHERE project=?',(project,)).fetchone()[0]>=20:raise HTTPException(422,'maximum 20 dashboards per project')
+        did=str(dashboard_id or uuid.uuid4());c.execute('INSERT INTO dashboards(id,project,title,chart_ids,created,revision) VALUES(?,?,?,?,?,1)',(did,project,req.title,json.dumps(chart_ids),time.time()))
+    return {'id':did,'created':True}
+
+
+@app.put('/api/dashboards/{dashboard_id}',dependencies=[Depends(editor)])
+def put_dashboard(dashboard_id:uuid.UUID,req:Dashboard,project:str,revision:int|None=None):
+    project_exists(project);chart_ids=[str(i) for i in req.chart_ids]
+    with closing(connect()) as c,c:
+        c.execute('BEGIN IMMEDIATE');prior=c.execute('SELECT project,title,chart_ids,revision FROM dashboards WHERE id=?',(str(dashboard_id),)).fetchone()
+        if prior and prior['project']!=project:raise HTTPException(404,'dashboard not found')
+        validate_dashboard_charts(c,project,chart_ids)
+        if prior and prior['title']==req.title and json.loads(prior['chart_ids'])==chart_ids:return {'id':str(dashboard_id),'revision':prior['revision'],'updated':False}
+        if prior:
+            if revision!=prior['revision']:raise HTTPException(409,'dashboard changed since it was read; reload before updating')
+            c.execute('UPDATE dashboards SET title=?,chart_ids=?,revision=revision+1 WHERE id=? AND project=? AND revision=?',(req.title,json.dumps(chart_ids),str(dashboard_id),project,revision))
+            return {'id':str(dashboard_id),'revision':revision+1,'updated':True}
+        if revision not in (None,0):raise HTTPException(409,'dashboard does not exist at that revision')
+        if c.execute('SELECT count(*) FROM dashboards WHERE project=?',(project,)).fetchone()[0]>=20:raise HTTPException(422,'maximum 20 dashboards per project')
+        c.execute('INSERT INTO dashboards(id,project,title,chart_ids,created,revision) VALUES(?,?,?,?,?,1)',(str(dashboard_id),project,req.title,json.dumps(chart_ids),time.time()))
+    return {'id':str(dashboard_id),'revision':1,'updated':True}
+
+
+@app.delete('/api/dashboards/{dashboard_id}',dependencies=[Depends(editor)])
+def delete_dashboard(dashboard_id:uuid.UUID,project:str,revision:int):
+    project_exists(project)
+    with closing(connect()) as c,c:
+        c.execute('BEGIN IMMEDIATE');prior=c.execute('SELECT revision FROM dashboards WHERE id=? AND project=?',(str(dashboard_id),project)).fetchone()
+        if not prior:return {'ok':True,'deleted':False}
+        if revision!=prior['revision']:raise HTTPException(409,'dashboard changed since it was read; reload before deleting')
+        c.execute('DELETE FROM dashboards WHERE id=? AND project=? AND revision=?',(str(dashboard_id),project,revision))
+    return {'ok':True,'deleted':True}
+
+
+@app.get('/api/prompts',dependencies=[Depends(editor)])
+def prompts(project:str):
+    project_exists(project)
+    with closing(connect()) as c:rows=c.execute('SELECT id,title,created,latest_version,revision FROM prompt_library WHERE project=? ORDER BY created',(project,)).fetchall()
+    return {'prompts':[dict(row) for row in rows],'limits':['Prompt text is explicitly saved and encrypted at rest. It is never copied from traces or executed by Afterspan.']}
+
+
+@app.get('/api/prompts/{prompt_id}',dependencies=[Depends(editor)])
+def prompt_version(prompt_id:uuid.UUID,project:str,version:int|None=QueryParam(default=None,ge=1,le=100)):
+    project_exists(project)
+    with closing(connect()) as c:
+        record=c.execute('SELECT id,title,latest_version FROM prompt_library WHERE id=? AND project=?',(str(prompt_id),project)).fetchone()
+        if not record:raise HTTPException(404,'prompt not found')
+        selected=record['latest_version'] if version is None else version
+        row=c.execute('SELECT payload,created FROM prompt_versions WHERE project=? AND prompt_id=? AND version=?',(project,str(prompt_id),selected)).fetchone()
+    if not row:raise HTTPException(404,'prompt version not found')
+    return {'id':str(prompt_id),'title':record['title'],'version':selected,'created':row['created'],'content':decrypt_prompt(project,str(prompt_id),selected,row['payload'])}
+
+
+@app.get('/api/prompts/{prompt_id}/versions',dependencies=[Depends(editor)])
+def prompt_versions(prompt_id:uuid.UUID,project:str):
+    project_exists(project)
+    with closing(connect()) as c:
+        if not c.execute('SELECT 1 FROM prompt_library WHERE id=? AND project=?',(str(prompt_id),project)).fetchone():raise HTTPException(404,'prompt not found')
+        rows=c.execute('SELECT version,created FROM prompt_versions WHERE project=? AND prompt_id=? ORDER BY version DESC',(project,str(prompt_id))).fetchall()
+    return {'versions':[dict(row) for row in rows]}
+
+
+@app.post('/api/prompts',dependencies=[Depends(editor)])
+def create_prompt(req:PromptCreate,project:str,prompt_id:uuid.UUID):
+    project_exists(project)
+    with closing(connect()) as c,c:
+        c.execute('BEGIN IMMEDIATE')
+        prior=c.execute('SELECT project,title FROM prompt_library WHERE id=?',(str(prompt_id),)).fetchone()
+        if prior:
+            if prior['project']!=project or prior['title']!=req.title:raise HTTPException(409,'prompt ID already exists with a different definition')
+            row=c.execute('SELECT payload FROM prompt_versions WHERE project=? AND prompt_id=? AND version=1',(project,str(prompt_id))).fetchone()
+            if row and decrypt_prompt(project,str(prompt_id),1,row['payload'])==req.content:return {'id':str(prompt_id),'version':1,'created':False}
+            raise HTTPException(409,'prompt ID already exists with different content')
+        if c.execute('SELECT count(*) FROM prompt_library WHERE project=?',(project,)).fetchone()[0]>=100:raise HTTPException(422,'maximum 100 prompts per project')
+        now=time.time();payload=encrypt_prompt(project,str(prompt_id),1,req.content)
+        c.execute('INSERT INTO prompt_library(id,project,title,created) VALUES(?,?,?,?)',(str(prompt_id),project,req.title,now))
+        c.execute('INSERT INTO prompt_versions(project,prompt_id,version,payload,created) VALUES(?,?,?,?,?)',(project,str(prompt_id),1,payload,now))
+    return {'id':str(prompt_id),'version':1,'created':True}
+
+
+@app.post('/api/prompts/{prompt_id}/versions',dependencies=[Depends(editor)])
+def create_prompt_version(prompt_id:uuid.UUID,req:PromptVersion,project:str,expected_version:int):
+    project_exists(project)
+    with closing(connect()) as c,c:
+        c.execute('BEGIN IMMEDIATE')
+        record=c.execute('SELECT latest_version FROM prompt_library WHERE id=? AND project=?',(str(prompt_id),project)).fetchone()
+        if not record:raise HTTPException(404,'prompt not found')
+        latest=record['latest_version']
+        if expected_version!=latest:raise HTTPException(409,'prompt changed since it was read; reload before adding a version')
+        if latest>=100:raise HTTPException(422,'maximum 100 versions per prompt')
+        old=c.execute('SELECT payload FROM prompt_versions WHERE project=? AND prompt_id=? AND version=?',(project,str(prompt_id),latest)).fetchone()
+        if old and decrypt_prompt(project,str(prompt_id),latest,old['payload'])==req.content:return {'id':str(prompt_id),'version':latest,'created':False}
+        version=latest+1;now=time.time();payload=encrypt_prompt(project,str(prompt_id),version,req.content)
+        c.execute('INSERT INTO prompt_versions(project,prompt_id,version,payload,created) VALUES(?,?,?,?,?)',(project,str(prompt_id),version,payload,now))
+        c.execute('UPDATE prompt_library SET latest_version=?,revision=revision+1 WHERE id=? AND project=? AND latest_version=?',(version,str(prompt_id),project,latest))
+    return {'id':str(prompt_id),'version':version,'created':True}
+
+
+@app.delete('/api/prompts/{prompt_id}',dependencies=[Depends(editor)])
+def delete_prompt(prompt_id:uuid.UUID,project:str,revision:int):
+    project_exists(project)
+    with closing(connect()) as c,c:
+        c.execute('BEGIN IMMEDIATE')
+        record=c.execute('SELECT revision FROM prompt_library WHERE id=? AND project=?',(str(prompt_id),project)).fetchone()
+        if not record:return {'ok':True,'deleted':False}
+        if record['revision']!=revision:raise HTTPException(409,'prompt changed since it was read; reload before deleting')
+        c.execute('DELETE FROM prompt_library WHERE id=? AND project=? AND revision=?',(str(prompt_id),project,revision))
+    return {'ok':True,'deleted':True}
+
+
+
 @app.post('/api/charts',dependencies=[Depends(editor)])
 def save_chart(req:Chart,project:str,chart_id:uuid.UUID|None=None):
     project_exists(project)
@@ -1062,6 +1241,7 @@ def delete_chart(chart_id:uuid.UUID,project:str,revision:int):
         c.execute('BEGIN IMMEDIATE')
         prior=c.execute('SELECT revision FROM charts WHERE id=? AND project=?',(str(chart_id),project)).fetchone()
         if not prior:return {'ok':True,'deleted':False}
+        if c.execute('SELECT 1 FROM dashboards,json_each(dashboards.chart_ids) WHERE dashboards.project=? AND json_each.value=? LIMIT 1',(project,str(chart_id))).fetchone():raise HTTPException(409,'remove this chart from its dashboards before deleting it')
         if revision!=prior['revision']:raise HTTPException(409,'chart changed since it was read; reload before deleting')
         c.execute('DELETE FROM charts WHERE id=? AND project=? AND revision=?',(str(chart_id),project,revision))
     return {'ok':True,'deleted':True}
@@ -1135,12 +1315,14 @@ def capabilities():
       'analytics':{'catalog':'/api/catalog','funnels':'/api/funnels/analyze','retention':'/api/retention/analyze','unit':'explicit opaque identity; not automatically a person'},
       'product_loop':{'goals':'/api/loop/goals','contract':'committed goals, scoped tracking PRs, independent answer checks and mature observational outcomes','local_mcp':'agent/loop_server.py','production_release_proof':'separate from PR and merge','repo_onboarding':{'sources':'/api/loop/sources','scans':'/api/loop/scans/{UUID}','jobs':'/api/loop/jobs/{UUID}','contract':'afterspan-repo-goal-v2','unit':'declared logged events or observed read requests, not unique people','measurements':['event-outcome-v1','slack-read-outcome-v1'],'credentials':'owner-only encrypted project connections','release':'/api/loop/actions/{id}/release'}},
       'outcomes':{'goals':'/api/outcomes/goals','evaluate':'/api/outcomes/evaluate','contract':'workflow-outcome-v1','scope':'project audit-purpose read; editor writes goal versions','evidence':'producer-reported criteria, not independent business proof'},
+      'charts':{'saved':'/api/charts','dashboards':'/api/dashboards','layout':'project-scoped chart IDs; queries remain on saved charts','max_charts_per_dashboard':12},
+      'prompts':{'list':'/api/prompts','version':'/api/prompts/{UUID}','versions':'/api/prompts/{UUID}/versions','new_version':'/api/prompts/{UUID}/versions','scope':'separate prompts:read and prompts:write grants; project editor membership','at_rest':'AES-GCM with AFTERSPAN_CONNECTION_KEY','capture':'explicit save only; never copied from traces or executed by Afterspan'},
       'improvement_flow':{'status':'/api/improvements/status','workflow':'improve-tracker','followups':'/api/outcomes/followups/{UUID}','max_window_seconds':86400,'max_checks':24,'execution':'host-side reviewed code/tests; service observes only'},
       'release_evidence':{'prepare':'/api/outcomes/release-proposals/{UUID}','adopt':'/api/outcomes/releases/{UUID}/adopt','scope':'separate releases:write for editor preparation; owner account session adopts','max_pr_files':200,'latest_deployment_only':True,'merge_or_deploy_authority':False},
       'release_monitors':{'list':'/api/outcomes/release-monitors','create':'/api/outcomes/release-monitors','evaluate':'/api/outcomes/release-monitors/{UUID}/evaluate','alerts':'/api/outcomes/release-monitors/{UUID}/alerts','stop':'/api/outcomes/release-monitors/{UUID}?revision=N','scope':'audit:read plus experiments:write and editor membership','cadence':'hourly','delivery':'project-scoped in-app alert history','max_active':50,'unknown_evidence':'does not alert','deployment_authority':False},
-      'traces':{'search':'/api/traces/search','open':'/api/traces/open','contracts':['slack-request-v1','workflow-trace-v1'],'otlp':{'endpoint':'/v1/traces','transport':'OTLP/HTTP protobuf or JSON','content_capture':False,'max_spans':500,'mapping_version':'afterspan-otel-v1'},'scope':'project audit-purpose read key','raw_data':False},
+      'traces':{'search':'/api/traces/search','open':'/api/traces/open','sessions':{'search':'/api/traces/sessions/search','open':'/api/traces/sessions/open','link_field':'opaque UUIDv4 session_id','grouping':'explicit workflow links only; no identity or content inference'},'contracts':['slack-request-v1','workflow-trace-v1'],'otlp':{'endpoint':'/v1/traces','transport':'OTLP/HTTP protobuf or JSON','content_capture':False,'max_spans':500,'mapping_version':'afterspan-otel-v1'},'scope':'project audit-purpose read key','raw_data':False},
       'debugging':{'policy':'/api/debug/policy','capture':'/v1/debug','review':'/api/debug/review','default_enabled':False,'scope':'owner capture policy; project editor and separate debug:read for remote content reads','max_capture_window_seconds':86400,'max_retention_seconds':604800,'encrypted':True},
-      'experiments':{'cases':'/api/experiments/cases','datasets':'/api/experiments/datasets','runs':'/api/experiments/runs','compare':'/api/experiments/compare','scope':'project editor; separate experiments:write for remote OAuth','raw_trace_content':False,'deployment_authority':False},
+      'experiments':{'cases':'/api/experiments/cases','datasets':'/api/experiments/datasets','runs':'/api/experiments/runs','compare':'/api/experiments/compare','human_review':'/api/experiments/runs/{UUID}/reviews','scope':'project editor; separate experiments:write for remote OAuth','raw_trace_content':False,'deployment_authority':False},
       'audit':{'catalog':'/api/audit/catalog','review':'/api/audit/review','trace':'/api/audit/trace','evaluate':'/api/audit/evaluate','onboarding':'/api/audit/onboarding','quality_metric':'answer-quality-v1','contract':'properties.afterspan_audit / slack-request-v1','scope':'project audit-purpose read key','historical_evidence':'/api/audit/evidence/{UUIDv4}','max_requests':60,'raw_data':False,'overall_readiness_claim':False},
       'connection':{'transport':'local stdio MCP','bootstrap':'An owner uses connect-audit to issue a private, expiring audit-only connection receipt. No operator token fallback.','launcher':'agent/run_audit.py PRIVATE_RECEIPT','remote_oauth':True,'remote_mcp':'/mcp','consent':'/assets/mcp-connect.html','scopes':SCOPES}}
 

@@ -147,6 +147,7 @@ class SpanObservation(BaseModel):
     model_config=ConfigDict(extra='forbid')
     schema_version:Literal['workflow-trace-v1']
     trace_id:UUID4
+    session_id:UUID4|None=None
     attempt_id:UUID4
     attempt_number:int=Field(ge=1,le=10000,strict=True)
     span_id:UUID4
@@ -192,6 +193,7 @@ class SpanObservation(BaseModel):
 
 class TraceReview(Window):
     environment:Environment
+    session_id:UUID4|None=None
     limit:int=Field(default=20,ge=1,le=60)
 class TraceDetail(TraceReview):
     trace:str=Field(pattern=r'^trace_[a-f0-9]{32}$')
@@ -241,6 +243,9 @@ def project_trace(rows,reference,reference_for=None,available=None):
     clocks={r['facts'].get('request_started_at_ms') for r in rows}
     clock=next(iter(clocks)) if len(clocks)==1 else None
     if len(clocks)>1 or clock is not None and any(r['ts']*1000<clock for r in rows):issues.append('request_clock_conflict')
+    sessions={r['facts'].get('session_id') for r in rows if r['facts'].get('session_id')}
+    if len(sessions)>1:issues.append('session_conflict')
+    elif sessions and any(not r['facts'].get('session_id') for r in rows):issues.append('session_link_incomplete')
     if len({r['facts']['workflow'] for r in rows})>1:issues.append('workflow_conflict')
     traffic={r['facts'].get('traffic_kind','unknown') for r in rows}
     if len(traffic)>1:issues.append('traffic_kind_conflict')
@@ -268,7 +273,7 @@ def project_trace(rows,reference,reference_for=None,available=None):
     if max(slots)!=len(slots):issues.append('missing_attempts')
     if issues:
         for item in completion.values():item['state']='unknown'
-    return {'trace':reference,'request_started_at_ms':clock,'workflow':rows[0]['facts']['workflow'],'environment':rows[0]['facts']['environment'],'traffic_kind':next(iter(traffic)) if len(traffic)==1 else 'unknown',
+    return {'trace':reference,'session_id':next(iter(sessions)) if len(sessions)==1 else None,'request_started_at_ms':clock,'workflow':rows[0]['facts']['workflow'],'environment':rows[0]['facts']['environment'],'traffic_kind':next(iter(traffic)) if len(traffic)==1 else 'unknown',
             'release_sha':next(iter({r['facts'].get('release_sha') for r in rows})) if len({r['facts'].get('release_sha') for r in rows})==1 else None,
             'latest_attempt':latest,'observed_attempts':len(slots),'last_seen':max(r['ts'] for r in rows),'spans':spans,
             'completion':completion,'issues':sorted(set(issues)),'batch':batch,
@@ -325,6 +330,7 @@ class Tracing:
             try:f=SpanObservation.model_validate(json.loads(row['facts'])).model_dump(mode='json')
             except (ValueError,TypeError):invalid+=1;continue
             if f['environment']!=q.environment:other+=1;continue
+            if q.session_id is not None and f.get('session_id')!=str(q.session_id):continue
             for check in f.get('checks') or []:check['_evidence_status']=resolve_evidence(check,f,row['ts'],receipts)
             groups[f['trace_id']].append({'ts':row['ts'],'facts':f})
         def reference_for(tid):

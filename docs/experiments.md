@@ -32,6 +32,12 @@ Changed JSON paths show expected/observed previews for the baseline and candidat
 
 These checks establish agreement with curated expected facts. They do not fetch a fresh source, assess every free-form statement, prove subjective usefulness or replace existing Tracker source checks. A model-judge/custom-evaluator platform is not implied by these two check types.
 
+## Human review
+
+After a run is submitted, an editor can inspect each case and its explicitly submitted output, then save one fixed label: `useful`, `incorrect`, `unsafe`, `incomplete`, or `uncertain`. Review is separate from the deterministic pass/fail result. It has no free-text note, model call, or deployment effect. Labels are project-scoped, revision-checked, and removed when the linked run expires. Remote MCP uses the same `experiments:write` scope as fixture access.
+
+For prompt comparisons, save the prompt in the encrypted [Prompt library](prompts.md), run it in your own application, then include the prompt UUID and version in the run's reviewed `configuration` and the trace's `template_version`. This links evidence by reference; Afterspan does not render templates, call models, or copy prompt text into traces.
+
 ## Privacy and access
 
 Trace content remains off. Cases are explicit curated fixtures, not raw production exports. Case/run writes require strict `privacy_reviewed: true`; strings such as `"true"` and numeric flags are rejected. Shared client/server checks reject common credential, email, phone and sensitive-field patterns before storage. The local runner also rejects unsafe output before preparing an upload, returning a fixed unsupported code without copying its content. Exception messages are not retained.

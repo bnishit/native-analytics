@@ -55,6 +55,23 @@ class RegressionTests(unittest.TestCase):
         changed=next(c for c in report['cases'] if c['change']=='improved')
         self.assertEqual(changed['baseline_differences'],[{'path':'$.count','expected':'2','observed':'9'}])
         self.assertEqual(changed['differences'],[])
+
+    def test_human_reviews_are_fixed_labels_case_versioned_and_revision_checked(self):
+        self.setup_dataset();run_id,_,report=self.make_run([{'count':2,'complete':True}])
+        self.assertEqual(report['human_review'],{'reviewed':0,'remaining':1})
+        url=f'/api/experiments/runs/{run_id}/reviews?project=alpha&revision=0'
+        body={'case':self.case_id,'version':1,'label':'useful'}
+        saved=self.client.put(url,headers=self.admin,json=body)
+        self.assertEqual(saved.status_code,200,saved.text);self.assertEqual(saved.json()['revision'],1)
+        self.assertEqual(self.client.put(url,headers=self.admin,json=body).json(),saved.json())
+        current=self.client.get(f'/api/experiments/runs/{run_id}?project=alpha',headers=self.admin).json()
+        self.assertEqual(current['human_review'],{'reviewed':1,'remaining':0})
+        self.assertEqual(current['cases'][0]['human_review']['label'],'useful')
+        self.assertEqual(self.client.put(url,headers=self.admin,json={**body,'label':'incorrect'}).status_code,409)
+        self.assertEqual(self.client.put(f'/api/experiments/runs/{run_id}/reviews?project=alpha&revision=1',headers=self.admin,json={**body,'label':'incorrect'}).status_code,200)
+        self.assertEqual(self.client.put(f'/api/experiments/runs/{run_id}/reviews?project=alpha&revision=2',headers=self.admin,json={**body,'label':'unsafe','comment':'private note'}).status_code,422)
+        self.assertEqual(self.client.put(f'/api/experiments/runs/{run_id}/reviews?project=beta&revision=0',headers=self.admin,json=body).status_code,404)
+        self.assertEqual(self.client.put(f'/api/experiments/runs/{run_id}/reviews?project=alpha&revision=2',headers=self.admin,json={**body,'case':str(uuid.uuid4())}).status_code,404)
     def test_regressions_and_missing_results_cannot_clear_review(self):
         self.setup_dataset(extra=True)
         baseline,_,_=self.make_run([{'count':2,'complete':True},{'count':0,'complete':True}])

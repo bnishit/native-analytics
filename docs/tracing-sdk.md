@@ -40,10 +40,12 @@ Import the installed modules directly. The standard-library collector persists t
 ```python
 from native_analytics import Collector
 from afterspan_tracing import WorkflowTracer, inject, extract
+from uuid import uuid4
 
 collector = Collector(origin, write_key, private_outbox_path)
 tracer = WorkflowTracer(collector)
-with tracer.task('document_export', 'production', release_sha=release_sha):
+with tracer.task('document_export', 'production', release_sha=release_sha,
+                 session_id=str(uuid4())):
     with tracer.span('storage', milestone='completion') as span:
         result = export_document()
         span.check('source_facts', 'passed', evidence_digest=source_digest,
@@ -53,6 +55,8 @@ with tracer.task('document_export', 'production', release_sha=release_sha):
 collector.flush()
 ```
 
+To group more than one request inside your own conversation or job, generate a random UUIDv4 at the application boundary and pass it as `session_id`. Reuse it only for that session; do not put a customer, account, or chat identifier in this field.
+
 `source_digest` is a SHA-256 digest computed by the producer over its canonical evidence, never the source body. Only emit a passed check after actually checking the result. A resolved receipt proves matching producer evidence, not an independent Afterspan source fetch.
 
 ## Node
@@ -61,9 +65,10 @@ Import from the installed `@afterspan/sdk` ESM package. Plain JavaScript applica
 
 ```typescript
 import { WorkflowTracer, createAnalytics } from '@afterspan/sdk';
+import { randomUUID } from 'node:crypto';
 
 const tracer = new WorkflowTracer(createAnalytics({url: origin, writeKey}));
-await tracer.task({workflow:'document_export', environment:'production', releaseSha}, async () => {
+await tracer.task({workflow:'document_export', environment:'production', releaseSha, sessionId:randomUUID()}, async () => {
   await tracer.span('storage', async span => {
     await exportDocument();
     span.check('source_facts', 'passed', {evidenceDigest: sourceDigest, execution:'completed'});

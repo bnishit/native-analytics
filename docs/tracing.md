@@ -4,6 +4,10 @@
 
 An operator opens **Traces**, selects the environment, finds a request, and sees its attempts and nested steps on one timeline. Missing starts, finishes, parents and decision evidence stay visible. The user can share the exact observation window or ask an agent to inspect the same request. No new permission is needed for existing project audit readers.
 
+Producers may also attach an opaque UUIDv4 `session_id` to each workflow trace that belongs to one conversation or task. Reuse that ID only within the intended session; create another random ID for unrelated work. The Traces page groups those linked requests and can open one session inside the same frozen time window. No grouping is inferred from a customer ID, IP, timing or message text. Old observations without the field remain searchable as individual traces. A partly linked trace is shown with a session-link gap; conflicting IDs stay ungrouped. Session IDs are references, not account identities, and should not contain personal data.
+
+Saved charts can also be arranged into named project dashboards. A dashboard stores only chart IDs; it does not copy or change the chart queries. Each dashboard is bounded to twelve charts and uses the project's existing access checks. Deleting a chart that a dashboard uses is blocked until the chart is removed from that layout.
+
 This is a general Afterspan capability. Experiment Tracker is the first live adopter, not the domain model. A trace groups one request; a span is one timed step; an attempt is a business retry, not a telemetry resend. Delivery, processing and independently checked outcomes are separate facts.
 
 ## Research and choices — 30 October 2026

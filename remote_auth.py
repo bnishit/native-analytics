@@ -13,9 +13,9 @@ from mcp.server.auth.provider import AccessToken,AuthorizationCode,AuthorizeErro
 from mcp.shared.auth import OAuthClientInformationFull,OAuthToken
 from pydantic import BaseModel,ConfigDict,Field
 
-SCOPES=['analytics:read','charts:write','audit:read','goals:write','experiments:write','debug:read','collection:write','releases:write','followups:write']
+SCOPES=['analytics:read','charts:write','charts:manage','audit:read','goals:write','experiments:write','debug:read','collection:write','releases:write','followups:write']
 
-EDITOR_SCOPES={'charts:write','goals:write','experiments:write','debug:read','collection:write','releases:write','followups:write'}
+EDITOR_SCOPES={'charts:write','charts:manage','goals:write','experiments:write','debug:read','collection:write','releases:write','followups:write'}
 
 class Decision(BaseModel):
     model_config=ConfigDict(extra='forbid')
@@ -162,9 +162,10 @@ class OAuthProvider:
         release_monitor=path=='/api/outcomes/release-monitors' or bool(re.fullmatch(r'/api/outcomes/release-monitors/[0-9a-f-]{36}(/alerts|/evaluate)?',path))
         if (improvement or followup) and not {'audit:read','experiments:write'}<=set(token.scopes):raise HTTPException(403,'improvement flow requires audit and experiment access')
         if release_monitor and not {'audit:read','experiments:write'}<=set(token.scopes):raise HTTPException(403,'release monitors require audit and experiment access')
-        scope='followups:write' if followup else 'experiments:write' if improvement else 'releases:write' if release_evidence else 'collection:write' if collection_write else 'debug:read' if debug else 'experiments:write' if release_monitor and request.method!='GET' else 'audit:read' if release_monitor else 'experiments:write' if experiment else 'goals:write' if goal_write else 'audit:read' if audit else 'charts:write' if chart and request.method!='GET' else 'analytics:read'
+        chart_manage=chart and request.method in {'PUT','DELETE'}
+        scope='followups:write' if followup else 'experiments:write' if improvement else 'releases:write' if release_evidence else 'collection:write' if collection_write else 'debug:read' if debug else 'experiments:write' if release_monitor and request.method!='GET' else 'audit:read' if release_monitor else 'experiments:write' if experiment else 'goals:write' if goal_write else 'audit:read' if audit else 'charts:manage' if chart_manage else 'charts:write' if chart and request.method=='POST' else 'analytics:read'
         if release_view and not {'audit:read','experiments:write'}<=set(token.scopes):raise HTTPException(403,'release comparisons require audit and experiment access')
-        if chart and request.method not in {'GET','POST','PUT','DELETE'}:raise HTTPException(403,'agent chart access is read-only or charts:write scoped')
+        if chart and request.method not in {'GET','POST','PUT','DELETE'}:raise HTTPException(403,'agent chart access is read-only or separately scoped for writes')
         if project!=token.project or scope not in token.scopes or not (path in allowed or audit or chart or goal_write or experiment or debug or collection_write or release_evidence or improvement or followup or release_monitor) or role=='owner' or role=='editor' and not (chart or goal_write or experiment or debug or collection_write or release_evidence or improvement or followup or release_monitor):
             raise HTTPException(403,'agent scope does not allow this action')
 

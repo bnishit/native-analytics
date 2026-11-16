@@ -37,7 +37,9 @@ def install(app,provider):
         if not token:raise ValueError('Connect and approve a project first.')
         # In-process ASGI: credentials never leave this service and every API guard still runs.
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url=provider.origin) as client:
-            response=await client.request(method or ('POST' if body is not None else 'GET'),path,params={**dict(parse_qsl(urlsplit(path).query)),'project':token.project},json=body,headers={'Authorization':'Bearer '+token.token})
+            parts=urlsplit(path);params=dict(parse_qsl(parts.query));params['project']=token.project
+            target=parts.path+'?'+urlencode(params,doseq=True)
+            response=await client.request(method or ('POST' if body is not None else 'GET'),target,json=body,headers={'Authorization':'Bearer '+token.token})
         if response.status_code>=400:raise ValueError(str(response.json().get('detail','Request failed')))
         return response.json()
 
@@ -193,12 +195,12 @@ def install(app,provider):
 
     @mcp.tool(annotations=WRITE)
     async def update_chart(chart_id:UUID,revision:int,title:str,query:dict)->dict:
-        """Update a chart only at the revision returned by saved_charts. A stale revision is rejected; reload and review before retrying."""
+        """Requires separately approved charts:manage and editor access. Update only at the revision returned by saved_charts. A stale revision is rejected; reload and review before retrying."""
         return await call('/api/charts/'+str(chart_id)+'?revision='+str(revision),{'title':title,'query':query},'PUT')
 
     @mcp.tool(annotations=WRITE)
     async def delete_chart(chart_id:UUID,revision:int)->dict:
-        """Delete a chart only at the revision returned by saved_charts. A stale revision is rejected; reload and review before retrying."""
+        """Requires separately approved charts:manage and editor access. Delete only at the revision returned by saved_charts. A stale revision is rejected; reload and review before retrying."""
         return await call('/api/charts/'+str(chart_id)+'?revision='+str(revision),None,'DELETE')
 
     @mcp.tool(annotations=READ)

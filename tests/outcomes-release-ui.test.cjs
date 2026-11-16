@@ -19,6 +19,13 @@ test('release comparison keeps unknown evidence and observational limits visible
  const known=vm.runInContext('outcomeReleaseMarkup('+JSON.stringify({...data,status:'comparable',reasons:[],satisfied_fraction_difference:0})+')',c);
  assert.match(known,/0 percentage-point change/);assert.doesNotMatch(known,/Change unavailable/);
 });
+
+test('chart action URLs retain existing revisions while adding the selected project',()=>{
+ const source=fs.readFileSync('static/app.js','utf8'),definition=source.match(/function url\(path,extras=\{\}\)\{[^\n]+\}/)[0];
+ const c=vm.createContext({URL,URLSearchParams,location:{origin:'https://afterspan.example'},project:'project-1',days:30});vm.runInContext(definition,c);
+ const result=new URL(vm.runInContext('url("/api/charts/chart-1?revision=4")',c),'https://afterspan.example');
+ assert.equal(result.pathname,'/api/charts/chart-1');assert.equal(result.searchParams.get('revision'),'4');assert.equal(result.searchParams.get('project'),'project-1');assert.equal(result.searchParams.get('days'),'30');
+});
 test('synthetic or mixed goals cannot start a user-outcome comparison',async()=>{
  let html='',calls=0;const c=context({$:()=>({set innerHTML(v){html=v}}),api:()=>{calls++}});
  await vm.runInContext('outcomeReleaseView(1,{definition:{traffic_kind:"synthetic"}})',c);

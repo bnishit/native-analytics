@@ -28,7 +28,7 @@ class RemoteMCPTests(unittest.TestCase):
     join=test_workspaces.WorkspaceTests.join
 
     def register(self):
-        r=self.client.post('/register',json={'client_name':'Fresh test agent','redirect_uris':['http://127.0.0.1:19191/callback'],'grant_types':['authorization_code','refresh_token'],'response_types':['code'],'token_endpoint_auth_method':'none','scope':'analytics:read charts:write audit:read goals:write experiments:write debug:read collection:write releases:write followups:write'})
+        r=self.client.post('/register',json={'client_name':'Fresh test agent','redirect_uris':['http://127.0.0.1:19191/callback'],'grant_types':['authorization_code','refresh_token'],'response_types':['code'],'token_endpoint_auth_method':'none','scope':'analytics:read charts:write charts:manage audit:read goals:write experiments:write debug:read collection:write releases:write followups:write'})
         self.assertEqual(r.status_code,201,r.text);return r.json()['client_id']
 
     def begin(self,cid,scope='analytics:read charts:write',**overrides):
@@ -159,6 +159,7 @@ class RemoteMCPTests(unittest.TestCase):
         self.assertEqual(metadata.headers['access-control-allow-origin'],'*')
         self.assertEqual(metadata.json()['token_endpoint_auth_methods_supported'],['none'])
         self.assertEqual(metadata.json()['revocation_endpoint_auth_methods_supported'],['none'])
+        self.assertIn('charts:manage',self.client.get('/.well-known/afterspan').json()['connection']['scopes'])
         owner,uid,w,p,cid,t,code,verifier=self.grant('analytics:read')
         h={'Authorization':'Bearer '+t['access_token']}
         self.assertEqual(self.client.get('/api/charts',params={'project':p},headers=h).status_code,200)
@@ -184,6 +185,15 @@ class RemoteMCPTests(unittest.TestCase):
         created=self.client.post('/api/charts',params={'project':p,'chart_id':str(uuid.uuid4())},headers=h,json={'title':'Requests','query':{'event':'http.request'}})
         self.assertEqual(created.status_code,200,created.text)
         chart_id=created.json()['id'];row=self.client.get('/api/charts',params={'project':p},headers=h).json()['charts'][0]
+        changed=self.client.put('/api/charts/'+chart_id,params={'project':p,'revision':row['revision']},headers=h,json={'title':'Errors','query':{'event':'http.request','property':'status','value':'500'}})
+        self.assertEqual(changed.status_code,403)
+        stale=self.client.delete('/api/charts/'+chart_id,params={'project':p,'revision':row['revision']},headers=h)
+        self.assertEqual(stale.status_code,403)
+        owner,uid,w,p,cid,t,*_=self.grant('analytics:read charts:manage')
+        h={'Authorization':'Bearer '+t['access_token']}
+        created=owner.post('/api/charts',params={'project':p},headers=CSRF,json={'title':'Requests','query':{'event':'http.request'}})
+        self.assertEqual(created.status_code,200,created.text);chart_id=created.json()['id']
+        row=self.client.get('/api/charts',params={'project':p},headers=h).json()['charts'][0]
         changed=self.client.put('/api/charts/'+chart_id,params={'project':p,'revision':row['revision']},headers=h,json={'title':'Errors','query':{'event':'http.request','property':'status','value':'500'}})
         self.assertEqual(changed.status_code,200,changed.text)
         stale=self.client.delete('/api/charts/'+chart_id,params={'project':p,'revision':row['revision']},headers=h)
@@ -280,7 +290,7 @@ class RemoteMCPTests(unittest.TestCase):
         self.assertTrue(denied.get('isError'))
 
     def test_remote_transport_tools_and_idempotent_chart_storage(self):
-        owner,uid,w,p,cid,t,*_=self.grant('analytics:read charts:write audit:read goals:write experiments:write debug:read collection:write followups:write')
+        owner,uid,w,p,cid,t,*_=self.grant('analytics:read charts:write charts:manage audit:read goals:write experiments:write debug:read collection:write followups:write')
         with TestClient(app.app,base_url=ORIGIN) as client:
             self.assert_read_only_metric(client)
             headers={'Authorization':'Bearer '+t['access_token'],'Accept':'application/json, text/event-stream'}

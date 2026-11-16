@@ -67,8 +67,8 @@ class ReleaseOutcomes:
 
     def list_monitors(self,project):
         with closing(self.connect()) as c:
-            rows=c.execute('SELECT id,definition,state,revision,created,updated FROM release_monitors WHERE project=? ORDER BY created DESC LIMIT 50',(project,)).fetchall()
-        return {'monitors':[{'id':r['id'],'definition':json.loads(r['definition']),'state':r['state'],'revision':r['revision'],'created':r['created'],'updated':r['updated']} for r in rows],
+            rows=c.execute('SELECT id,definition,state,revision,active,created,updated FROM release_monitors WHERE project=? ORDER BY active DESC,created DESC LIMIT 50',(project,)).fetchall()
+        return {'monitors':[{'id':r['id'],'definition':json.loads(r['definition']),'state':r['state'],'revision':r['revision'],'active':bool(r['active']),'created':r['created'],'updated':r['updated']} for r in rows],
             'limits':['At most 50 active monitors service-wide. Checks run hourly. Unknown evidence never triggers an alert.']}
 
     def create_monitor(self,project,req):
@@ -130,41 +130,36 @@ class ReleaseOutcomes:
         if not row:raise HTTPException(404,'release monitor not found')
         if not row['active']:
             return {'id':monitor_id,'state':row['state'],'revision':row['revision'],'active':False}
+        started=time.time()
         definition=json.loads(row['definition'])
         try:
             query=self.monitor_query(project,definition)
             report=self.compare(project,query) if query else {'status':'waiting','reasons':['after_window_not_mature']}
         except HTTPException:
             report={'status':'unknown','reasons':['pinned_release_evidence_unavailable']}
-        now=time.time();prior=row['state'];threshold=definition['regression_threshold']
+        threshold=definition['regression_threshold']
         comparable=report['status']=='comparable'
         regressed=comparable and report['satisfied_fraction_difference']<=-threshold
-        state='regressed' if regressed else 'clear' if comparable else prior if prior=='regressed' else 'unknown'
         alert=None
-        if comparable:
-            evidence=self.alert_evidence(report)
-            fingerprint=digest(evidence)
-            with closing(self.connect()) as c,c:
-                c.execute('BEGIN IMMEDIATE')
-                current=c.execute('SELECT state,episode,revision,active FROM release_monitors WHERE id=? AND project=?',(monitor_id,project)).fetchone()
-                if not current:raise HTTPException(404,'release monitor not found')
-                if current['active']:
-                    kind='regression' if regressed and current['state']!='regressed' else 'recovered' if not regressed and current['state']=='regressed' else None
-                    episode=current['episode']+(1 if kind=='regression' else 0)
-                    if kind:
-                        alert_id=str(uuid.uuid4())
-                        c.execute('INSERT INTO release_monitor_alerts(id,monitor_id,project,episode,kind,evidence,fingerprint,created) VALUES(?,?,?,?,?,?,?,?)',
-                            (alert_id,monitor_id,project,episode,kind,json.dumps(evidence,separators=(',',':')),fingerprint,now))
-                        alert={'id':alert_id,'episode':episode,'kind':kind,'evidence':evidence,'created':now}
-                    changed=state!=current['state']
-                    c.execute('UPDATE release_monitors SET state=?,episode=?,revision=revision+?,updated=? WHERE id=? AND project=?',
-                        (state,episode,int(changed),now,monitor_id,project))
-                    row=c.execute('SELECT state,revision,episode,active FROM release_monitors WHERE id=? AND project=?',(monitor_id,project)).fetchone()
-                else:row=current
-        else:
-            with closing(self.connect()) as c,c:
-                c.execute('UPDATE release_monitors SET state=?,updated=? WHERE id=? AND project=? AND active=1',
-                    (state,now,monitor_id,project))
+        if comparable:evidence=self.alert_evidence(report);fingerprint=digest(evidence)
+        with closing(self.connect()) as c,c:
+            c.execute('BEGIN IMMEDIATE')
+            current=c.execute('SELECT state,episode,revision,active,updated FROM release_monitors WHERE id=? AND project=?',(monitor_id,project)).fetchone()
+            if not current:raise HTTPException(404,'release monitor not found')
+            if not current['active'] or current['updated']>started:
+                row=current
+            else:
+                state=('regressed' if regressed else 'clear') if comparable else current['state'] if current['state']=='regressed' else 'unknown'
+                kind='regression' if comparable and regressed and current['state']!='regressed' else 'recovered' if comparable and not regressed and current['state']=='regressed' else None
+                episode=current['episode']+(1 if kind=='regression' else 0)
+                if kind:
+                    alert_id=str(uuid.uuid4())
+                    c.execute('INSERT INTO release_monitor_alerts(id,monitor_id,project,episode,kind,evidence,fingerprint,created) VALUES(?,?,?,?,?,?,?,?)',
+                        (alert_id,monitor_id,project,episode,kind,json.dumps(evidence,separators=(',',':')),fingerprint,started))
+                    alert={'id':alert_id,'episode':episode,'kind':kind,'evidence':evidence,'created':started}
+                changed=state!=current['state']
+                c.execute('UPDATE release_monitors SET state=?,episode=?,revision=revision+?,updated=? WHERE id=? AND project=? AND active=1',
+                    (state,episode,int(changed),started,monitor_id,project))
                 row=c.execute('SELECT state,revision,episode,active FROM release_monitors WHERE id=? AND project=?',(monitor_id,project)).fetchone()
         return {'id':monitor_id,'state':row['state'],'revision':row['revision'],'episode':row['episode'],'active':bool(row['active']),
             'comparison_status':report['status'],'reasons':report['reasons'],'alert':alert}

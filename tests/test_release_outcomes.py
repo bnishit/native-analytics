@@ -126,6 +126,36 @@ class ReleaseOutcomeTests(unittest.TestCase):
         conflict=self.client.post('/api/outcomes/release-monitors?project=alpha',headers=self.auth,json=changed)
         self.assertEqual(conflict.status_code,409)
 
+    def test_monitor_listing_returns_active_state_and_keeps_active_rows_first(self):
+        monitor_id=str(uuid.uuid4());body={'id':monitor_id,'query':self.query,'regression_threshold':.1}
+        self.client.post('/api/outcomes/release-monitors?project=alpha',headers=self.auth,json=body).raise_for_status()
+        listed=self.client.get('/api/outcomes/release-monitors?project=alpha',headers=self.auth).json()['monitors']
+        self.assertEqual(listed[0]['id'],monitor_id);self.assertTrue(listed[0]['active'])
+
+    def test_unknown_slow_evaluation_cannot_clear_a_newer_regression(self):
+        def report(difference):
+            return {'status':'comparable','reasons':[],'satisfied_fraction_difference':difference,
+                'before':{'counts':{'satisfied':8},'mature_denominator':10,'satisfied_fraction':.8,'coverage':{}},
+                'after':{'counts':{'satisfied':5},'mature_denominator':10,'satisfied_fraction':.5,'coverage':{}},
+                'baseline_release':{'commit':'a'*40},'release':{'commit':'c'*40}}
+        monitor_id=str(uuid.uuid4());body={'id':monitor_id,'query':self.query,'regression_threshold':.1}
+        with patch.object(app.release_outcomes,'compare',return_value=report(0)):
+            self.client.post('/api/outcomes/release-monitors?project=alpha',headers=self.auth,json=body).raise_for_status()
+        calls=0
+        def overlap(project,query):
+            nonlocal calls
+            calls+=1
+            if calls==1:
+                nested=app.release_outcomes.evaluate_monitor(project,monitor_id)
+                self.assertEqual(nested['state'],'regressed')
+                return {'status':'unknown','reasons':['pinned_release_evidence_unavailable']}
+            return report(-.3)
+        with patch.object(app.release_outcomes,'compare',side_effect=overlap):
+            result=app.release_outcomes.evaluate_monitor('alpha',monitor_id)
+        self.assertEqual(result['comparison_status'],'unknown');self.assertEqual(result['state'],'regressed')
+        alerts=self.client.get(f'/api/outcomes/release-monitors/{monitor_id}/alerts?project=alpha',headers=self.auth).json()['alerts']
+        self.assertEqual([row['kind'] for row in alerts],['regression'])
+
     def test_release_monitor_contract_is_discoverable_with_scope_and_delivery_limits(self):
         contract=self.client.get('/.well-known/afterspan').json()['release_monitors']
         self.assertEqual(contract['cadence'],'hourly')
